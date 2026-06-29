@@ -1,6 +1,6 @@
 import bpy
 from bpy.props import (PointerProperty, IntProperty, BoolProperty,
-                       FloatProperty, StringProperty)
+                       FloatProperty, StringProperty, EnumProperty)
 from bpy.types import PropertyGroup
 
 
@@ -21,6 +21,44 @@ def _wire_update(self, context):
                 ov.wireframe_opacity = self.wireframe_opacity
             except Exception:
                 pass
+
+
+def _lock_update(self, context):
+    try:
+        from . import markers
+        markers.set_character_selectable(self, not self.lock_mesh)
+    except Exception:
+        pass
+
+
+def _skirt_update(self, context):
+    """Real-time rebuild of the skirt bones when Columns/Rows change (only for
+    the mesh-driven modes; manual edits are never overwritten)."""
+    try:
+        from . import skirt
+        skirt.live_rebuild(context)
+    except Exception as e:
+        print("SmartRig skirt live update:", e)
+
+
+def _skirt_live_update(self, context):
+    """Live-tune skirt follow strength / max angle on the generated rig with no
+    rebuild and no mode change (ARP-style interactive settings)."""
+    try:
+        from . import skirt
+        skirt.live_tune(context)
+    except Exception as e:
+        print("SmartRig skirt live tune:", e)
+
+
+def _skirt_collide_update(self, context):
+    """Live-tune the ARP-style kilt collision (collide on/off, distance, spread,
+    falloff) on the generated rig with no rebuild (ARP interactive settings)."""
+    try:
+        from . import skirt
+        skirt.live_kilt_tune(context)
+    except Exception as e:
+        print("SmartRig skirt collide tune:", e)
 
 
 class SmartRigProps(PropertyGroup):
@@ -93,6 +131,94 @@ class SmartRigProps(PropertyGroup):
     finger_placing: BoolProperty(default=False)  # True while clicking finger joints
     finger_current: StringProperty(default="")   # name of the finger being placed
     finger_part: StringProperty(default="hand")  # 'hand' or 'foot'
+    # ---- live link & marker visibility ----
+    live_link: BoolProperty(default=False)
+    markers_hidden: BoolProperty(default=False)
+    lock_mesh: BoolProperty(
+        name="Lock Mesh Selection", default=False, update=_lock_update,
+        description="Make the character mesh un-clickable so box-select / clicks hit only the markers")
+    show_tools: BoolProperty(name="Marker Tools", default=True,
+        description="Collapse / expand the Marker Tools section")
+    show_roll: BoolProperty(name="Bone Roll", default=False,
+        description="Collapse / expand the Bone Roll editing section")
+    show_rigify: BoolProperty(name="Rigify", default=False,
+        description="Collapse / expand the Rigify samples list")
+    rig_generated: BoolProperty(name="Rig Generated", default=False,
+        description="Whether a Rigify rig has been generated from the metarig")
+    show_display: BoolProperty(name="Display", default=True,
+        description="Collapse / expand the viewport display controls for the rig")
+    show_align: BoolProperty(name="Align", default=True,
+        description="Collapse / expand the Align & Wireframe section")
+    # ---- short skirt (ARP Kilt-style) sample ----
+    skirt_source: EnumProperty(
+        name="Skirt Source", default='MERGED',
+        items=[('MANUAL', "Manual", "Add a starter ring of bones, then place / edit them by hand"),
+               ('SEPARATE', "Separate Mesh", "The skirt is its own object - pick it with the eyedropper"),
+               ('MERGED', "Merged with Body", "The skirt is part of the character mesh - select it in Edit Mode and Register")])
+    skirt_object: PointerProperty(
+        name="Skirt Mesh", type=bpy.types.Object, poll=_mesh_poll,
+        description="The separate skirt mesh object to analyse")
+    skirt_columns: IntProperty(name="Columns", default=8, min=4, max=32, update=_skirt_update,
+        description="Number of skirt chains around the hips")
+    skirt_rows: IntProperty(name="Rows", default=2, min=1, max=6, update=_skirt_update,
+        description="Segments down each skirt chain (more = smoother bending)")
+    skirt_length: FloatProperty(name="Length", default=0.6, min=0.15, max=1.0,
+        description="Skirt length from waist toward the knee (0.15 short ... 1.0 to knee)")
+    skirt_collide: BoolProperty(name="Collide with Legs", default=True, update=_skirt_collide_update,
+        description="Add ARP-style constrained collision with the legs")
+    skirt_collider_l: StringProperty(name="Left Collider", default="DEF-thigh.L",
+        description="Left leg bone the skirt collides with (e.g. thigh.L)")
+    skirt_collider_r: StringProperty(name="Right Collider", default="DEF-thigh.R",
+        description="Right leg bone the skirt collides with (e.g. thigh.R)")
+    skirt_collide_dist: FloatProperty(name="Collision Distance", default=0.12, min=0.01, max=0.6,
+        update=_skirt_collide_update,
+        description="Clearance kept between the skirt and the leg bones")
+    skirt_collide_spread: FloatProperty(name="Spread", default=1.0, min=0.0, max=2.0,
+        update=_skirt_collide_update,
+        description="How many columns around each leg are affected by the collision")
+    skirt_collide_falloff: FloatProperty(name="Distance Falloff", default=0.4, min=0.0, max=1.0,
+        update=_skirt_collide_update,
+        description="Base clearance kept even at rest (ARP collide_dist_falloff)")
+    skirt_follow: FloatProperty(name="Leg Follow", default=0.6, min=0.0, max=1.5, update=_skirt_live_update,
+        description="How strongly the skirt rotates with the leg (Pierrick-style). 0 = none")
+    skirt_limit_deg: FloatProperty(name="Max Angle", default=60.0, min=5.0, max=150.0, update=_skirt_live_update,
+        description="Maximum outward swing of a skirt panel (lower = less chance skirt bones overlap)")
+    show_skirt: BoolProperty(name="Skirt", default=False,
+        description="Collapse / expand the Short Skirt section")
+    show_skirt_adv: BoolProperty(name="Advanced", default=False,
+        description="Show the leg-bone pickers for the skirt collision (defaults are correct)")
+    samples_expanded: StringProperty(default="Limbs",
+        description="Internal: comma-separated names of expanded sample groups")
+    # ---- Skin / Binding panel (ARP-style) ----
+    skin_engine: EnumProperty(
+        name="Engine", default='HEAT',
+        items=[('HEAT', "Heat Maps", "Automatic weights from the Blender heat-map solver"),
+               ('ENVELOPE', "Envelope", "Weights from the bone envelopes (fast, rough)")])
+    skin_split_parts: BoolProperty(name="Split Parts", default=True,
+        description="Keep the body and the skirt independent: the body ignores skirt bones and the skirt follows only its own bones")
+    skin_preserve_volume: BoolProperty(name="Preserve Volume", default=False,
+        description="Use preserve-volume (dual quaternion) deformation on the armature modifier")
+    # ---- top tabs (ARP-style: Rig / Skin / Misc) ----
+    ui_tab: EnumProperty(
+        name="Tab", default='RIG',
+        items=[('RIG', "Rig", "Markers, metarig and Rigify samples"),
+               ('SKIN', "Skin", "Bind / skin the mesh to the rig"),
+               ('MISC', "Misc", "Settings and options")])
+    roll_axis: EnumProperty(
+        name="Roll To", default='GLOBAL_POS_Z',
+        items=[('GLOBAL_POS_Z', "+Z up", ""), ('GLOBAL_NEG_Z', "-Z", ""),
+               ('GLOBAL_POS_X', "+X", ""), ('GLOBAL_NEG_X', "-X", ""),
+               ('GLOBAL_POS_Y', "+Y", ""), ('GLOBAL_NEG_Y', "-Y back", ""),
+               ('VIEW', "View", ""), ('CURSOR', "Cursor", ""), ('ACTIVE', "Active Bone", "")])
+    # ---- guided hands decision ----
+    hands_decided: BoolProperty(default=False)
+    want_hands: BoolProperty(default=False)
+    # ---- alignment orientation for the X/Y/Z align buttons ----
+    align_orient: EnumProperty(
+        name="Align Orientation", default='NORMAL',
+        items=[('GLOBAL', "World", "World X/Y/Z axes"),
+               ('NORMAL', "Normal", "The finger's own direction (won't distort a tilted finger)"),
+               ('BOX', "Box", "The selection's oriented bounding box")])
 
 
 def register():
