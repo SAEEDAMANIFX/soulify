@@ -1,5 +1,117 @@
 # SmartRig Pro — Lessons (do NOT repeat these mistakes)
 
+## Skirt collision = COMPASS model (v1.19.12) — CURRENT shipped mechanism
+The floor-plane approach below was replaced. The floor plane's push strength
+varied by direction (strong forward, weak side — user: "side kick no response")
+and its infinite plane pulled same-side back/side columns. The robust answer
+(matches what Saeed described as ARP's "compass bone"): each column RIDES its
+`SKC_dt` bone (control re-parented onto dt). A driver rotates dt OUTWARD by how
+much the nearest leg's KNEE swings toward that column:
+`amount = AMP * clamp(0, (knee_xy - hip_xy - rest_offset) · column_outward) * (dist/0.12) * spread * collide`.
+The knee-minus-hip horizontal vector is the compass needle — it points the way
+the leg kicks (forward/back/in/out) for ANY pose, FK OR IK, with no dependence on
+euler axes (which fail to separate abduction from flexion — that was the
+side-kick bug). Each column reacts only to the component along its own outward,
+so a side kick moves only the side columns, forward only the front, etc. It only
+swings outward (clamp >=0) so it never crosses. Each column BLENDS BOTH legs'
+compasses weighted by proximity (wL=dR/(dL+dR), wR=dL/(dL+dR)), so no centre
+column is dead and the whole front arc lifts smoothly on a one-leg forward kick
+(strong over the leg, tapering across). It scales to ANY column/row count because
+every term (outward, swing axis, weights) is per-column from its own position.
+Driver var type is `'TRANSFORMS'`
+(LOC_X/LOC_Y, WORLD_SPACE) — NOT `'TRANSFORM_CHANNEL'` (that enum doesn't exist).
+`SKC_dt` is SPLIT into one segment per ROW (`SKC_dt.CC.RR`), chained, and EACH row
+control rides its own segment. Each segment rotates by `AMP/nrows`, so the bend
+accumulates down the chain into a smooth progressive drape toward the hem (cloth),
+not a rigid swing — like ARP's `c_kilt_CC_01..06`. Distributing across N rows
+roughly halves the hem throw, so `AMP=5.5` (verified: 5-row column bends
+0.012→0.037→0.074→0.122→0.181 root→hem, no crossing). Scales to any rows.
+The dt swing axis (local rot_X vs rot_Z) + sign is picked from dt's rest matrix:
++rotX moves the hem along +Zlocal, +rotZ along -Xlocal. Verified: fwd/back/side
+all push 0.13–0.25; far side = 0; back = 0 on a forward kick; rest = 0; no
+crossing even at fwd+up 70°. Master props: Collide (on/off), Swing (was
+collide_dist), Strength (was collide_spread). `collide_dist_falloff` is now
+UNUSED (it was floor clearance) and dropped from the UI.
+
+## (superseded) Skirt collision = ARP "Kilt" floor+tar+dt mechanism (v1.19.3) — TRUE collision, no crossing
+This is the shipped model. It replicates Auto-Rig Pro's kilt limb and gives REAL
+clearance (the cloth is pushed away from the leg), per-leg/per-column weighting,
+push-scales-with-leg-motion, and no self-intersection in any direction. Validated
+numerically on the live rig: rest displacement ~0.023; leg fwd pushes front cols,
+back pushes back cols, side pushes side cols (push-only, outward); angular gaps
+between columns stay POSITIVE in fwd/back/side/fwd+up (no crossing).
+
+`add_skirt_collision(rig, props)` builds, per leg + per column:
+- **`SKC_floor.L/R`** — a floor PLANE bone at mid-thigh, **parented to DEF-thigh**
+  so it follows the leg. CRITICAL: the bone must point **along the leg direction**
+  (`fl.tail = mid + legdir*0.12`), so its **Y-axis = leg direction** (down at
+  rest). A FLOOR_Y plane then sits roughly horizontal at rest (hem is below it →
+  no push) and tilts as the leg swings → pushes only when the leg moves. Pointing
+  the bone +Z (Y=up) makes the floor shove the whole skirt UP at rest (0.67 jump).
+- **`SKC_tar.NN`** — per-column collision target at the hem, parented to the hips.
+  Two **FLOOR** constraints (`floor_location='FLOOR_Y'`, `use_rotation=True`), one
+  per leg, `offset = dist*(1+falloff)`, `influence = facing × spread`.
+- **Facing weight = XY PROXIMITY DIFFERENCE, not linear X** (v1.19.5 fix). A column
+  is pushed by a leg only if it is clearly NEARER that leg than the other:
+  `fL = max(0,(dR-dL)/(dR+dL))`, `fR = max(0,(dL-dR)/(dL+dR))` (dL,dR = XY distance
+  from the column head to each thigh head), ×1.7 gain, then ×spread. Columns at the
+  centre (equidistant) and the whole opposite side get 0, so the far side stays
+  rock-stable when one leg moves. The earlier linear `0.5±0.5·bx` gave the centre
+  0.5 from BOTH legs, so motion bled across and the user saw "the skirt pulled to
+  the other side / no stability on the other side". Verified: lift L leg -> every
+  right-side column moves 0.000, centre <=0.025, only left cols near the leg push;
+  symmetric for the R leg.
+- **TWO gates, not one** (v1.19.9). The infinite FLOOR plane, when it tilts with
+  the leg, also lifts SAME-SIDE back/side columns (user: "pulled from the side /
+  from behind"). Fix: gate the floor influence by BOTH (a) PROXIMITY = which leg's
+  side the column is on (skip the far side), and (b) DIRECTION = the leg's LOCAL
+  swing dotted with the column's outward. The direction term reads the thigh's
+  `ROT_X` (forward/back) and `ROT_Z` (side) via TRANSFORMS driver vars (LOCAL
+  space, roll-FREE — unlike ROTATION_DIFFERENCE): influence =
+  `clamp01(GAIN*(rx*oyn + rz*oxn*sidesign))*spread*collide`. Forward kick (rx<0)
+  only lifts front cols (oyn<0); back kick only back; side kick only side. Offset
+  stays static (true clearance). Verified: fwd kick -> back-left = 0.000, far side
+  = 0.000, only front-left push; symmetric. This is what makes it professional.
+- **Do NOT replace this with ARP's literal ROTATION_DIFFERENCE gating** (tested
+  v1.19.6, reverted). ARP drives each Floor influence by ROTATION_DIFF(fixed
+  per-column reference bone, live leg) and grows the offset with leg swing. We
+  reverse-engineered it onto our rig: 30 SKC_ref bones + rotdiff drivers. Result
+  was 3x WEAKER push (0.14 -> 0.05) and the SIDE kick broke. Reason: our floor
+  PLANE already follows the leg, so it alone gates front/back/up by GEOMETRY;
+  adding a rotdiff influence gate on top = a SECOND gate in series -> the column
+  only pushes when BOTH the plane tilts into it AND rd is small, which rarely
+  fully coincide -> weak. ARP can use rotdiff because their whole kilt (planes,
+  offsets, reference orientations) is co-calibrated by their generator. For our
+  design the winning split is: PROXIMITY gates the SIDE (L/R), the tilting plane
+  gates the DIRECTION. Keep it.
+- **`SKC_dt.NN`** — per-column bone from waist→hem, parented to the hips, with a
+  **Damped Track → SKC_tar.NN**. CRITICAL: `track_axis='TRACK_Y'` (the bone's +Y
+  points toward its tail=hem=target; TRACK_NEGATIVE_Y aims the wrong way and flips
+  dt 180° → 0.68 rest jump).
+- The column control **`skirt.NN.00` is RE-PARENTED onto `SKC_dt.NN`** so it RIDES
+  the collision while FK still works on top. The original parent is stored in the
+  pose-bone prop **`sk_origparent`**; `remove_skirt_collision` reads it, restores
+  the parent in edit mode BEFORE deleting the SKC_ bones, and clears `sk_kilt`.
+- Marker `rig["sk_kilt"]=1`. **4 ARP live settings live on a master bone**
+  `SKC_master` as keyframeable custom properties (`collide`, `collide_dist`,
+  `collide_dist_falloff`, `collide_spread`, each with id_properties_ui min/max).
+  Every Floor constraint's `offset` and `influence` is **driven** from those props
+  (offset `= dist*(1+fall)`, influence `= min(1,max(0,facing*spread))*collide`,
+  facing baked per column). So tweaks are instant AND animatable — exactly ARP's
+  `c_kilt_master`. The N-panel **Item tab → "Short Skirt"** (`SMARTRIG_PT_skirt_item`)
+  draws these 4 props so the animator adjusts them while posing without selecting
+  the bone. The addon Skin-tab sliders feed the same master props via
+  `live_kilt_tune` (it writes the bone props, NOT the constraints — drivers own
+  those). Verified: collide=0 → push drops to rest baseline; bigger collide_dist →
+  bigger push; removal deletes SKC_master + all 52 drivers cleanly.
+
+Earlier models and why they were dropped: **Copy-Rotation leg-follow** copies the
+full 3-axis leg rotation → columns swing toward the leg and CROSS. **Radial-outward
+drivers** (v1.18) never crossed but only ROTATE outward (no true clearance / the
+cloth doesn't actually stay off the leg). The ARP floor mechanism gives real
+planar collision and matches what the user asked for ("اضافتنا تعمل بهذة الطريقة").
+
+
 ## How Auto-Rig Pro's Kilt (cloth) collision REALLY works — analysed from a live ARP rig
 ARP does NOT use Limit-Distance spheres. It uses **Floor constraints on per-leg
 collision planes that rotate with the leg**, driven dynamically. Architecture:

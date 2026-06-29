@@ -83,16 +83,44 @@ Keep it in the repo. See also `LESSONS.md` (short rules).
   `invert_x/invert_z` from the sign of `thigh.x_axis · control.x_axis` (and z).
   Verified: with flipped roll, the front hem now moves OUT (-Y).
 
-## ARP "Kilt" collision — how it really works (reference only, not used now)
-Analyzed from a live ARP rig. ARP uses **Floor constraints on per-leg planes that
-rotate with the leg**, plus drivers — NOT spheres:
-- `kilt_N_dt` Damped-Tracks `kilt_N_tar`; `c_kilt_N_*` are FK children of dt.
-- Per leg: `legN_proj` (Locked Track → leg), `kilt_legN_floortar` (Copy Rotation
-  from proj, at the thigh), `..._off` (location driven).
-- Each `kilt_N_tar` has two FLOOR constraints (FLOOR_Y, use_rotation), one per leg.
-- Drivers: floor influence `(1 - rot_diff*(2-spread)) * collide`; floor offset
-  `collide_dist * (min(1, rot_diff*2) + falloff)`.
-We chose the simpler, distortion-free **leg-follow rotation** instead.
+## ARP "Kilt" collision — NOW IMPLEMENTED (v1.19.3, the shipped model)
+Replicated from a live ARP rig. ARP uses **Floor constraints on per-leg planes
+that rotate with the leg** (NOT spheres). Our `add_skirt_collision` builds:
+- `SKC_floor.L/R` — floor plane at mid-thigh, **parented to DEF-thigh**, bone
+  pointing **along the leg** so its Y-axis = leg direction (FLOOR_Y tilts with the
+  leg; horizontal-ish at rest → no rest push).
+- `SKC_tar.NN` — per-column target at the hem (parented to hips) with two FLOOR
+  constraints (FLOOR_Y, use_rotation), one per leg; `offset = dist*(1+falloff)`,
+  `influence = facing_weight * spread`.
+- `SKC_dt.NN` — waist→hem bone (parented to hips), **Damped Track → tar**,
+  `track_axis='TRACK_Y'`. The column control `skirt.NN.00` is **re-parented onto
+  dt** (original parent saved in `sk_origparent`) so it rides the collision and FK
+  still layers on top.
+- 4 live settings (`skirt_collide / _dist / _spread / _falloff`) re-tune offset +
+  influence with no rebuild via `live_kilt_tune`. Marker prop `rig["sk_kilt"]`.
+
+**Two bugs that cost the most (see LESSONS.md):** (1) floor bone must point ALONG
+the leg, not +Z, or it shoves the skirt up ~0.67 at rest; (2) Damped Track must be
+`TRACK_Y` (toward the tail/hem), not `TRACK_NEGATIVE_Y`, or dt flips and the hem
+jumps ~0.68. Verified numerically: rest disp ~0.023, correct per-direction push,
+no crossing (angular gaps stay positive fwd/back/side/fwd+up).
+The earlier **leg-follow rotation** and **radial-outward** models are superseded:
+they only rotated the cloth and gave no true clearance.
+
+## Bone dynamics — how CGDive "Rig Creator" does it (studied from the addon + a rig)
+Rig Creator's **Physics** (`GN_Fisicas`) is a **baked overlap**, NOT a live spring:
+1. Build a parallel `FS_` bone chain (use_deform off, connected chain).
+2. Bake pass 1: `FS` Copy-Transforms the originals → bakes the animation onto `FS`.
+3. Remove copies; add **Damped Track** (or Stretch To) from each `FS` bone to the
+   NEXT one, `influence = power_overlapping` → introduces lag / follow-through.
+4. Bake pass 2: originals Copy-Transform the (now lagging) `FS` → bakes the
+   secondary motion back onto the real bones; delete `FS`.
+Params: frame_start/end/step, power_overlapping, use_stretch_to, power_stretch.
+Pros: no live handler, plays back fast, works on any animated chain. Cons: it's a
+bake (re-bake if the animation changes); needs existing animation.
+For SmartRig skirt dynamics we can add a similar "Bake Skirt Overlap" operator on
+the skirt chains, on top of the leg-collision drivers. (rig_creator & kinetica
+have NO continuous spring system.)
 
 ## Reset / Cancel
 - `markers.full_cleanup()` removes EVERYTHING the add-on made: markers, metarig,
