@@ -1,5 +1,23 @@
 # SmartRig Pro — Lessons (do NOT repeat these mistakes)
 
+## CRITICAL: collision uses Python drivers — needs "Auto Run Python Scripts" ON
+The skirt collision is built from Python-expression drivers that read the leg
+bones (TRANSFORMS variables). If a .blend is OPENED while Blender's "Auto Run
+Python Scripts" (Preferences > Save & Load) is OFF, Blender loads the rig
+**untrusted**: the drivers still hold their rest value but their depsgraph
+dependency relations are NOT built, so they STOP updating when the legs move ->
+"collision doesn't work" even though sk_kilt=1 and the drivers/`SKC_master` all
+still exist. This is NOT a bug in our rig. Fixes: (1) the addon now forces
+`bpy.context.preferences.filepaths.use_scripts_auto_execute=True` + saves prefs in
+`_ensure_drivers_trusted()` (called by add_skirt_collision); (2) for the CURRENTLY
+open file you must RELOAD it once (save, then reopen) so the trusted depsgraph
+rebuilds the driver relations. Setting the pref mid-session does NOT re-arm the
+already-loaded rig's driver relations; only a reload does. NEVER call
+`rig.animation_data_clear()` on the generated rig in tests — it wipes ALL the
+collision drivers too.
+
+
+
 ## Skirt collision — FULL EVOLUTION LOG (attempt → result → why) — read this first
 Every approach we tried for the short-skirt leg collision, in order, so we never
 repeat a dead end. CURRENT shipped = #7 (COMPASS + per-row bend).
@@ -180,6 +198,52 @@ rotation, per-column weighting, push scales with leg motion. To replicate in the
 Rigify path: build tar/dt/control tiers, leg floor-plane bones rotating with the
 thigh, Floor constraints on the targets, and the two driver families above.
 
+
+## Skirt "Follow Body" = Surface Deform (v1.19.31) — clings to the body when sitting
+First tried bone Copy Rotation (front/side -> ORG-thigh, back -> ORG-spine, LOCAL
+ADD, slider-driven influence). REJECTED: it only ROTATES the columns, giving a
+stiff skirt that sticks straight out when sitting — not clinging. The user wanted
+it to cling "like a Weight Transfer / Surface Deform". Correct tool = a **Surface
+Deform** modifier on the SEPARATE skirt mesh, bound to the body mesh, stacked AFTER
+the Armature modifier; its `strength` is driven by the `follow_body` slider (and
+also set directly in `live_follow_tune` so it works even when python drivers are
+disabled). 0 = skirt rig only; 1 = skirt follows the body surface (drapes over the
+lap when seated). Bind in REST pose (`bpy.ops.object.surfacedeform_bind` with a
+context override, skirt active). Only works for a SEPARATE skirt mesh (Surface
+Deform needs a different target mesh; a MERGED skirt is part of the body). The body
+must actually deform (legs posed) for the cling to show — needs the trusted-driver
+file state like collision.
+
+## Skirt jiggle = live spring (v1.19.26)
+Secondary motion ("feels like simulation"): one `SKC_jig.CC` bone per column is
+INSERTED above the column root (pivot at waist, spans to hem) and the column root
+re-parents onto it, so swinging the jig sways the whole column (hem most, waist
+fixed). A `frame_change_post` handler `skirt_jiggle_handler` runs a damped spring
+PER jig bone: goal = the no-jiggle tail driven by the (non-jiggling) parent;
+`v += (goal-p)*stiffness; v *= (1-damping); p += v`; length-constrained; the bone
+is posed to aim at `p`. Underdamped defaults (stiffness 0.40, damping 0.25) give a
+believable overshoot+settle (verified: hem 0→0.42 overshoot→0.25→settle). Settings
+live on the RIG OBJECT (`jiggle`, `jiggle_amount`, `jiggle_stiffness`,
+`jiggle_damping`) — NOT a bone — so jiggle works with OR without collision and is
+keyframeable; the handler reads them. State (`_JIG_STATE`) resets on backward/jumped
+frames so scrubbing doesn't fake motion. Jig bones go in the hidden "Skirt (MCH)"
+collection. `Bake to Keyframes` keys the jig rotations over the frame range and sets
+`rig["sk_jiggle_baked"]` so the handler skips that rig (re-Apply to go live again).
+The handler is re-armed in `register()` if any rig has `sk_jiggle`. Pitfalls:
+parent the jig to the NON-jiggling hips (no chain feedback); only ONE jig per column
+keeps the 15 springs independent so one read pass is stable (no per-bone depsgraph
+updates needed).
+
+## Smart (structure-aware) skirt skinning (v1.19.17)
+The skirt is a known grid (columns = angular sectors, rows = heights), so we skin it
+from that structure instead of a generic heat map. `_smart_skirt_weights(obj, rig,
+vids)`: per vertex, find the 2 nearest COLUMNS by azimuth (center = avg of the
+top-row bone heads) and blend them linearly by angular distance (so weight never
+bleeds past the adjacent column); within each column, weight the nearest 1-2 row
+SEGMENTS by inverse `_seg_dist`. Weights sum to 1, use ONLY `DEF-skirt.*` bones.
+Toggle `skin_smart_skirt` (default ON) in the Skin tab; falls back to heat/proximity
+if off or if no skirt grid. Verified: each vertex lands on its 2 columns × 1-2 rows,
+sum=1, zero body-bone weights — cleaner than heat on the thin cloth.
 
 ## Foot bone roll MUST be flat (X horizontal) — fixed v1.6.3
 **Rule:** In `metarig.py` → `_fit_core`, the **foot** bones must be rolled so their
