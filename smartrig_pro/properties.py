@@ -61,6 +61,27 @@ def _skirt_collide_update(self, context):
         print("SmartRig skirt collide tune:", e)
 
 
+def _skirt_follow_update(self, context):
+    try:
+        from . import skirt
+        skirt.live_follow_tune(context)
+    except Exception as e:
+        print("SmartRig follow tune:", e)
+
+
+def _jiggle_update(self, context):
+    """Push jiggle sliders into the SKC_master props that the spring handler reads."""
+    try:
+        from . import skirt
+        for rig in skirt._jiggle_rigs():
+            rig["jiggle"] = 1.0 if getattr(self, "skirt_jiggle", True) else 0.0
+            rig["jiggle_amount"] = float(self.jiggle_amount)
+            rig["jiggle_stiffness"] = float(self.jiggle_stiffness)
+            rig["jiggle_damping"] = float(self.jiggle_damping)
+    except Exception as e:
+        print("SmartRig jiggle tune:", e)
+
+
 class SmartRigProps(PropertyGroup):
     target_mesh: PointerProperty(
         name="Character Mesh",
@@ -187,6 +208,17 @@ class SmartRigProps(PropertyGroup):
         description="Collapse / expand the Short Skirt section")
     show_skirt_adv: BoolProperty(name="Advanced", default=False,
         description="Show the leg-bone pickers for the skirt collision (defaults are correct)")
+    skirt_follow_body: FloatProperty(name="Follow Body", default=0.0, min=0.0, max=1.0,
+        update=_skirt_follow_update,
+        description="Blend the skirt from its own rig (0) to following the legs/hips (1) - great for sitting")
+    skirt_jiggle: BoolProperty(name="Jiggle", default=True, update=_jiggle_update,
+        description="Live spring secondary motion: the skirt sways when the body moves")
+    jiggle_amount: FloatProperty(name="Amount", default=1.0, min=0.0, max=2.0, update=_jiggle_update,
+        description="How much the skirt sways (0 = none)")
+    jiggle_stiffness: FloatProperty(name="Stiffness", default=0.40, min=0.02, max=1.0, update=_jiggle_update,
+        description="Spring stiffness - higher springs back faster (snappier)")
+    jiggle_damping: FloatProperty(name="Damping", default=0.25, min=0.05, max=0.99, update=_jiggle_update,
+        description="Damping - higher settles the wobble faster")
     samples_expanded: StringProperty(default="Limbs",
         description="Internal: comma-separated names of expanded sample groups")
     # ---- Skin / Binding panel (ARP-style) ----
@@ -198,6 +230,9 @@ class SmartRigProps(PropertyGroup):
         description="Keep the body and the skirt independent: the body ignores skirt bones and the skirt follows only its own bones")
     skin_preserve_volume: BoolProperty(name="Preserve Volume", default=False,
         description="Use preserve-volume (dual quaternion) deformation on the armature modifier")
+    skin_smart_skirt: BoolProperty(name="Smart Skirt Weights", default=True,
+        description="Skin the skirt from its known grid (angular column blend x vertical "
+                    "row blend) instead of a generic heat map - cleaner, no cross-column bleed")
     # ---- top tabs (ARP-style: Rig / Skin / Misc) ----
     ui_tab: EnumProperty(
         name="Tab", default='RIG',

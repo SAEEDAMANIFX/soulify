@@ -355,18 +355,20 @@ def live_kilt_tune(context):
 
 
 def kilt_rig(context):
-    """Return the active generated rig that has the kilt collision, or None."""
+    """Return the active generated rig that has the skirt collision OR jiggle."""
+    def ok(o):
+        return o is not None and o.type == 'ARMATURE' and (o.get("sk_kilt") or o.get("sk_jiggle") or o.get("sk_follow"))
     ob = context.active_object if context else None
-    if ob is not None and ob.type == 'ARMATURE' and ob.get("sk_kilt"):
+    if ok(ob):
         return ob
     from .metarig import META_NAME
     mo = bpy.data.objects.get(META_NAME)
     if mo is not None and getattr(mo.data, "rigify_target_rig", None):
         r = mo.data.rigify_target_rig
-        if r is not None and r.get("sk_kilt"):
+        if ok(r):
             return r
     for o in bpy.data.objects:
-        if o.type == 'ARMATURE' and o.get("sk_kilt"):
+        if ok(o):
             return o
     return None
 
@@ -474,6 +476,486 @@ def _skirt_columns(rig):
     return out
 
 
+def _ensure_master_widget():
+    """Create (once) a distinctive double-ring + cross widget for SKC_master so the
+    animator recognises it as the skirt settings control. Lives in a hidden
+    widget collection."""
+    name = "WGT-SKC_master"
+    wgt = bpy.data.objects.get(name)
+    if wgt is not None and wgt.type == 'MESH':
+        return wgt
+    import bmesh
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    N = 28
+    def ring(r):
+        vs = [bm.verts.new((r * math.cos(2 * math.pi * i / N), 0.0,
+                            r * math.sin(2 * math.pi * i / N))) for i in range(N)]
+        for i in range(N):
+            bm.edges.new((vs[i], vs[(i + 1) % N]))
+        return vs
+    ring(1.0); ring(0.62)
+    # small cross in the middle
+    a = bm.verts.new((-0.25, 0, 0)); b = bm.verts.new((0.25, 0, 0))
+    c = bm.verts.new((0, 0, -0.25)); d = bm.verts.new((0, 0, 0.25))
+    bm.edges.new((a, b)); bm.edges.new((c, d))
+    bm.to_mesh(me); bm.free()
+    wgt = bpy.data.objects.new(name, me)
+    coll = bpy.data.collections.get("WGTS_SmartRig")
+    if coll is None:
+        coll = bpy.data.collections.new("WGTS_SmartRig")
+        try:
+            bpy.context.scene.collection.children.link(coll)
+        except Exception:
+            pass
+        lc = bpy.context.view_layer.layer_collection.children.get("WGTS_SmartRig")
+        if lc is not None:
+            lc.exclude = True
+    coll.objects.link(wgt)
+    return wgt
+
+
+# ============================ SKIRT FOLLOW BODY (sit/blend) ==================
+def _hip_bone(rig):
+    for n in ("ORG-spine", "DEF-spine", "ORG-pelvis.L", "spine_fk"):
+        if rig.data.bones.get(n):
+            return n
+    return None
+
+
+def _skirt_follow_objs(props):
+    """The (skirt_object, body_mesh) for Surface-Deform follow. Returns (None,None)
+    if not a SEPARATE skirt (Surface Deform needs a different target mesh)."""
+    body = props.target_mesh
+    sk = props.skirt_object if getattr(props, "skirt_source", 'MERGED') == 'SEPARATE' else None
+    if sk is None or sk.type != 'MESH' or body is None or body.type != 'MESH':
+        return None, None
+    return sk, body
+
+
+def add_skirt_follow_body(rig, props):
+    """Blendable 'Follow Body' = the skirt CLINGS to the body surface (like a
+    Surface Deform / weight transfer). A `Surface Deform` modifier on the skirt is
+    bound to the body mesh; its strength is driven by the live `follow_body` slider
+    (0 = skirt rig only, 1 = skirt follows the body surface -> drapes over the lap
+    when seated). Needs a SEPARATE skirt mesh."""
+    if rig is None:
+        return 0
+    sk, body = _skirt_follow_objs(props)
+    if sk is None:
+        return 0
+    _ensure_drivers_trusted()
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    # rest pose so the bind captures the neutral shape
+    if rig.mode != 'OBJECT':
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.object.mode_set(mode='POSE')
+    for pbn in rig.pose.bones:
+        pbn.matrix_basis.identity()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.context.view_layer.update()
+    remove_skirt_follow_body(rig)
+
+    # Surface Deform modifier AFTER the armature (so it pulls the rigged skirt
+    # onto the body surface).
+    mod = sk.modifiers.get("SK_SurfaceFollow")
+    if mod is None:
+        mod = sk.modifiers.new("SK_SurfaceFollow", 'SURFACE_DEFORM')
+    mod.target = body
+    mod.strength = 0.0
+    # bind (skirt active, object mode, body visible)
+    bpy.ops.object.select_all(action='DESELECT')
+    sk.select_set(True); bpy.context.view_layer.objects.active = sk
+    # SMART ORDER: place Surface Deform right after the Armature and ABOVE any
+    # Subdivision Surface, so the bind input is the rigged base cage. Subsurf BELOW
+    # then just smooths the result and never invalidates the bind.
+    arm_idx = next((i for i, mm in enumerate(sk.modifiers) if mm.type == 'ARMATURE'), -1)
+    tgt_idx = arm_idx + 1 if arm_idx >= 0 else 0
+    win = bpy.context.window
+    area = next((a for a in win.screen.areas if a.type == 'VIEW_3D'), None) if win else None
+    region = next((r for r in area.regions if r.type == 'WINDOW'), None) if area else None
+    ov = {"object": sk, "active_object": sk}
+    if win:
+        ov["window"] = win
+    if area:
+        ov["area"] = area
+    if region:
+        ov["region"] = region
+    try:
+        with bpy.context.temp_override(**ov):
+            if list(sk.modifiers).index(mod) != tgt_idx:
+                bpy.ops.object.modifier_move_to_index(modifier="SK_SurfaceFollow", index=tgt_idx)
+            # push every Subdivision Surface BELOW the Surface Deform (correct order:
+            # Armature -> SurfaceDeform -> Subsurf), so subdivisions never invalidate
+            # the bind and the smooth result still follows the body.
+            for mm in list(sk.modifiers):
+                if mm.type == 'SUBSURF':
+                    last = len(sk.modifiers) - 1
+                    if list(sk.modifiers).index(mm) < list(sk.modifiers).index(mod):
+                        bpy.ops.object.modifier_move_to_index(modifier=mm.name, index=last)
+    except Exception as e:
+        print("SmartRig follow reorder:", e)
+    try:
+        with bpy.context.temp_override(**ov):
+            bpy.ops.object.surfacedeform_bind(modifier="SK_SurfaceFollow")
+    except Exception as e:
+        print("SmartRig surface-deform bind:", e)
+
+    # the modifier STRENGTH is the live "Follow Body" value (drawn directly in the
+    # panels - keyframeable, immediate, no driver/trust dependency).
+    mod.strength = float(getattr(props, "skirt_follow_body", 0.0))
+    rig["sk_follow"] = 1
+    bound = getattr(mod, "is_bound", True)
+    return 1 if bound else 0
+
+
+def remove_skirt_follow_body(rig):
+    if rig is None:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    n = 0
+    # remove the Surface Deform modifier (+ its driver) from any mesh that has it
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH':
+            continue
+        for md in list(ob.modifiers):
+            if md.name == "SK_SurfaceFollow":
+                try:
+                    ob.modifiers.remove(md); n += 1
+                except Exception:
+                    pass
+        ad2 = ob.animation_data
+        if ad2:
+            for dr in list(ad2.drivers):
+                if "SK_SurfaceFollow" in dr.data_path:
+                    try: ad2.drivers.remove(dr)
+                    except Exception: pass
+    # remove the old bone-based SK_FOLLOW constraints (legacy) if present
+    for pb in rig.pose.bones:
+        for c in list(pb.constraints):
+            if c.name == "SK_FOLLOW":
+                pb.constraints.remove(c); n += 1
+    ad = rig.animation_data
+    if ad:
+        for dr in list(ad.drivers):
+            if 'SK_FOLLOW' in dr.data_path:
+                try: ad.drivers.remove(dr)
+                except Exception: pass
+    for k in ("sk_follow", "follow_body"):
+        if k in rig:
+            del rig[k]
+    return n
+
+
+def live_follow_tune(context):
+    try:
+        md = follow_modifier(context)
+        if md is not None:
+            md.strength = float(context.scene.smartrig.skirt_follow_body)
+    except Exception as e:
+        print("SmartRig follow tune:", e)
+
+
+def follow_modifier(context):
+    """Return the skirt's SK_SurfaceFollow modifier (the Follow Body control), or None."""
+    p = context.scene.smartrig
+    sk = p.skirt_object if getattr(p, "skirt_source", 'MERGED') == 'SEPARATE' else None
+    if sk is None:
+        for o in bpy.data.objects:
+            if o.type == 'MESH' and o.modifiers.get("SK_SurfaceFollow"):
+                sk = o; break
+    return sk.modifiers.get("SK_SurfaceFollow") if (sk and sk.type == 'MESH') else None
+
+
+def follow_status(context):
+    """Return ('none'|'ok'|'subsurf_above', modifier). 'subsurf_above' means a
+    Subdivision Surface sits ABOVE SK_SurfaceFollow on the skirt -> the bind is
+    invalid and the user should Re-bind (Apply Body Follow) to fix the order."""
+    p = context.scene.smartrig
+    ob = None
+    cand = []
+    sk = p.skirt_object if getattr(p, "skirt_source", 'MERGED') == 'SEPARATE' else None
+    if sk is not None:
+        cand.append(sk)
+    cand += [o for o in bpy.data.objects if o.type == 'MESH']
+    for o in cand:
+        if o is not None and o.type == 'MESH' and o.modifiers.get("SK_SurfaceFollow") is not None:
+            ob = o; break
+    if ob is None:
+        return 'none', None
+    md = ob.modifiers.get("SK_SurfaceFollow")
+    sd_idx = list(ob.modifiers).index(md)
+    for i, mm in enumerate(ob.modifiers):
+        if mm.type == 'SUBSURF' and i < sd_idx:
+            return 'subsurf_above', md
+    return 'ok', md
+
+
+# ============================ SKIRT JIGGLE (live spring) =====================
+_JIG_STATE = {}      # bone_name -> {"p":Vector,"v":Vector}
+_JIG_LAST_FRAME = [None]
+
+
+def _column_root_bone(rig, ci):
+    """The bone at the TOP of column ci that the whole column hangs from:
+    SKC_dt.CC.00 if collision exists, else the control skirt.CC.00."""
+    return ("SKC_dt.%02d.00" % ci) if rig.data.bones.get("SKC_dt.%02d.00" % ci) else (PREFIX + ".%02d.00" % ci)
+
+
+def add_skirt_jiggle(rig, props):
+    """Insert one SKC_jig bone per column ABOVE the column root, pivoting at the
+    waist and spanning to the hem. A frame-change spring handler swings it so the
+    whole column sways (hem most, waist fixed) - live secondary motion."""
+    if rig is None:
+        return 0
+    cols = {}
+    for b in rig.data.bones:
+        m = re.match(r"^" + PREFIX + r"\.(\d+)\.(\d+)$", b.name)
+        if m:
+            cols.setdefault(int(m.group(1)), []).append(int(m.group(2)))
+    if not cols:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    remove_skirt_jiggle(rig)
+    rw = rig.matrix_world; rwi = rw.inverted()
+    # waist (root head) + hem (last row tail) per column, in armature space
+    geo = {}
+    for ci, rows in cols.items():
+        root = rig.data.bones.get(_column_root_bone(rig, ci))
+        hem = rig.data.bones.get(PREFIX + ".%02d.%02d" % (ci, max(rows)))
+        if root and hem:
+            geo[ci] = (root.head_local.copy(), hem.tail_local.copy(), root.name)
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    eb = rig.data.edit_bones
+    orig = {}
+    for ci, (waist, hemtail, rootname) in geo.items():
+        rc = eb.get(rootname)
+        if rc is None:
+            continue
+        jig = eb.new("SKC_jig.%02d" % ci)
+        jig.head = waist.copy(); jig.tail = hemtail.copy(); jig.use_deform = False
+        op = rc.parent
+        orig[rootname] = op.name if op else ""
+        if op is not None:
+            jig.parent = op
+        rc.parent = jig
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for rootname, pname in orig.items():
+        pb = rig.pose.bones.get(rootname)
+        if pb is not None:
+            pb["sk_jigorig"] = pname
+    rig["sk_jiggle"] = 1
+    if "sk_jiggle_baked" in rig:
+        del rig["sk_jiggle_baked"]
+    # settings live on the RIG object (works with or without collision; keyframeable)
+    spec = (("jiggle", 1.0, 0.0, 1.0, "Enable skirt jiggle (live secondary motion)"),
+            ("jiggle_amount", float(getattr(props, "jiggle_amount", 1.0)), 0.0, 2.0, "How much the skirt sways"),
+            ("jiggle_stiffness", float(getattr(props, "jiggle_stiffness", 0.40)), 0.02, 1.0, "Spring stiffness"),
+            ("jiggle_damping", float(getattr(props, "jiggle_damping", 0.25)), 0.05, 0.99, "Damping (higher settles faster)"))
+    for k, val, lo, hi, desc in spec:
+        rig[k] = val
+        try:
+            ui = rig.id_properties_ui(k); ui.update(min=lo, max=hi, soft_min=lo, soft_max=hi, description=desc)
+        except Exception:
+            pass
+    _organize_skirt_bones(rig)
+    _JIG_STATE.clear(); _JIG_LAST_FRAME[0] = None
+    register_jiggle_handler()
+    return len(geo)
+
+
+def remove_skirt_jiggle(rig):
+    if rig is None:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    restore = {}
+    for pb in rig.pose.bones:
+        if "sk_jigorig" in pb:
+            restore[pb.name] = str(pb["sk_jigorig"]); del pb["sk_jigorig"]
+    for k in ("sk_jiggle", "sk_jiggle_baked", "jiggle", "jiggle_amount",
+              "jiggle_stiffness", "jiggle_damping"):
+        if k in rig:
+            del rig[k]
+    bpy.context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    eb = rig.data.edit_bones
+    for rootname, pname in restore.items():
+        rc = eb.get(rootname)
+        if rc is not None:
+            rc.parent = eb.get(pname) if pname else None
+    for b in list(eb):
+        if b.name.startswith("SKC_jig"):
+            eb.remove(b)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    _JIG_STATE.clear(); _JIG_LAST_FRAME[0] = None
+    if not any(o.type == 'ARMATURE' and o.get("sk_jiggle") for o in bpy.data.objects):
+        unregister_jiggle_handler()
+    return len(restore)
+
+
+def _jiggle_rigs():
+    return [o for o in bpy.data.objects if o.type == 'ARMATURE' and o.get("sk_jiggle")]
+
+
+def skirt_jiggle_handler(scene, depsgraph=None):
+    from mathutils import Vector, Matrix
+    rigs = _jiggle_rigs()
+    if not rigs:
+        return
+    frame = scene.frame_current
+    last = _JIG_LAST_FRAME[0]
+    reset = (last is None) or (frame <= last) or (frame - last > 1)
+    _JIG_LAST_FRAME[0] = frame
+    for rig in rigs:
+        if rig.get("sk_jiggle_baked"):
+            continue
+        on = float(rig["jiggle"]) if "jiggle" in rig else 1.0
+        amount = float(rig["jiggle_amount"]) if "jiggle_amount" in rig else 1.0
+        stiff = float(rig["jiggle_stiffness"]) if "jiggle_stiffness" in rig else 0.40
+        damp = float(rig["jiggle_damping"]) if "jiggle_damping" in rig else 0.25
+        rw = rig.matrix_world
+        for pb in rig.pose.bones:
+            if not pb.name.startswith("SKC_jig"):
+                continue
+            par = pb.parent
+            if par is not None:
+                M = par.matrix @ par.bone.matrix_local.inverted() @ pb.bone.matrix_local
+            else:
+                M = rw @ pb.bone.matrix_local
+            head = M.translation.copy()
+            L = pb.bone.length
+            rest_dir = (M.to_3x3() @ Vector((0.0, 1.0, 0.0))).normalized()
+            goal = head + rest_dir * L
+            st = _JIG_STATE.get(pb.name)
+            if reset or st is None or on < 0.5:
+                p = goal.copy(); v = Vector((0, 0, 0))
+            else:
+                p = st["p"]; v = st["v"]
+                v += (goal - p) * stiff      # spring pull toward the animated goal
+                v *= (1.0 - damp)            # damping (low -> bouncy, high -> settles)
+                p = p + v
+                d = p - head
+                ln = d.length or 1e-6
+                p = head + d * (L / ln)
+            _JIG_STATE[pb.name] = {"p": p.copy(), "v": v.copy()}
+            cur = rest_dir
+            new = (p - head).normalized()
+            if amount < 1.0:
+                new = cur.lerp(new, max(0.0, min(1.0, amount))).normalized()
+            elif amount > 1.0:
+                # exaggerate beyond the simulated swing
+                ang = cur.angle(new) * (amount - 1.0)
+                if ang > 1e-5:
+                    axis = cur.cross(new)
+                    if axis.length > 1e-6:
+                        new = (Matrix.Rotation(cur.angle(new) * amount, 4, axis.normalized()).to_3x3() @ cur).normalized()
+            q = cur.rotation_difference(new)
+            try:
+                pb.matrix = Matrix.Translation(head) @ (q @ M.to_quaternion()).to_matrix().to_4x4()
+            except Exception:
+                pass
+
+
+def register_jiggle_handler():
+    unregister_jiggle_handler()
+    bpy.app.handlers.frame_change_post.append(skirt_jiggle_handler)
+
+
+def unregister_jiggle_handler():
+    for h in list(bpy.app.handlers.frame_change_post):
+        if getattr(h, "__name__", "") == "skirt_jiggle_handler":
+            try:
+                bpy.app.handlers.frame_change_post.remove(h)
+            except Exception:
+                pass
+
+
+def _organize_skirt_bones(rig):
+    """Tidy the skirt bones into bone collections with professional colours:
+      - "Skirt"        (visible, pink)   = the FK controls the animator poses + master (gold)
+      - "Skirt (Tweak)"(visible, purple) = the secondary tweak controls
+      - "Skirt (MCH)"  (HIDDEN)          = SKC_dt driven helpers the animator must NOT touch
+    Re-applied every time collision is built, so it survives re-generation."""
+    arm = rig.data
+
+    def get_coll(name, visible):
+        c = next((x for x in arm.collections_all if x.name == name), None)
+        if c is None:
+            c = arm.collections.new(name)
+        try:
+            c.is_visible = visible
+        except Exception:
+            pass
+        return c
+
+    main = get_coll("Skirt", True)
+    tweak = get_coll("Skirt (Tweak)", True)
+    master_c = get_coll("Skirt (Master)", True)
+    mch = get_coll("Skirt (MCH)", False)
+    # show "Skirt" / "Skirt (Tweak)" as toggle buttons in the Rigify "Rig Layers"
+    # panel (it reads rigify_ui_row); MCH stays out of it and hidden.
+    try:
+        main.rigify_ui_row = 20
+        tweak.rigify_ui_row = 21
+        master_c.rigify_ui_row = 22
+        mch.rigify_ui_row = 0
+    except Exception:
+        pass
+
+    def col(b, normal, select, active):
+        bc = b.color
+        bc.palette = 'CUSTOM'
+        bc.custom.normal = normal
+        bc.custom.select = select
+        bc.custom.active = active
+
+    PINK = ((0.78, 0.18, 0.45), (1.0, 0.55, 0.8), (1.0, 0.85, 0.95))
+    PURP = ((0.45, 0.28, 0.62), (0.78, 0.6, 0.95), (0.95, 0.85, 1.0))
+    GOLD = ((0.95, 0.72, 0.1), (1.0, 0.9, 0.4), (1.0, 1.0, 0.75))
+    def reassign(b, coll):
+        for c in list(b.collections):
+            try:
+                c.unassign(b)
+            except Exception:
+                pass
+        coll.assign(b)
+    for b in arm.bones:
+        n = b.name
+        if n.startswith("SKC_dt") or n.startswith("SKC_jig"):
+            reassign(b, mch)
+        elif n == "SKC_master":
+            reassign(b, master_c); col(b, *GOLD)   # selectable settings control
+        elif re.match(r"^" + PREFIX + r"\.\d+\.\d+$", n):
+            reassign(b, main); col(b, *PINK)
+        elif PREFIX in n and "tweak" in n:
+            reassign(b, tweak); col(b, *PURP)
+    mpb = rig.pose.bones.get("SKC_master")
+    if mpb is not None:
+        try:
+            mpb.custom_shape = _ensure_master_widget()
+            mpb.use_custom_shape_bone_size = False
+            mpb.custom_shape_scale_xyz = (0.16, 0.16, 0.16)
+        except Exception:
+            pass
+
+
+def _ensure_drivers_trusted():
+    """Our collision uses Python-expression drivers that read other bones. Blender
+    DISABLES such drivers when a .blend is opened with 'Auto Run Python Scripts'
+    OFF. Turn the preference ON (persists for future opens) so the collision keeps
+    working. NOTE: for the CURRENT file you must reload it once after enabling."""
+    try:
+        bpy.context.preferences.filepaths.use_scripts_auto_execute = True
+        bpy.ops.wm.save_userpref()
+    except Exception:
+        pass
+
+
 def add_skirt_collision(rig, props, h=None):
     """ARP Kilt-style TRUE collision: per-leg Floor plane (follows the leg) +
     per-column target (Floor-collided = real clearance) + dt (Damped Track). The
@@ -481,6 +963,7 @@ def add_skirt_collision(rig, props, h=None):
     works on top. Proximity push => no crossing; correct drape in any direction."""
     if rig is None:
         return 0
+    _ensure_drivers_trusted()
     cols = _skirt_columns(rig)
     if not cols:
         return 0
@@ -546,16 +1029,6 @@ def add_skirt_collision(rig, props, h=None):
     if _anyop is not None:
         mb.parent = _anyop
     bpy.ops.object.mode_set(mode='OBJECT')
-    # keep the master bone visible/selectable so the animator can keyframe it
-    try:
-        mbone = rig.data.bones.get("SKC_master")
-        if mbone is not None:
-            colls = list(getattr(rig.data, "collections_all", []) or rig.data.collections)
-            vis = next((c for c in colls if getattr(c, "is_visible", True)), None)
-            if vis is not None:
-                vis.assign(mbone)
-    except Exception:
-        pass
 
     for root, pname in orig_parents.items():
         pb = rig.pose.bones.get(root)
@@ -664,6 +1137,7 @@ def add_skirt_collision(rig, props, h=None):
                 "%.4f*min(1.2,max(0.0,%.4f*%s+%.4f*%s))*(dd/0.12)*min(1.5,spread)*col"
                 % (sgn * AMP / nseg, wL, compassL, wR, compassR))
         n += 1
+    _organize_skirt_bones(rig)
     return n
 
 
@@ -797,6 +1271,60 @@ def _weight_to_skirt(obj, segs, vids=None):
             obj.vertex_groups[n].add([vi], w / tot, 'REPLACE')
 
 
+def _smart_skirt_weights(obj, rig, vids=None):
+    """Structure-aware skirt skinning. Uses the known skirt grid: weight each vertex
+    to the 2 nearest COLUMNS by azimuth (angular blend -> no cross-column bleed) and,
+    within each column, to the nearest 1-2 row SEGMENTS (inverse distance). Beats a
+    generic heat map on thin cloth. Returns True if it ran."""
+    grid = {}
+    for b in rig.data.bones:
+        m = re.match(r"^DEF-" + PREFIX + r"\.(\d+)\.(\d+)$", b.name)
+        if m:
+            grid.setdefault(int(m.group(1)), {})[int(m.group(2))] = b.name
+    if not grid:
+        return False
+    rw = rig.matrix_world
+    cols = sorted(grid)
+    tops = {ci: rw @ rig.data.bones[grid[ci][min(grid[ci])]].head_local for ci in cols}
+    cx = sum(tops[ci].x for ci in cols) / len(cols)
+    cy = sum(tops[ci].y for ci in cols) / len(cols)
+    az = {ci: math.atan2(tops[ci].y - cy, tops[ci].x - cx) for ci in cols}
+    seg = {}
+    for ci in cols:
+        seg[ci] = [(grid[ci][rr],
+                    rw @ rig.data.bones[grid[ci][rr]].head_local,
+                    rw @ rig.data.bones[grid[ci][rr]].tail_local) for rr in sorted(grid[ci])]
+    allbones = [bn for ci in cols for bn, _, _ in seg[ci]]
+    for bn in allbones:
+        if obj.vertex_groups.get(bn) is None:
+            obj.vertex_groups.new(name=bn)
+    idxs = list(range(len(obj.data.vertices))) if vids is None else list(vids)
+    for bn in allbones:
+        try:
+            obj.vertex_groups[bn].remove(idxs)
+        except Exception:
+            pass
+    mw = obj.matrix_world
+
+    def adist(a, ci):
+        return abs(((a - az[ci] + math.pi) % (2.0 * math.pi)) - math.pi)
+
+    for vi in idxs:
+        p = mw @ obj.data.vertices[vi].co
+        a = math.atan2(p.y - cy, p.x - cx)
+        nb = sorted(cols, key=lambda ci: adist(a, ci))[:2]
+        c0, c1 = nb[0], nb[1]
+        d0 = adist(a, c0); d1 = adist(a, c1)
+        wA = {c0: d1 / (d0 + d1 + 1e-6), c1: d0 / (d0 + d1 + 1e-6)}
+        for ci, wcol in wA.items():
+            ds = sorted(((_seg_dist(p, h, t), bn) for bn, h, t in seg[ci]))[:2]
+            inv = [(1.0 / (d + 1e-4), bn) for d, bn in ds]
+            tot = sum(w for w, _ in inv) or 1.0
+            for w, bn in inv:
+                obj.vertex_groups[bn].add([vi], wcol * w / tot, 'ADD')
+    return True
+
+
 def bind_mesh(props, context):
     """Bind the body to the rig. Skirt bones are EXCLUDED from the body solve so
     the body never gets skirt weights; the skirt is weighted only to its own
@@ -890,6 +1418,7 @@ def bind_mesh(props, context):
 
     if split:
         body_groups = [vg for vg in mesh.vertex_groups if vg.name.startswith("DEF-")]
+        smart = bool(getattr(props, "skin_smart_skirt", True))
         if sep is None:
             for vi in skirt_vids:
                 for g in body_groups:
@@ -897,28 +1426,32 @@ def bind_mesh(props, context):
                         g.remove([vi])
                     except Exception:
                         pass
-            _weight_to_skirt(mesh, segs, skirt_vids)
+            if not (smart and _smart_skirt_weights(mesh, rig, skirt_vids)):
+                _weight_to_skirt(mesh, segs, skirt_vids)
         else:
-            # SEPARATE skirt: heat-bind to ONLY the skirt bones (smooth weights,
-            # no distortion) by disabling every non-skirt deform bone during the solve
             _clean(sep)
-            _saved2 = {}
-            for b in rig.data.bones:
-                if b.use_deform and not b.name.startswith("DEF-" + PREFIX + "."):
-                    _saved2[b.name] = b.use_deform; b.use_deform = False
-            _parent_auto(sep)
-            for n2, v2 in _saved2.items():
-                bd = rig.data.bones.get(n2)
-                if bd is not None:
-                    bd.use_deform = v2
-            # fallback to proximity only if heat produced nothing
-            if not any(vg.name.startswith("DEF-" + PREFIX + ".") for vg in sep.vertex_groups):
-                _weight_to_skirt(sep, segs, None)
-                if sep.parent != rig:
-                    sep.parent = rig
-                    sep.matrix_parent_inverse = rig.matrix_world.inverted()
-                if not any(m.type == 'ARMATURE' for m in sep.modifiers):
-                    sep.modifiers.new("Armature", 'ARMATURE').object = rig
+            done = False
+            if smart:
+                done = _smart_skirt_weights(sep, rig, None)
+            if not done:
+                # heat-bind to ONLY the skirt bones (disable non-skirt deform bones)
+                _saved2 = {}
+                for b in rig.data.bones:
+                    if b.use_deform and not b.name.startswith("DEF-" + PREFIX + "."):
+                        _saved2[b.name] = b.use_deform; b.use_deform = False
+                _parent_auto(sep)
+                for n2, v2 in _saved2.items():
+                    bd = rig.data.bones.get(n2)
+                    if bd is not None:
+                        bd.use_deform = v2
+                if not any(vg.name.startswith("DEF-" + PREFIX + ".") for vg in sep.vertex_groups):
+                    _weight_to_skirt(sep, segs, None)
+            # ensure the separate skirt is parented + has an armature modifier
+            if sep.parent != rig:
+                sep.parent = rig
+                sep.matrix_parent_inverse = rig.matrix_world.inverted()
+            if not any(m.type == 'ARMATURE' for m in sep.modifiers):
+                sep.modifiers.new("Armature", 'ARMATURE').object = rig
             for m in sep.modifiers:
                 if m.type == 'ARMATURE':
                     m.use_deform_preserve_volume = bool(props.skin_preserve_volume)
@@ -931,8 +1464,9 @@ def bind_mesh(props, context):
         pass
 
     if split:
-        return ("Bound (%s). Body excludes skirt bones; skirt follows only its own."
-                % props.skin_engine.title()), None
+        _sk = "smart-grid skirt weights" if bool(getattr(props, "skin_smart_skirt", True)) else props.skin_engine.title()
+        return ("Bound. Body=%s; skirt=%s (own bones only)."
+                % (props.skin_engine.title(), _sk)), None
     return "Bound the body to the rig (%s)." % props.skin_engine.title(), None
 
 
@@ -983,15 +1517,101 @@ class SMARTRIG_OT_unbind(bpy.types.Operator):
         self.report({'INFO'}, msg); return {'FINISHED'}
 
 
+class SMARTRIG_OT_skirt_jiggle(bpy.types.Operator):
+    bl_idname = "smartrig.skirt_jiggle"
+    bl_label = "Apply Skirt Jiggle"
+    bl_description = ("Add live spring jiggle to the skirt (secondary motion). "
+                     "Play the timeline to see it sway.")
+    bl_options = {'REGISTER', 'UNDO'}
+    remove: bpy.props.BoolProperty(default=False)
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first."); return {'CANCELLED'}
+        if self.remove:
+            remove_skirt_jiggle(rig)
+            self.report({'INFO'}, "Skirt jiggle removed."); return {'FINISHED'}
+        n = add_skirt_jiggle(rig, context.scene.smartrig)
+        if not n:
+            self.report({'WARNING'}, "No skirt bones found."); return {'CANCELLED'}
+        self.report({'INFO'}, "Skirt jiggle applied (%d columns). Play the timeline." % n)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_bake_jiggle(bpy.types.Operator):
+    bl_idname = "smartrig.bake_jiggle"
+    bl_label = "Bake Jiggle to Keyframes"
+    bl_description = ("Bake the live jiggle of the current frame range onto keyframes "
+                     "(the live solver then stops; re-Apply Jiggle to go live again).")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None or not rig.get("sk_jiggle"):
+            self.report({'ERROR'}, "Apply jiggle first."); return {'CANCELLED'}
+        sc = context.scene
+        if rig.mode != 'POSE':
+            context.view_layer.objects.active = rig; bpy.ops.object.mode_set(mode='POSE')
+        jigs = [pb for pb in rig.pose.bones if pb.name.startswith("SKC_jig")]
+        for pb in jigs:
+            pb.rotation_mode = 'QUATERNION'
+        if "sk_jiggle_baked" in rig:
+            del rig["sk_jiggle_baked"]
+        for f in range(sc.frame_start, sc.frame_end + 1):
+            sc.frame_set(f)   # spring handler runs and poses the jig bones
+            for pb in jigs:
+                pb.keyframe_insert("rotation_quaternion", frame=f)
+        rig["sk_jiggle_baked"] = 1   # handler now skips this rig; keyframes play it back
+        self.report({'INFO'}, "Baked jiggle %d-%d." % (sc.frame_start, sc.frame_end))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_skirt_follow(bpy.types.Operator):
+    bl_idname = "smartrig.skirt_follow"
+    bl_label = "Apply Body Follow"
+    bl_description = ("Add a blendable 'Follow Body' to the skirt (great for sitting): "
+                     "the Follow Body slider blends from the skirt rig to following the legs/hips.")
+    bl_options = {'REGISTER', 'UNDO'}
+    remove: bpy.props.BoolProperty(default=False)
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first."); return {'CANCELLED'}
+        _ensure_drivers_trusted()
+        if self.remove:
+            remove_skirt_follow_body(rig)
+            self.report({'INFO'}, "Body follow removed."); return {'FINISHED'}
+        n = add_skirt_follow_body(rig, context.scene.smartrig)
+        if not n:
+            self.report({'WARNING'}, "No skirt bones found."); return {'CANCELLED'}
+        self.report({'INFO'}, "Body follow applied (%d columns). Use the Follow Body slider." % n)
+        return {'FINISHED'}
+
+
 classes = (SMARTRIG_OT_register_skirt, SMARTRIG_OT_add_skirt,
-           SMARTRIG_OT_bind, SMARTRIG_OT_unbind, SMARTRIG_OT_skirt_collision)
+           SMARTRIG_OT_bind, SMARTRIG_OT_unbind, SMARTRIG_OT_skirt_collision,
+           SMARTRIG_OT_skirt_jiggle, SMARTRIG_OT_bake_jiggle,
+           SMARTRIG_OT_skirt_follow)
 
 
 def register():
     for c in classes:
         bpy.utils.register_class(c)
+    # re-arm the live jiggle handler if a jiggle rig is present (e.g. after reopen)
+    try:
+        if any(o.type == 'ARMATURE' and o.get("sk_jiggle") and not o.get("sk_jiggle_baked")
+               for o in bpy.data.objects):
+            register_jiggle_handler()
+    except Exception:
+        pass
 
 
 def unregister():
+    unregister_jiggle_handler()
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

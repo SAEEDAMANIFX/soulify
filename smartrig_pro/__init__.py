@@ -1,7 +1,7 @@
 bl_info = {
     "name": "SmartRig Pro",
     "author": "Saeed",
-    "version": (1, 19, 15),
+    "version": (1, 19, 37),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar (N) > SmartRig",
     "description": "Automatic body rig from markers + mesh geometry, with neural (ONNX) joint-proportion detection.",

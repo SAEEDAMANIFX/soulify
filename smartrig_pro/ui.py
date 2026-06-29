@@ -393,6 +393,66 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 ar.operator("smartrig.add_skirt", text=_txt, icon='MOD_CLOTH')
             if props.skirt_source != 'MANUAL':
                 skb.label(text="Columns/Rows update live.", icon='FILE_REFRESH')
+            # ---- Leg Collision (RIGGING: build the compass collision rig) ----
+            if rig is not None and any(b.name.startswith("DEF-skirt.")
+                                       for b in rig.pose.bones):
+                lc = skb.box()
+                lc.label(text="Leg Collision", icon='MOD_PHYSICS')
+                lc.prop(props, "skirt_collide", text="Collide with Legs")
+                if props.skirt_collide:
+                    cr = lc.row(); cr.scale_y = 1.4
+                    cr.operator("smartrig.skirt_collision",
+                                text="Apply Leg Collision", icon='MOD_PHYSICS')
+                    lc.label(text="Tune/animate live: N-panel → Item → Short Skirt.",
+                             icon='INFO')
+                    adv = lc.box()
+                    ah = adv.row(align=True)
+                    ah.prop(props, "show_skirt_adv", text="Advanced (leg bones)",
+                            emboss=False,
+                            icon=('TRIA_DOWN' if props.show_skirt_adv else 'TRIA_RIGHT'))
+                    if props.show_skirt_adv:
+                        adv.prop_search(props, "skirt_collider_l", rig.pose, "bones",
+                                        text="Left Leg")
+                        adv.prop_search(props, "skirt_collider_r", rig.pose, "bones",
+                                        text="Right Leg")
+                # ---- Skirt Jiggle (live secondary motion / spring) ----
+                jb = skb.box()
+                jb.label(text="Jiggle (secondary motion)", icon='PHYSICS')
+                if not rig.get("sk_jiggle"):
+                    jr = jb.row(); jr.scale_y = 1.4
+                    jr.operator("smartrig.skirt_jiggle", text="Apply Jiggle", icon='PHYSICS')
+                else:
+                    jc = jb.column(align=True)
+                    jc.prop(props, "jiggle_amount", slider=True)
+                    jc.prop(props, "jiggle_stiffness", slider=True)
+                    jc.prop(props, "jiggle_damping", slider=True)
+                    jb.label(text="Play timeline to see it. Live tune in Item.", icon='INFO')
+                    br = jb.row(align=True)
+                    br.operator("smartrig.bake_jiggle", text="Bake to Keyframes", icon='ACTION')
+                    op = br.operator("smartrig.skirt_jiggle", text="Remove", icon='X')
+                    op.remove = True
+                # ---- Follow Body (blend skirt rig <-> body, e.g. sitting) ----
+                fbx = skb.box()
+                fbx.label(text="Follow Body (sitting)", icon='CON_ARMATURE')
+                from . import skirt as _sk
+                _fmod = _sk.follow_modifier(context)
+                if not rig.get("sk_follow") or _fmod is None:
+                    fr = fbx.row(); fr.scale_y = 1.3
+                    fr.operator("smartrig.skirt_follow", text="Apply Body Follow",
+                                icon='MOD_MESHDEFORM')
+                    fbx.label(text="Needs a SEPARATE skirt mesh.", icon='INFO')
+                else:
+                    fbx.prop(props, "skirt_follow_body", text="Follow Body", slider=True)
+                    if _sk.follow_status(context)[0] == 'subsurf_above':
+                        w = fbx.box(); w.alert = True
+                        w.label(text="Subdivision is above Follow — Re-bind:", icon='ERROR')
+                        w.operator("smartrig.skirt_follow", text="Re-bind (fix order)", icon='FILE_REFRESH')
+                    else:
+                        fbx.label(text="0 = skirt rig, 1 = clings to body (sitting).", icon='INFO')
+                    rb = fbx.row(align=True)
+                    rb.operator("smartrig.skirt_follow", text="Re-bind", icon='FILE_REFRESH')
+                    op = rb.operator("smartrig.skirt_follow", text="Remove", icon='X')
+                    op.remove = True
         box.separator()
         gen = box.row(); gen.scale_y = 1.6
         gen.operator("smartrig.generate",
@@ -540,6 +600,9 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         eng.prop(props, "skin_engine", text="Engine")
         eng.prop(props, "skin_split_parts")
         eng.prop(props, "skin_preserve_volume")
+        has_skirt_b = any(b.name.startswith("DEF-skirt.") for b in rig.pose.bones)
+        if has_skirt_b:
+            eng.prop(props, "skin_smart_skirt")
 
         # skirt-aware: if Split Parts on and a skirt exists but isn't located, ask
         has_skirt = any(b.name.startswith("DEF-skirt.") for b in rig.pose.bones)
@@ -566,28 +629,8 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         if has_skirt and props.skin_split_parts:
             bnd.label(text="Body ignores skirt bones; skirt follows its own.", icon='INFO')
 
-        # ---- Skirt leg collision (ARP Kilt-style) ----
-        if has_skirt:
-            cb = layout.box()
-            cb.label(text="Skirt Leg Collision", icon='MOD_PHYSICS')
-            cb.prop(props, "skirt_collide", text="Collide with Legs")
-            if props.skirt_collide:
-                cr = cb.row(); cr.scale_y = 1.5
-                cr.operator("smartrig.skirt_collision",
-                            text="Apply Leg Collision", icon='MOD_PHYSICS')
-                col = cb.column(align=True)
-                col.prop(props, "skirt_collide_dist", text="Swing", slider=True)
-                col.prop(props, "skirt_collide_spread", text="Strength", slider=True)
-                cb.label(text="Animate live: N-panel → Item → Short Skirt.",
-                         icon='INFO')
-                # advanced: which leg bones to collide with (defaults are correct)
-                adv = cb.box()
-                ah = adv.row(align=True)
-                ah.prop(props, "show_skirt_adv", text="Advanced", emboss=False,
-                        icon=('TRIA_DOWN' if props.show_skirt_adv else 'TRIA_RIGHT'))
-                if props.show_skirt_adv:
-                    adv.prop_search(props, "skirt_collider_l", rig.pose, "bones", text="Left Leg")
-                    adv.prop_search(props, "skirt_collider_r", rig.pose, "bones", text="Right Leg")
+        # Skirt leg collision lives in the RIG tab (rigging) and the N-panel Item
+        # tab (animation) — NOT here. Skinning = binding only.
 
 
 class SMARTRIG_PT_skirt_item(bpy.types.Panel):
@@ -604,26 +647,55 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
         from . import skirt
         return skirt.kilt_rig(context) is not None
 
+    def draw_header(self, context):
+        iv = icons.get('skirt')
+        if iv:
+            self.layout.label(text="", icon_value=iv)
+
     def draw(self, context):
         from . import skirt
         layout = self.layout
         rig = skirt.kilt_rig(context)
         if rig is None:
             return
+        skirt_iv = icons.get('skirt')
         mpb = rig.pose.bones.get("SKC_master")
-        col = layout.column(align=True)
-        col.label(text="Leg Collision", icon='MOD_CLOTH')
-        if mpb is None:
-            col.label(text="Apply Leg Collision first.", icon='INFO')
+        # ---- Leg Collision (driven by the SKC_master bone props) ----
+        if mpb is not None and "collide" in mpb:
+            col = layout.column(align=True)
+            col.label(text="Leg Collision", icon='MOD_CLOTH')
+            try:
+                col.prop(mpb, '["collide"]', text="Collide", slider=True)
+                col.prop(mpb, '["collide_dist"]', text="Swing", slider=True)
+                col.prop(mpb, '["collide_spread"]', text="Strength", slider=True)
+            except Exception:
+                col.label(text="Re-apply Leg Collision.", icon='ERROR')
+        # ---- Jiggle (live spring; props on the rig object) ----
+        if "jiggle" in rig:
+            jc = layout.column(align=True)
+            jc.label(text="Jiggle (secondary motion)", icon='PHYSICS')
+            try:
+                jc.prop(rig, '["jiggle"]', text="Jiggle", slider=True)
+                jc.prop(rig, '["jiggle_amount"]', text="Amount", slider=True)
+                jc.prop(rig, '["jiggle_stiffness"]', text="Stiffness", slider=True)
+                jc.prop(rig, '["jiggle_damping"]', text="Damping", slider=True)
+            except Exception:
+                pass
+        # ---- Follow Body (sitting blend) = Surface Deform strength ----
+        fmod = skirt.follow_modifier(context)
+        if fmod is not None:
+            fb = layout.column(align=True)
+            fb.label(text="Follow Body (sit)", icon='MOD_MESHDEFORM')
+            fb.prop(context.scene.smartrig, "skirt_follow_body", text="Follow Body", slider=True)
+            if skirt.follow_status(context)[0] == 'subsurf_above':
+                w = fb.box(); w.alert = True
+                w.label(text="Subdivision is above Follow!", icon='ERROR')
+                w.operator("smartrig.skirt_follow", text="Re-bind (fix order)", icon='FILE_REFRESH')
+        if (mpb is None or "collide" not in mpb) and "jiggle" not in rig and fmod is None:
+            layout.label(text="Apply Collision / Jiggle / Follow first.", icon='INFO')
             return
-        try:
-            col.prop(mpb, '["collide"]', text="Collide", slider=True)
-            col.prop(mpb, '["collide_dist"]', text="Swing", slider=True)
-            col.prop(mpb, '["collide_spread"]', text="Strength", slider=True)
-        except Exception:
-            col.label(text="Re-apply Leg Collision.", icon='ERROR')
-        col.separator()
-        col.label(text="Keyframe these to animate the cloth.", icon='KEYTYPE_KEYFRAME_VEC')
+        layout.separator()
+        layout.label(text="Keyframe these to animate the cloth.", icon='KEYTYPE_KEYFRAME_VEC')
 
 
 classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item)
