@@ -83,9 +83,16 @@ Keep it in the repo. See also `LESSONS.md` (short rules).
   `invert_x/invert_z` from the sign of `thigh.x_axis · control.x_axis` (and z).
   Verified: with flipped roll, the front hem now moves OUT (-Y).
 
-## ARP "Kilt" collision — NOW IMPLEMENTED (v1.19.3, the shipped model)
+## Skirt leg collision — CURRENT = COMPASS model (v1.19.15)
+The current shipped skirt collision is the **compass model** (knee-swing direction
+per column + per-row progressive bend). See LESSONS.md → "Skirt collision — FULL
+EVOLUTION LOG" for the complete history of every approach tried and why each was
+kept or dropped. The ARP floor mechanism documented just below was the shipped
+model v1.19.3–1.19.11 and is now SUPERSEDED (kept for reference only).
+
+## (SUPERSEDED v1.19.12) ARP "Kilt" floor+tar+dt mechanism (was shipped v1.19.3–1.19.11)
 Replicated from a live ARP rig. ARP uses **Floor constraints on per-leg planes
-that rotate with the leg** (NOT spheres). Our `add_skirt_collision` builds:
+that rotate with the leg** (NOT spheres). Our old `add_skirt_collision` built:
 - `SKC_floor.L/R` — floor plane at mid-thigh, **parented to DEF-thigh**, bone
   pointing **along the leg** so its Y-axis = leg direction (FLOOR_Y tilts with the
   leg; horizontal-ish at rest → no rest push).

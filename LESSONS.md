@@ -1,6 +1,44 @@
 # SmartRig Pro — Lessons (do NOT repeat these mistakes)
 
-## Skirt collision = COMPASS model (v1.19.12) — CURRENT shipped mechanism
+## Skirt collision — FULL EVOLUTION LOG (attempt → result → why) — read this first
+Every approach we tried for the short-skirt leg collision, in order, so we never
+repeat a dead end. CURRENT shipped = #7 (COMPASS + per-row bend).
+
+1. **Floor constraints on the DEF bones directly** — translated deform bones
+   independently → shear/distortion when legs moved. Rejected.
+2. **Copy-Rotation leg-follow** (control copies the thigh's 3-axis rotation) —
+   columns swing TOWARD the leg and CROSS each other; Limit Rotation can't cap a
+   combined rotation. Rejected. Also: Rigify control roll is flipped 180° vs the
+   thigh, so the naive copy sent the skirt INTO the body.
+3. **Radial-outward drivers (v1.18)** — each column rotates outward only, by the
+   nearest leg's local rx/rz. Never crosses, directional, strong. Dropped then for
+   "no true clearance", BUT this idea (direction from leg motion) is what the final
+   compass model is built on — it was on the right track.
+4. **ARP "Kilt" floor+tar+dt mechanism (v1.19.3–1.19.9)** — per-leg floor PLANE
+   (follows the leg) + per-column tar (Floor-collided) + dt (Damped Track), control
+   rides dt. Gave true clearance. Bugs found & fixed: floor bone must point ALONG
+   the leg not +Z (else +0.67 rest jump); Damped Track must be TRACK_Y not
+   TRACK_NEGATIVE_Y (else dt flips, +0.68 jump); influence needs PROXIMITY gating
+   (v1.19.5) so the far side stays put; then a DIRECTION gate (v1.19.9). Still two
+   real flaws: the INFINITE floor plane pulled same-side back/side columns, and its
+   push was strong forward but WEAK sideways. Superseded.
+5. **ARP literal ROTATION_DIFFERENCE gating (v1.19.6)** — fixed per-column
+   reference bones + rotation-difference drivers + offset-growth, exactly like ARP.
+   Tested on our rig: 3× WEAKER push and the side kick broke. Why: rotation_diff is
+   roll-sensitive, and stacking it on our already-directional floor plane = a
+   double gate in series → weak. ARP gets away with it because their whole kilt is
+   co-calibrated in their generator. Reverted. DO NOT retry on our floor design.
+6. **Euler-channel direction gate** — read the thigh's local rot_x/rot_z to gate
+   direction. Failed for SIDE/abduction: euler channels don't separate abduction
+   from flexion (IK side kick read as forward). Replaced by the knee-swing compass.
+7. **COMPASS model + per-row progressive bend (v1.19.12 → v1.19.15) — CURRENT.**
+   See the section below. Knee-minus-hip horizontal vector = compass needle (works
+   FK & IK, any direction, roll-free); each column rotates outward by the component
+   along its own outward; both legs blended by proximity; SKC_dt split per row so
+   the column bends progressively (cloth drape). Strong all directions, far side &
+   back stay put, no crossing, scales to any column/row count.
+
+## Skirt collision = COMPASS model (v1.19.12+) — CURRENT shipped mechanism
 The floor-plane approach below was replaced. The floor plane's push strength
 varied by direction (strong forward, weak side — user: "side kick no response")
 and its infinite plane pulled same-side back/side columns. The robust answer
@@ -33,9 +71,10 @@ crossing even at fwd+up 70°. Master props: Collide (on/off), Swing (was
 collide_dist), Strength (was collide_spread). `collide_dist_falloff` is now
 UNUSED (it was floor clearance) and dropped from the UI.
 
-## (superseded) Skirt collision = ARP "Kilt" floor+tar+dt mechanism (v1.19.3) — TRUE collision, no crossing
-This is the shipped model. It replicates Auto-Rig Pro's kilt limb and gives REAL
-clearance (the cloth is pushed away from the leg), per-leg/per-column weighting,
+## (SUPERSEDED by the compass model — kept for reference) ARP "Kilt" floor+tar+dt mechanism (v1.19.3–1.19.9)
+NOTE: this was the shipped model from v1.19.3 to v1.19.11; it is NO LONGER used
+(see the compass section above). It replicated Auto-Rig Pro's kilt limb and gave
+REAL clearance (the cloth is pushed away from the leg), per-leg/per-column weighting,
 push-scales-with-leg-motion, and no self-intersection in any direction. Validated
 numerically on the live rig: rest displacement ~0.023; leg fwd pushes front cols,
 back pushes back cols, side pushes side cols (push-only, outward); angular gaps
