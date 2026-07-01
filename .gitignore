@@ -4,3 +4,17 @@ ziJNIsQJ
 _fit_compare.png
 *.blend1
 *.blend2
+# Python
+*.py[cod]
+*.egg-info/
+.eggs/
+# Blender
+*.blend@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+# Editors
+.vscode/
+.idea/
+*.swp
