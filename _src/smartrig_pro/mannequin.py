@@ -1351,6 +1351,25 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
         for k, (_, _, _, _, is_spine, _) in enumerate(segs):
             if not is_spine:
                 W[below, k] = 0.0
+    # TORSO-COLUMN OVERRIDE (v1.31.3): side-torso fabric equidistant to the
+    # arm and spine segments was dragged outward by the arm rotation =
+    # underarm WINGS. Fabric inside the torso column follows the spine only.
+    if "pelvis" in jt_src and "neck" in jt_src:
+        p0 = np.array(jt_src["pelvis"][:])
+        n0 = np.array(jt_src["neck"][:])
+        ax = n0 - p0
+        L2x = float(ax.dot(ax)) + 1e-12
+        t_ = np.clip(((wco - p0) @ ax) / L2x, 0.0, 1.0)
+        rho_ = np.linalg.norm(wco - (p0 + t_[:, None] * ax), axis=1)
+        radii_ = jt_src.get("radii") or {}
+        t_r = float(radii_.get("torso") or radii_.get("chest") or 0.0)
+        if t_r <= 0.0 and "shoulder_l" in jt_src and "shoulder_r" in jt_src:
+            t_r = 0.5 * (jt_src["shoulder_l"] - jt_src["shoulder_r"]).length
+        if t_r > 0.0:
+            core = rho_ < 1.45 * t_r
+            for k, (_, _, _, _, is_spine, _) in enumerate(segs):
+                if not is_spine:
+                    W[core, k] = 0.0
     W /= (W.sum(axis=1, keepdims=True) + 1e-12)
 
     # ---- DESIGN PRESERVATION (v1.28.0): detail-layer transfer ----
