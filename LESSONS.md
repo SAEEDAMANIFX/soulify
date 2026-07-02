@@ -349,3 +349,21 @@ correction, extras step, FIT 7.0s, design damage 10.6%, markers auto-hide.
   wrist/waist is HERE' - mannequin_match applies jt.update(marker_joints()).
 Verified: front-ortho screenshot with 9 glowing markers on the isolated
 shirt, mirror constraint live, scene restored after cancel.
+
+
+## v1.29.2 - THE MEASURED REFERENCE (Saeed's anatomy-sheet example) + opacity
+'The image is not just an image': fitwiz Start renders the ACTUAL character
+front/side/back (ortho WORKBENCH, transparent film, 1024, ~0.5s total) into
+IMAGE empties (SRF_Ref_front/side/back in collection SRF_FitRef,
+empty_image_depth=BACK so always behind), then PAINTS on the pixels:
+- horizontal proportion lines (anatomy-sheet style) at every measured joint
+  height (neck/chest/pelvis/shoulder/elbow/wrist/knee/ankle z)
+- joint dots in the marker colours (cyan centre / yellow L / dark-gold R)
+so the user places the garment + markers against real measurements.
+- fitwiz_ref_alpha (FACTOR slider, live update callback on ob.color[3]).
+- GOTCHA fixed: refs were first linked into SRF_FitMarkers, and the markers
+  step's clear_markers() deleted them silently -> refs live in their own
+  SRF_FitRef collection; clear_reference() runs on FIT and cancel.
+- Side backdrop faces the LEFT view (azimuth -90 render, rotz -90).
+Verified visually: character backdrop + blue measure lines + coloured dots
+behind the isolated shirt, opacity slider live at 0.85.

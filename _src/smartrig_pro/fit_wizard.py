@@ -19,6 +19,7 @@ import bpy
 from mathutils import Vector
 
 MARKER_COL = "SRF_FitMarkers"
+REF_COL = "SRF_FitRef"
 MARKER_PREFIX = "SRFM_"
 VG_RIGID = "SRF_Rigid"
 
@@ -76,8 +77,24 @@ def _marker_col(create=False):
     return col
 
 
+def _ref_col(create=False):
+    col = bpy.data.collections.get(REF_COL)
+    if col is None and create:
+        col = bpy.data.collections.new(REF_COL)
+        bpy.context.scene.collection.children.link(col)
+    return col
+
+
 def clear_markers():
     col = bpy.data.collections.get(MARKER_COL)
+    if col is not None:
+        for ob in list(col.objects):
+            bpy.data.objects.remove(ob, do_unlink=True)
+        bpy.data.collections.remove(col)
+
+
+def clear_reference():
+    col = bpy.data.collections.get(REF_COL)
     if col is not None:
         for ob in list(col.objects):
             bpy.data.objects.remove(ob, do_unlink=True)
@@ -96,6 +113,133 @@ def marker_joints():
             key = ob.name[len(MARKER_PREFIX):].split(".")[0]
             out[key] = ob.matrix_world.translation.copy()
     return out
+
+
+def _make_reference(context, body):
+    """THE REFERENCE IS NOT JUST A PICTURE (Saeed's spec): render the ACTUAL
+    character front + back (ortho, transparent) and PAINT ITS MEASURED
+    JOINTS on the image with the marker colours - so placing the garment
+    and dragging markers is done against real, pre-measured anatomy."""
+    import tempfile, os, math
+    import numpy as np
+    from . import mannequin as _mq
+    scene = context.scene
+    lo = [1e9] * 3
+    hi = [-1e9] * 3
+    for c in body.bound_box:
+        w = body.matrix_world @ Vector(c)
+        for i in range(3):
+            lo[i] = min(lo[i], w[i])
+            hi[i] = max(hi[i], w[i])
+    center = Vector(((lo[0] + hi[0]) * .5, (lo[1] + hi[1]) * .5,
+                     (lo[2] + hi[2]) * .5))
+    span = max(hi[2] - lo[2], hi[0] - lo[0]) * 1.15
+    jt = _mq.character_joints(body) or {}
+    res = 1024
+    cd = bpy.data.cameras.new("SRF_REF_CAM")
+    cam = bpy.data.objects.new("SRF_REF_CAM", cd)
+    scene.collection.objects.link(cam)
+    cd.type = 'ORTHO'
+    cd.ortho_scale = span
+    r = scene.render
+    prev = (r.engine, r.resolution_x, r.resolution_y,
+            r.resolution_percentage, r.filepath,
+            r.image_settings.file_format, r.film_transparent, scene.camera)
+    hidden_r = []
+    paths = {}
+    try:
+        for ob in scene.objects:
+            if ob.type == 'MESH' and ob is not body and not ob.hide_render:
+                ob.hide_render = True
+                hidden_r.append(ob)
+        try:
+            r.engine = 'BLENDER_WORKBENCH'
+        except Exception:
+            pass
+        r.resolution_x = r.resolution_y = res
+        r.resolution_percentage = 100
+        r.image_settings.file_format = 'PNG'
+        r.film_transparent = True
+        for tag, az in (("front", 0.0), ("side", -90.0), ("back", 180.0)):
+            a = math.radians(az)
+            cam.location = center + Vector((10 * math.sin(a),
+                                            -10 * math.cos(a), 0.0))
+            cam.rotation_euler = (cam.location - center).to_track_quat(
+                'Z', 'Y').to_euler()
+            scene.camera = cam
+            fp = os.path.join(tempfile.gettempdir(), "srf_ref_%s.png" % tag)
+            r.filepath = fp
+            bpy.context.view_layer.update()
+            bpy.ops.render.render(write_still=True)
+            paths[tag] = fp
+    finally:
+        for ob in hidden_r:
+            ob.hide_render = False
+        bpy.data.objects.remove(cam, do_unlink=True)
+        (r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage,
+         r.filepath, r.image_settings.file_format, r.film_transparent,
+         scene.camera) = prev
+    col = _marker_col(create=True)
+    for tag, fp in paths.items():
+        img = bpy.data.images.load(fp, check_existing=False)
+        px = np.empty(res * res * 4, dtype=np.float32)
+        img.pixels.foreach_get(px)
+        px = px.reshape(res, res, 4)          # row 0 = bottom
+        # MEASUREMENT LINES (like the anatomy proportion sheet): a thin
+        # horizontal line at every measured joint height
+        zs = sorted({round(float(v.z), 3) for k, v in jt.items()
+                     if isinstance(v, Vector)
+                     and k in ("neck", "chest", "pelvis", "shoulder_l",
+                               "elbow_l", "wrist_l", "knee_l", "ankle_l")})
+        for z in zs:
+            cy = int((0.5 + (z - center.z) / span) * res)
+            if 1 <= cy < res - 1:
+                px[cy - 1:cy + 1, :, :] = (0.35, 0.55, 0.9, 0.9)
+        sgn = 1.0 if tag == "front" else -1.0
+        for k, v in jt.items():
+            if not isinstance(v, Vector):
+                continue
+            if tag == "side":
+                u = 0.5 - (v.y - center.y) / span
+            else:
+                u = 0.5 + sgn * (v.x - center.x) / span
+            w_ = 0.5 + (v.z - center.z) / span
+            cx, cy = int(u * res), int(w_ * res)
+            rr = 7
+            y0, y1 = max(cy - rr, 0), min(cy + rr, res)
+            x0, x1 = max(cx - rr, 0), min(cx + rr, res)
+            if y0 >= y1 or x0 >= x1:
+                continue
+            yy, xx = np.mgrid[y0:y1, x0:x1]
+            m = (yy - cy) ** 2 + (xx - cx) ** 2 <= rr * rr
+            cc = (0.2, 0.9, 1.0, 1.0)
+            if k.endswith("_l"):
+                cc = (1.0, 0.8, 0.1, 1.0)
+            elif k.endswith("_r"):
+                cc = (0.55, 0.45, 0.2, 1.0)
+            sub = px[y0:y1, x0:x1]
+            sub[m] = cc
+            px[y0:y1, x0:x1] = sub
+        img.pixels.foreach_set(px.ravel())
+        img.pack()
+        em = bpy.data.objects.new("SRF_Ref_%s" % tag, None)
+        em.empty_display_type = 'IMAGE'
+        em.data = img
+        em.empty_display_size = span
+        em.empty_image_depth = 'BACK'          # always drawn behind
+        em.use_empty_image_alpha = True
+        try:
+            alpha = float(context.scene.smartrig.fitwiz_ref_alpha)
+        except Exception:
+            alpha = 0.85
+        em.color = (1.0, 1.0, 1.0, alpha)
+        rot_off = {"front": (0.0, Vector((0.0, 0.03, 0.0))),
+                   "back": (math.pi, Vector((0.0, -0.03, 0.0))),
+                   "side": (-math.pi / 2, Vector((0.03, 0.0, 0.0)))}[tag]
+        em.rotation_euler = (math.pi / 2, 0.0, rot_off[0])
+        em.location = center + rot_off[1]
+        em.hide_select = False
+        _ref_col(create=True).objects.link(em)
 
 
 class SMARTRIG_OT_fitwiz_start(bpy.types.Operator):
@@ -118,6 +262,14 @@ class SMARTRIG_OT_fitwiz_start(bpy.types.Operator):
         # SAEED'S SPEC: everything disappears - only the garment - and the
         # view snaps to FRONT (same entrance as the character marker wizard)
         _isolate(context, g)
+        # the measured anatomy reference (front/side/back of the ACTUAL
+        # character, joints + proportion lines painted on)
+        body = props.fit_body_object
+        if body is not None:
+            try:
+                _make_reference(context, body)
+            except Exception as e:
+                print("Soulify fit reference:", e)
         from . import markers as _mk
         _mk.set_front_view(context)
         for ob in context.selected_objects:
@@ -269,6 +421,7 @@ class SMARTRIG_OT_fitwiz_go(bpy.types.Operator):
             col = bpy.data.collections.get(MARKER_COL)
             if col is not None:
                 col.hide_viewport = True     # kept for a later refit
+            clear_reference()
             props.fitwiz_step = 0
         return r
 
@@ -281,6 +434,7 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
 
     def execute(self, context):
         clear_markers()
+        clear_reference()
         _restore(context)
         context.scene.smartrig.fitwiz_step = 0
         return {'FINISHED'}

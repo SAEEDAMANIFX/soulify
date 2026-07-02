@@ -83,6 +83,19 @@ def _fit_live_update(self, context):
         print("SmartRig fit live tune:", e)
 
 
+def _fitwiz_alpha_update(self, context):
+    """Live opacity for the Fit Wizard reference images."""
+    try:
+        for tag in ("front", "side", "back"):
+            ob = bpy.data.objects.get("SRF_Ref_%s" % tag)
+            if ob is not None:
+                c = list(ob.color)
+                c[3] = self.fitwiz_ref_alpha
+                ob.color = c
+    except Exception as e:
+        print("Soulify fit ref alpha:", e)
+
+
 def _skirt_update(self, context):
     """Real-time rebuild of the skirt bones when Columns/Rows change (only for
     the mesh-driven modes; manual edits are never overwritten)."""
@@ -521,6 +534,11 @@ class SmartRigProps(PropertyGroup):
         name="Fit Wizard Step", default=0, min=0, max=3,
         description="Internal: current step of the step-by-step Fit Wizard "
         "(0 off, 1 place, 2 markers, 3 extras)")
+    fitwiz_ref_alpha: FloatProperty(
+        name="Reference Opacity", default=0.85, min=0.0, max=1.0,
+        subtype='FACTOR', update=_fitwiz_alpha_update,
+        description="Transparency of the measured anatomy reference images "
+        "behind the garment")
     mode_chosen: BoolProperty(
         name="Mode Chosen", default=False,
         description="Internal: becomes True after the user picks Character or Parts, "

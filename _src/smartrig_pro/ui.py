@@ -963,12 +963,14 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
                 r.operator("smartrig.fitwiz_view", text="Side").axis = 'LEFT'
                 r.operator("smartrig.lets_fit", text="Auto Place")
+                wiz.prop(props, "fitwiz_ref_alpha", slider=True)
                 wiz.label(text="Move / Rotate / Scale freely (G R S)")
                 wiz.operator("smartrig.fitwiz_markers",
                              text="Next: Markers", icon='FORWARD')
             elif step == 2:
                 wiz.label(text="2/3  Drag any wrong marker (cuff = wrist!)",
                           icon='EMPTY_AXIS')
+                wiz.prop(props, "fitwiz_ref_alpha", slider=True)
                 r = wiz.row(align=True)
                 r.operator("smartrig.fitwiz_markers", text="Rebuild")
                 r.operator("smartrig.fitwiz_extras",
