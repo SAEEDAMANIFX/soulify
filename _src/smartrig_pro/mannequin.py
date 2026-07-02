@@ -492,6 +492,180 @@ def snap_rig_to_joints(arm_ob, jt_src, jt_dst, gs=1.0):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+# ------------------------------------- SURFACE RETARGET (the deep solution) --
+
+def retarget_surface(g_ob, jt_src, jt_dst, body, loose=False):
+    """Professional garment retarget via BONE-SURFACE coordinates.
+    Every garment vertex is encoded in the DESIGN as:
+        (bone segment, t along the bone, angle around the bone,
+         CLEARANCE above the garment's own inner wall)
+    and decoded on the CHARACTER by casting a ray from her bone at the same
+    (t, angle) to her REAL surface (evaluated - subsurf included) and standing
+    the vertex at surface + clearance. The fabric therefore SPREADS ON THE
+    BODY with its designed looseness: sleeves wrap the actual arms, the waist
+    cannot balloon, shoulders cannot poke through.
+    Replaces the bone-pair warp (blind to the surface - tents & pokes)."""
+    me = g_ob.data
+    n = len(me.vertices)
+    mw = g_ob.matrix_world
+    base = [v.co.copy() for v in me.vertices]
+    wco = np.array([(mw @ c)[:] for c in base], dtype=float)
+
+    # global size ratio for the clearance (design mm -> character mm)
+    if all(k in jt_src and k in jt_dst
+           for k in ("shoulder_l", "shoulder_r")):
+        gs = (jt_dst["shoulder_l"] - jt_dst["shoulder_r"]).length \
+            / max((jt_src["shoulder_l"] - jt_src["shoulder_r"]).length, 1e-9)
+    else:
+        gs = (jt_dst["neck"] - jt_dst["pelvis"]).length \
+            / max((jt_src["neck"] - jt_src["pelvis"]).length, 1e-9)
+
+    radii = jt_src.get("radii", {}) if isinstance(jt_src, dict) else {}
+    span_g = float(wco[:, 2].max() - wco[:, 2].min()) or 1.0
+
+    segs = []
+    for name, hj, tj, _p in _BONES:
+        if hj in jt_src and tj in jt_src and hj in jt_dst and tj in jt_dst:
+            a0, b0 = jt_src[hj], jt_src[tj]
+            a1, b1 = jt_dst[hj], jt_dst[tj]
+            if (b0 - a0).length < 1e-9 or (b1 - a1).length < 1e-9:
+                continue
+            is_spine = name.startswith("spine")
+            side = name[-1] if name[-1] in ("l", "r") else ""
+            tube_r = radii.get("shoulder_%s" % side,
+                               radii.get("hip_%s" % side, 0.08 * span_g))
+            segs.append({"name": name, "a0": a0, "b0": b0, "a1": a1, "b1": b1,
+                         "spine": is_spine,
+                         "rlim": (max(2.6 * tube_r, 0.045 * span_g)
+                                  if not is_spine else 1e9)})
+    if not segs:
+        return False
+    pelvis_z = jt_src["pelvis"].z if "pelvis" in jt_src else -1e9
+
+    # ---- assign each vertex to its DESIGN segment (tube membership) ----
+    NB = len(segs)
+    D2 = np.full((n, NB), 1e18)
+    T = np.zeros((n, NB))
+    for k, s in enumerate(segs):
+        a0 = np.array(s["a0"][:]); b0 = np.array(s["b0"][:])
+        ab = b0 - a0
+        L2 = float(ab.dot(ab)) + 1e-12
+        t = np.clip(((wco - a0) @ ab) / L2, 0.0, 1.0)
+        cl = a0 + t[:, None] * ab
+        d2 = np.sum((wco - cl) ** 2, axis=1)
+        if not s["spine"]:
+            d2[d2 > s["rlim"] ** 2] = 1e18         # limb claims tube fabric only
+        if loose and not s["spine"]:
+            d2[wco[:, 2] < pelvis_z] = 1e18        # loose column -> spine only
+        D2[:, k] = d2
+        T[:, k] = t
+    # TORSO COLUMN OVERRIDE: fabric inside the torso column belongs to the
+    # spine no matter how close a hanging A-pose forearm passes by it -
+    # without this the hem/placket got claimed by the forearm and sagged
+    # below the wrist (the 0.18-0.8 z outliers).
+    if "pelvis" in jt_src:
+        px, py = jt_src["pelvis"].x, jt_src["pelvis"].y
+        t_r = radii.get("torso", 0.10 * span_g)
+        rho = np.hypot(wco[:, 0] - px, wco[:, 1] - py)
+        in_col = rho < 1.7 * t_r
+        for k, s in enumerate(segs):
+            if not s["spine"]:
+                D2[in_col, k] = 1e18
+    best = np.argmin(D2, axis=1)
+
+    # ---- per segment: local frame, angle bins, inner-wall radius table ----
+    dg = bpy.context.evaluated_depsgraph_get()
+    bev = body.evaluated_get(dg)
+    binv = body.matrix_world.inverted()
+    b3 = binv.to_3x3()
+    bmw = body.matrix_world
+    NT, NA = 12, 16
+    out = wco.copy()
+    for k, s in enumerate(segs):
+        idx = np.nonzero(best == k)[0]
+        if len(idx) == 0:
+            continue
+        a0, b0, a1, b1 = s["a0"], s["b0"], s["a1"], s["b1"]
+        y0 = (b0 - a0).normalized()
+        y1 = (b1 - a1).normalized()
+        R = y0.rotation_difference(y1)
+        u0 = y0.orthogonal().normalized()
+        v0 = y0.cross(u0)
+        L0 = (b0 - a0).length
+        L1 = (b1 - a1).length
+        # inner wall per (t,angle) cell = the fabric's own body-side surface
+        tt = T[idx, k]
+        P = wco[idx]
+        ax0 = np.array(a0[:]) + np.outer(tt, np.array(y0[:])) * L0
+        rad = P - ax0
+        ru = rad @ np.array(u0[:])
+        rv = rad @ np.array(v0[:])
+        rr = np.hypot(ru, rv)
+        ang = np.arctan2(rv, ru)
+        tb = np.minimum((tt * NT).astype(int), NT - 1)
+        abn = ((ang + math.pi) / (2 * math.pi) * NA).astype(int) % NA
+        inner = np.full((NT, NA), np.nan)
+        for j in range(len(idx)):
+            cellv = inner[tb[j], abn[j]]
+            if not (cellv <= rr[j]):
+                inner[tb[j], abn[j]] = rr[j]
+        # decode on the character
+        for j, i in enumerate(idx):
+            if rr[j] < 1e-9:
+                out[i] = np.array(a1[:]) + np.array(y1[:]) * tt[j] * L1
+                continue
+            dir0 = Vector((rad[j][0], rad[j][1], rad[j][2])) / rr[j]
+            dir1 = (R @ dir0)
+            axis1 = a1 + y1 * (tt[j] * L1)
+            iw = inner[tb[j], abn[j]]
+            clear = max(rr[j] - (iw if not math.isnan(iw) else rr[j]), 0.0)
+            # ray from the character's bone outward to her REAL surface.
+            # The ray STARTS INSIDE the body (on the bone axis) - the FIRST
+            # hit is the surface we stand on. Taking the last hit grabbed the
+            # OPPOSITE side of the torso and flung sleeves across like wings.
+            o_l = binv @ axis1
+            d_l = (b3 @ dir1).normalized()
+            r_dst = None
+            okc, loc, nrm, _fi = bev.ray_cast(o_l, d_l,
+                                              distance=span_g * 2.0)
+            if okc:
+                r_dst = ((bmw @ loc) - axis1).length
+            if r_dst is None:
+                r_dst = (iw if not math.isnan(iw) else rr[j]) * gs
+            out[i] = np.array((axis1 + dir1 * (r_dst + 0.004 * gs
+                                               + clear * gs))[:])
+
+    # heal segment seams: smooth the OFFSETS along mesh edges
+    offs = out - wco
+    ev = np.empty(2 * len(me.edges), dtype=np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    for _ in range(5):
+        acc = np.zeros_like(offs); cnt = np.zeros(n)
+        np.add.at(acc, ev[:, 0], offs[ev[:, 1]])
+        np.add.at(cnt, ev[:, 0], 1.0)
+        np.add.at(acc, ev[:, 1], offs[ev[:, 0]])
+        np.add.at(cnt, ev[:, 1], 1.0)
+        nz = cnt > 0
+        offs[nz] = 0.5 * offs[nz] + 0.5 * (acc[nz] / cnt[nz, None])
+    out = wco + offs
+
+    # write to SRF_Fit (same reversible slot)
+    from .garment import SK_FIT, K_KEYS
+    if me.shape_keys is None:
+        g_ob.shape_key_add(name="Basis", from_mix=False)
+        g_ob[K_KEYS] = True
+    sk = me.shape_keys.key_blocks.get(SK_FIT)
+    if sk is None:
+        sk = g_ob.shape_key_add(name=SK_FIT, from_mix=False)
+    sk.slider_min = 0.0
+    sk.value = 1.0
+    inv = mw.inverted()
+    for i in range(n):
+        sk.data[i].co = inv @ Vector(out[i])
+    return True
+
+
 # ----------------------------------------------------- phase 2: retargeting --
 
 # skeleton segments used by the warp (present ones only)
@@ -752,7 +926,19 @@ class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
         # THEN a real armature is built on the WORN state (bones on the
         # character's joints, garment skinned to them at rest) - so nothing
         # moves until the USER grabs a bone: instant, GPU-live hand-tweaking.
-        ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
+        # DEFAULT = the stable warp. The surface-coordinate retarget (the true
+        # professional engine) is behind a flag until its clearance basis is
+        # switched to the mannequin limb radii (see LESSONS: sleeves collapse
+        # skin-tight when clearance is measured from the fabric's own inner
+        # wall). Enable per scene: scene["srf_experimental_retarget"] = True
+        if context.scene.get("srf_experimental_retarget"):
+            try:
+                ok = retarget_surface(g_ob, jt, dst, body, loose=loose)
+            except Exception as e:
+                print("Soulify retarget_surface failed, warp fallback:", e)
+                ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
+        else:
+            ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
         if not ok:
             self.report({'ERROR'}, "No matching skeleton segments.")
             return {'CANCELLED'}

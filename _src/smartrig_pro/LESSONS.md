@@ -689,3 +689,24 @@ Also documented in detect_height_fractions: the net's 'shoulder' label is the
 CLAVICLE HEAD (sternal, central) - never use it as the arm-start; the
 elbow-based sanity rebuild in mannequin.character_joints is the permanent
 treatment, not a workaround.
+
+
+## Surface-coordinate retarget - status & the exact next fix (v1.26.0-2)
+The deep answer to 'tent waist / sleeve not on the arm / no spreading':
+encode every garment vertex as (bone, t, angle, clearance) in the design and
+decode it on the character by ray-casting from HER bone to HER evaluated
+surface (subsurf!). Implemented in mannequin.retarget_surface. Burned so far:
+1. Rays start ON the bone axis = INSIDE the body -> take the FIRST hit; the
+   last hit is the opposite side (sleeves flung across like wings).
+2. TORSO COLUMN OVERRIDE: fabric within 1.7x torso radius of the pelvis axis
+   belongs to the spine - hanging A-pose forearms pass through the hem zone
+   and stole 2.7k hem/placket verts (sagged below the wrists).
+3. Penetration must ALWAYS be measured against the EVALUATED body - the
+   user's male body has subsurf; the base cage passed 0% while shoulders
+   poked through the real surface.
+REMAINING (exact, one change): clearance basis. Currently c = r - inner-wall
+of the FABRIC itself -> sleeves decode skin-tight (their designed looseness
+lives relative to the implied ARM, not the cloth wall). Switch to
+c = r - r_mannequin(bone, t) using garment_skeleton's traced tube radii;
+dst = surface_ray + c*gs. Then flip the default back from the warp
+(scene['srf_experimental_retarget'] gates it meanwhile, v1.26.2).
