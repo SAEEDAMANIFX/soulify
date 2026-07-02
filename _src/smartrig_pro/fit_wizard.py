@@ -45,6 +45,56 @@ def _garment(context):
     return context.scene.smartrig.garment_object
 
 
+# ------------------------- LIVE SYMMETRY (toggleable) -----------------------
+# Mirrors around the GARMENT's own centre (not world x=0), works in BOTH
+# directions: drag left OR right, the counterpart follows. fitwiz_mirror
+# toggles it.
+_MIRRORING = False
+
+
+def _mirror_handler(scene, depsgraph):
+    global _MIRRORING
+    if _MIRRORING:
+        return
+    try:
+        props = scene.smartrig
+        if props.fitwiz_step != 2 or not props.fitwiz_mirror:
+            return
+        col = bpy.data.collections.get(MARKER_COL)
+        if col is None or col.hide_viewport:
+            return
+        cx = float(col.get("srf_cx", 0.0))
+        for u in depsgraph.updates:
+            idb = getattr(u.id, "original", u.id)
+            if not isinstance(idb, bpy.types.Object):
+                continue
+            nm = idb.name
+            if not nm.startswith(MARKER_PREFIX) \
+                    or not getattr(u, "is_updated_transform", False):
+                continue
+            key = nm[len(MARKER_PREFIX):]
+            if key.endswith("_l"):
+                other = MARKER_PREFIX + key[:-2] + "_r"
+            elif key.endswith("_r"):
+                other = MARKER_PREFIX + key[:-2] + "_l"
+            else:
+                continue
+            src = bpy.data.objects.get(nm)
+            dst = bpy.data.objects.get(other)
+            if src is None or dst is None or not src.select_get():
+                continue
+            tgt = Vector((2.0 * cx - src.location.x,
+                          src.location.y, src.location.z))
+            if (tgt - dst.location).length > 1e-6:
+                _MIRRORING = True
+                try:
+                    dst.location = tgt
+                finally:
+                    _MIRRORING = False
+    except Exception:
+        pass
+
+
 def _role(key):
     """Same colour system as the character markers."""
     if key.endswith("_l"):
@@ -362,8 +412,9 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
                         'right': (0.55, 0.45, 0.2, 1.0)}[role]
             col.objects.link(em)
             made += 1
-        # ALL markers move freely: the world-x mirror lock made the right
-        # side feel dead and broke off-center garments (v1.30.3)
+        # live symmetry pivot = the garment's own centre x
+        bbx = [(g.matrix_world @ Vector(c)).x for c in g.bound_box]
+        col["srf_cx"] = 0.5 * (min(bbx) + max(bbx))
         # LOCK the garment while dragging markers (Saeed: no accidental
         # garment selection in the markers step) - unlocked on exit
         g.select_set(False)
@@ -465,8 +516,12 @@ _CLASSES = (SMARTRIG_OT_fitwiz_start, SMARTRIG_OT_fitwiz_view,
 def register():
     for c in _CLASSES:
         bpy.utils.register_class(c)
+    if _mirror_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_mirror_handler)
 
 
 def unregister():
+    if _mirror_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_mirror_handler)
     for c in reversed(_CLASSES):
         bpy.utils.unregister_class(c)

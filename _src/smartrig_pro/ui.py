@@ -970,6 +970,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             elif step == 2:
                 wiz.label(text="2/3  Drag any wrong marker (cuff = wrist!)",
                           icon='EMPTY_AXIS')
+                wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
                 wiz.prop(props, "fitwiz_ref_alpha", slider=True)
                 r = wiz.row(align=True)
                 r.operator("smartrig.fitwiz_markers", text="Rebuild")

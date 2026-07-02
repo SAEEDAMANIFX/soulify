@@ -534,6 +534,10 @@ class SmartRigProps(PropertyGroup):
         name="Fit Wizard Step", default=0, min=0, max=3,
         description="Internal: current step of the step-by-step Fit Wizard "
         "(0 off, 1 place, 2 markers, 3 extras)")
+    fitwiz_mirror: BoolProperty(
+        name="Symmetry", default=True,
+        description="Mirror marker moves to the other side (around the "
+        "garment's own centre). Turn off for asymmetric garments")
     fitwiz_ref_alpha: FloatProperty(
         name="Reference Opacity", default=0.85, min=0.0, max=1.0,
         subtype='FACTOR', update=_fitwiz_alpha_update,
