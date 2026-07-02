@@ -372,6 +372,126 @@ def live_adjust(context):
     bpy.app.timers.register(_run, first_interval=0.30)
 
 
+# ------------------------------------------------------- the GARMENT RIG ----
+
+RIG_NAME = "SRF_GarmentRig"
+
+# bone -> (head joint, tail joint, parent bone)
+_BONES = [("spine1", "pelvis", "chest", None),
+          ("spine2", "chest", "neck", "spine1"),
+          ("arm_l", "shoulder_l", "elbow_l", "spine2"),
+          ("fore_l", "elbow_l", "wrist_l", "arm_l"),
+          ("arm_r", "shoulder_r", "elbow_r", "spine2"),
+          ("fore_r", "elbow_r", "wrist_r", "arm_r"),
+          ("leg_l", "hip_l", "knee_l", "spine1"),
+          ("shin_l", "knee_l", "ankle_l", "leg_l"),
+          ("leg_r", "hip_r", "knee_r", "spine1"),
+          ("shin_r", "knee_r", "ankle_r", "leg_r")]
+
+
+def build_garment_rig(g_ob, jt, loose=False, coords=None):
+    """A REAL armature from the garment's implied skeleton, with the garment
+    SKINNED to it (our smooth segment weights). This is the live control the
+    user asked for: grab any bone in Pose Mode and the garment follows
+    instantly - and Match to Character simply poses these bones."""
+    old = bpy.data.objects.get(RIG_NAME)
+    if old is not None:
+        bpy.data.objects.remove(old, do_unlink=True)
+    arm = bpy.data.armatures.new(RIG_NAME)
+    ob = bpy.data.objects.new(RIG_NAME, arm)
+    bpy.context.scene.collection.objects.link(ob)   # identity world transform
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.mode_set(mode='EDIT')
+    made = {}
+    for name, hj, tj, parent in _BONES:
+        if hj not in jt or tj not in jt:
+            continue
+        eb = arm.edit_bones.new(name)
+        eb.head = jt[hj]
+        eb.tail = jt[tj]
+        if parent in made:
+            eb.parent = made[parent]
+        made[name] = eb
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # skin the garment: smooth inverse-distance weights per bone segment
+    me = g_ob.data
+    n = len(me.vertices)
+    mw = g_ob.matrix_world
+    if coords is not None:
+        wco = coords                               # e.g. the WARPED positions
+    else:
+        wco = np.array([(mw @ v.co)[:] for v in me.vertices], dtype=float)
+    names, segs = [], []
+    for (b, h, t, _p) in _BONES:
+        if b in made:
+            names.append(b)
+            segs.append((np.array(jt[h][:]), np.array(jt[t][:])))
+    W = np.zeros((n, len(names)))
+    for k, (a0, b0) in enumerate(segs):
+        ab = b0 - a0
+        L2 = float(ab.dot(ab)) + 1e-12
+        t = np.clip(((wco - a0) @ ab) / L2, 0.0, 1.0)
+        cl = a0 + t[:, None] * ab
+        d2 = np.sum((wco - cl) ** 2, axis=1)
+        W[:, k] = 1.0 / (d2 + 1e-8) ** 2.5
+    if loose and "pelvis" in jt:
+        below = wco[:, 2] < jt["pelvis"].z
+        for k, nm in enumerate(names):
+            if nm != "spine1":
+                W[below, k] = 0.0
+    W /= (W.sum(axis=1, keepdims=True) + 1e-12)
+    for nm in names:
+        vg = g_ob.vertex_groups.get(nm)
+        if vg:
+            g_ob.vertex_groups.remove(vg)
+    vgs = {nm: g_ob.vertex_groups.new(name=nm) for nm in names}
+    for k, nm in enumerate(names):
+        col = W[:, k]
+        for i in np.nonzero(col > 0.001)[0]:
+            vgs[nm].add([int(i)], float(col[i]), 'REPLACE')
+    for m in list(g_ob.modifiers):
+        if m.type == 'ARMATURE' and m.name == "SRF_Arm":
+            g_ob.modifiers.remove(m)
+    md = g_ob.modifiers.new("SRF_Arm", 'ARMATURE')
+    md.object = ob
+    return ob
+
+
+def snap_rig_to_joints(arm_ob, jt_src, jt_dst, gs=1.0):
+    """Pose the garment rig so every bone lands on the character's joints.
+    Stretch along the bone (Y) by the length ratio; X/Z by the global size
+    ratio only (girth is design). Parents first."""
+    bpy.context.view_layer.objects.active = arm_ob
+    bpy.ops.object.mode_set(mode='POSE')
+    for name, hj, tj, _p in _BONES:
+        pb = arm_ob.pose.bones.get(name)
+        if pb is None or hj not in jt_dst or tj not in jt_dst \
+                or hj not in jt_src or tj not in jt_src:
+            continue
+        a1, b1 = jt_dst[hj], jt_dst[tj]
+        v1 = b1 - a1
+        if v1.length < 1e-9:
+            continue
+        rest = pb.bone.matrix_local            # armature space (== world here)
+        rest_y = Vector((rest[0][1], rest[1][1], rest[2][1])).normalized()
+        q = rest_y.rotation_difference(v1.normalized())
+        R = q.to_matrix()
+        rest3 = rest.to_3x3()
+        basis = R @ rest3
+        L0 = (jt_src[tj] - jt_src[hj]).length
+        sy = v1.length / max(L0, 1e-9)
+        M = basis.to_4x4()
+        for r_ in range(3):                    # scale columns: X,Z = gs, Y = sy
+            M[r_][0] *= gs
+            M[r_][1] *= sy
+            M[r_][2] *= gs
+        M[0][3], M[1][3], M[2][3] = a1.x, a1.y, a1.z
+        pb.matrix = M
+        bpy.context.view_layer.update()        # parents affect children
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
 # ----------------------------------------------------- phase 2: retargeting --
 
 # skeleton segments used by the warp (present ones only)
@@ -627,13 +747,25 @@ class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
         g_ob[K_BASE] = [v for row in g_ob.matrix_world for v in row]
         g_ob[K_BODY] = body.name
         g_ob[K_BODYH] = float(bco[:, 2].max() - bco[:, 2].min())
-        # torso anchors the garment even when it has no legs/arms of its own
         loose = jt.get("lower_mode") == 'LOOSE'
+        # ONE CLICK = the proven warp puts the garment ON the character;
+        # THEN a real armature is built on the WORN state (bones on the
+        # character's joints, garment skinned to them at rest) - so nothing
+        # moves until the USER grabs a bone: instant, GPU-live hand-tweaking.
         ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
         if not ok:
             self.report({'ERROR'}, "No matching skeleton segments.")
             return {'CANCELLED'}
-        g_ob["srf_info"] = "%s matched to %s (%d joints)" % (
+        try:
+            dg = context.evaluated_depsgraph_get()
+            ev = g_ob.evaluated_get(dg).to_mesh()
+            wco = np.array([(g_ob.matrix_world @ ev.vertices[i].co)[:]
+                            for i in range(len(ev.vertices))], dtype=float)
+            g_ob.evaluated_get(dg).to_mesh_clear()
+            build_garment_rig(g_ob, dst, loose=loose, coords=wco)
+        except Exception as e:
+            print("Soulify garment rig:", e)
+        g_ob["srf_info"] = "%s matched to %s (%d joints, live rig)" % (
             jt.get("label", "garment"), body.name, len(dst))
         self.report({'INFO'}, g_ob["srf_info"])
         return {'FINISHED'}

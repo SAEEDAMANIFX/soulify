@@ -656,3 +656,22 @@ in 1 s, 0% penetration, then Drape = naturally worn open shirt. Bugs burned:
    + 3 Laplacian passes + strict re-clamp.
 Next: pin accessories to their nearest CLOTH ISLAND (a rolled cuff floated at
 its pre-drape spot), then Phase 3 = rig handoff + regression matrix.
+
+
+## Mannequin Phase 2.5 - one click + LIVE RIG (v1.25.0-3)
+User verdict: sliders-through-timers are not professional; control must feel
+like posing a rig, and one press must give a correct fit FIRST.
+Final architecture of `smartrig.mannequin_match`:
+  1. ONE CLICK: the proven bone-pair warp wears the garment on the character
+     (with inline cleanup - 0% penetration, ~1 s).
+  2. THEN build SRF_GarmentRig: a REAL armature whose bones sit on the
+     CHARACTER's joints, with the garment skinned to it (segment
+     inverse-distance^2.5 weights; LOOSE fabric below the pelvis -> spine1
+     only) - rest pose == the worn state, so NOTHING moves until the user
+     grabs a bone. Verified: rotating arm_l 25 deg moved 16,946 sleeve verts
+     instantly (GPU armature deform, native undo).
+Burned lesson: do NOT snap pose-bone matrices to retarget (pbone.matrix +
+stretch pulled the shirt over the head - parent/roll/stretch math needs its
+own careful pass); warp for the snap, armature for the human. The interactive
+skin-modifier mannequin + timer sliders (v1.25.0-1) are superseded by the rig
+but kept for garment-only inspection.
