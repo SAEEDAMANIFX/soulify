@@ -957,7 +957,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         else:
             hr.operator("smartrig.fitwiz_cancel", text="", icon='X')
             if step == 1:
-                wiz.label(text="1/3  Place the garment over the character",
+                wiz.label(text="1/4  Place the garment over the character",
                           icon='ORIENTATION_GLOBAL')
                 r = wiz.row(align=True)
                 r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
@@ -969,17 +969,27 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 wiz.operator("smartrig.fitwiz_markers",
                              text="Next: Markers", icon='FORWARD')
             elif step == 2:
-                wiz.label(text="2/3  Drag any wrong marker (cuff = wrist!)",
+                wiz.label(text="2/4  FRONT: drag any wrong marker",
                           icon='EMPTY_AXIS')
                 wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
                 wiz.prop(props, "fitwiz_xray", slider=True)
                 wiz.prop(props, "fitwiz_ref_alpha", slider=True)
                 r = wiz.row(align=True)
                 r.operator("smartrig.fitwiz_markers", text="Rebuild")
+                r.operator("smartrig.fitwiz_side",
+                           text="Next: Side", icon='FORWARD')
+            elif step == 3:
+                wiz.label(text="3/4  SIDE: push markers forward / back",
+                          icon='ORIENTATION_VIEW')
+                wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
+                wiz.prop(props, "fitwiz_xray", slider=True)
+                wiz.prop(props, "fitwiz_ref_alpha", slider=True)
+                r = wiz.row(align=True)
+                r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
                 r.operator("smartrig.fitwiz_extras",
                            text="Next: Extras", icon='FORWARD')
-            elif step == 3:
-                wiz.label(text="3/3  Register extras: belt, pockets, "
+            elif step == 4:
+                wiz.label(text="4/4  Register extras: belt, pockets, "
                                "buttons, flowers", icon='GROUP_VERTEX')
                 wiz.label(text="Edit Mode: select the piece, then:")
                 wiz.operator("smartrig.fitwiz_register", icon='ADD')

@@ -60,7 +60,7 @@ def _mirror_handler(scene, depsgraph):
         return
     try:
         props = scene.smartrig
-        if props.fitwiz_step != 2 or not props.fitwiz_mirror:
+        if props.fitwiz_step not in (2, 3) or not props.fitwiz_mirror:
             return
         col = bpy.data.collections.get(MARKER_COL)
         if col is None or col.hide_viewport:
@@ -430,6 +430,22 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_fitwiz_side(bpy.types.Operator):
+    """Side pass: snap to the LEFT view to push markers forward/back
+    (depth) against the side reference"""
+    bl_idname = "smartrig.fitwiz_side"
+    bl_label = "Side Pass"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        try:
+            bpy.ops.view3d.view_axis(type='LEFT')
+        except Exception:
+            pass
+        context.scene.smartrig.fitwiz_step = 3
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_fitwiz_extras(bpy.types.Operator):
     """Register rigid extras: belt, pockets, buttons, flowers... select
     their vertices in Edit Mode then press 'Register Selected'"""
@@ -445,7 +461,7 @@ class SMARTRIG_OT_fitwiz_extras(bpy.types.Operator):
         if g.vertex_groups.get(VG_RIGID) is None:
             g.vertex_groups.new(name=VG_RIGID)
         g.hide_select = False          # extras step needs Edit Mode on it
-        props.fitwiz_step = 3
+        props.fitwiz_step = 4
         return {'FINISHED'}
 
 
@@ -516,9 +532,9 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
 
 
 _CLASSES = (SMARTRIG_OT_fitwiz_start, SMARTRIG_OT_fitwiz_view,
-            SMARTRIG_OT_fitwiz_markers, SMARTRIG_OT_fitwiz_extras,
-            SMARTRIG_OT_fitwiz_register, SMARTRIG_OT_fitwiz_go,
-            SMARTRIG_OT_fitwiz_cancel)
+            SMARTRIG_OT_fitwiz_markers, SMARTRIG_OT_fitwiz_side,
+            SMARTRIG_OT_fitwiz_extras, SMARTRIG_OT_fitwiz_register,
+            SMARTRIG_OT_fitwiz_go, SMARTRIG_OT_fitwiz_cancel)
 
 
 def register():
