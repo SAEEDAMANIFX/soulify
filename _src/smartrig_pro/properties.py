@@ -55,6 +55,16 @@ def _spine_neck_update(self, context):
         print("SmartRig spine/neck live update:", e)
 
 
+def _mann_update(self, context):
+    """Live mannequin pose/volume sliders: re-pose the mannequin and re-warp
+    the garment (debounced in mannequin.live_adjust)."""
+    try:
+        from . import mannequin
+        mannequin.live_adjust(context)
+    except Exception as e:
+        print("Soulify mannequin live update:", e)
+
+
 def _fit_live_update(self, context):
     """Live-tune the Let's Fit garment (ease / smoothing / scale / height) with
     no rebuild - mandatory update= callback (LESSONS: sliders without callbacks
@@ -450,6 +460,30 @@ class SmartRigProps(PropertyGroup):
         name="Body", type=bpy.types.Object, poll=_mesh_poll,
         description="The character mesh to fit the clothing onto (auto-detected "
         "if empty)")
+    # ---- interactive mannequin (pose + volume, live) ----
+    mann_arm_open: FloatProperty(
+        name="Arms Open", default=0.0, min=-60.0, max=60.0,
+        update=_mann_update,
+        description="Raise / lower the mannequin's arms (degrees) - the garment "
+        "sleeves follow live")
+    mann_elbow_bend: FloatProperty(
+        name="Elbow Bend", default=0.0, min=-20.0, max=90.0,
+        update=_mann_update,
+        description="Bend the mannequin's elbows - sleeves follow")
+    mann_neck_len: FloatProperty(
+        name="Neck Length", default=0.0, min=-0.5, max=0.5,
+        update=_mann_update,
+        description="Lengthen / shorten the mannequin's neck (fraction of the "
+        "torso)")
+    mann_torso_vol: FloatProperty(
+        name="Torso Volume", default=1.0, min=0.7, max=1.4,
+        update=_mann_update,
+        description="The mannequin's torso thickness - match the garment's or "
+        "the character's volume for the best result")
+    mann_arm_vol: FloatProperty(
+        name="Limb Volume", default=1.0, min=0.7, max=1.4,
+        update=_mann_update,
+        description="The mannequin's limb thickness")
     garment_preserve: BoolProperty(
         name="Preserve Shape", default=True,
         description="Keep the garment's designed shape (pleats, folds, volume, "

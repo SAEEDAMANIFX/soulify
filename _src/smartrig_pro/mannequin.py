@@ -220,6 +220,39 @@ def garment_skeleton(g_ob):
 
 # --------------------------------------------------------------- build mesh --
 
+def adjusted_joints(jt, props):
+    """Apply the user's LIVE mannequin controls to the base joints:
+    arm open (raise/lower both arms), elbow bend, neck length. Volume factors
+    are applied at build time (radii)."""
+    from mathutils import Matrix as _M
+    out = {k: (Vector(v) if isinstance(v, Vector) else v) for k, v in jt.items()}
+    # neck length (fraction of torso length)
+    if "neck" in out and "chest" in out:
+        tl = (out["neck"] - out["chest"]).length
+        out["neck"] = out["neck"] + Vector((0, 0, tl * props.mann_neck_len))
+    for side, sgn in (("l", -1.0), ("r", 1.0)):
+        sh = out.get("shoulder_%s" % side)
+        el = out.get("elbow_%s" % side)
+        wr = out.get("wrist_%s" % side)
+        if sh is not None and el is not None:
+            # open/close the whole arm: rotate about the FRONT axis (Y)
+            R = _M.Rotation(math.radians(props.mann_arm_open) * -sgn, 3, 'Y')
+            el2 = sh + R @ (el - sh)
+            out["elbow_%s" % side] = el2
+            if wr is not None:
+                wr2 = sh + R @ (wr - sh)
+                # extra elbow bend: rotate the forearm about the elbow, around
+                # the axis perpendicular to the arm in the body plane
+                arm = (el2 - sh)
+                ax = arm.cross(Vector((0.0, 1.0, 0.0)))
+                if ax.length > 1e-9:
+                    Rb = _M.Rotation(math.radians(props.mann_elbow_bend) * -sgn,
+                                     3, ax.normalized())
+                    wr2 = el2 + Rb @ (wr2 - el2)
+                out["wrist_%s" % side] = wr2
+    return out
+
+
 def build_mannequin(jt, name=MANN_NAME):
     """Procedural mannequin: joint verts + edges + Skin modifier + subsurf.
     Radii come from the garment, so the flesh fills the clothes."""
@@ -275,10 +308,68 @@ def build_mannequin(jt, name=MANN_NAME):
     ob.display_type = 'SOLID'
     ob["srf_joints"] = {k: list(v) for k, v in jt.items()
                         if isinstance(v, Vector)}
+    ob["srf_radii"] = {k: float(v) for k, v in jt.get("radii", {}).items()}
     ob["srf_lower_mode"] = jt.get("lower_mode", 'NONE')
     ob["srf_free_legs"] = bool(jt.get("free_legs", False))
     ob["srf_label"] = jt.get("label", "?")
     return ob
+
+
+# ----------------------------------------------------------- live controls --
+
+_ADJ_TOKEN = [0]
+
+
+def live_adjust(context):
+    """update= callback for the mannequin sliders: re-pose the mannequin and
+    re-warp the garment from its DESIGN onto the adjusted pose. Debounced."""
+    props = context.scene.smartrig
+    g_ob = props.garment_object
+    mq = bpy.data.objects.get(MANN_NAME)
+    if g_ob is None or mq is None:
+        return
+    jb = mq.get("srf_joints_base") or mq.get("srf_joints")
+    if not jb:
+        return
+    _ADJ_TOKEN[0] += 1
+    tok = _ADJ_TOKEN[0]
+    gname, mname = g_ob.name, mq.name
+
+    def _run():
+        if tok != _ADJ_TOKEN[0]:
+            return None
+        g = bpy.data.objects.get(gname)
+        m = bpy.data.objects.get(mname)
+        if g is None or m is None:
+            return None
+        p = bpy.context.scene.smartrig
+        base = {k: Vector(v) for k, v in
+                (m.get("srf_joints_base") or m.get("srf_joints")).items()}
+        radii = dict(m.get("srf_radii", {}))
+        # volume factors: torso / arms
+        for k in list(radii.keys()):
+            if k in ("torso", "chest", "neck"):
+                radii[k] = radii[k] * p.mann_torso_vol
+            else:
+                radii[k] = radii[k] * p.mann_arm_vol
+        adj = adjusted_joints(base, p)
+        adj["radii"] = radii
+        adj["lower_mode"] = m.get("srf_lower_mode", 'NONE')
+        adj["label"] = m.get("srf_label", "?")
+        base_store = {k: list(v) for k, v in base.items()}
+        nm = build_mannequin(adj)
+        nm["srf_joints_base"] = base_store
+        neutral = (abs(p.mann_arm_open) < 1e-3 and abs(p.mann_elbow_bend) < 1e-3
+                   and abs(p.mann_neck_len) < 1e-3)
+        if not neutral:                            # neutral = keep the fit as-is
+            try:
+                warp_garment(g, base, adj,
+                             loose=(m.get("srf_lower_mode") == 'LOOSE'))
+            except Exception as e:
+                print("Soulify mannequin live_adjust:", e)
+        return None
+
+    bpy.app.timers.register(_run, first_interval=0.30)
 
 
 # ----------------------------------------------------- phase 2: retargeting --
@@ -566,6 +657,7 @@ class SMARTRIG_OT_garment_mannequin(bpy.types.Operator):
             self.report({'ERROR'}, "Could not read the garment's structure.")
             return {'CANCELLED'}
         ob = build_mannequin(jt)
+        ob["srf_joints_base"] = dict(ob["srf_joints"])   # for live sliders
         limbs = sum(1 for k in jt if k.startswith(("shoulder", "hip")))
         self.report({'INFO'}, "Mannequin built (%d limb roots)." % limbs)
         context.view_layer.objects.active = ob

@@ -1049,6 +1049,11 @@ class SMARTRIG_OT_lets_fit(bpy.types.Operator):
             g_ob[K_INFO] = info
         else:
             add_fit_mods(g_ob, body, props)
+        # the INTERACTIVE MANNEQUIN comes with every fit: pose/volume sliders
+        try:
+            bpy.ops.smartrig.garment_mannequin()
+        except Exception as e:
+            print("Soulify fit->mannequin:", e)
         self.report({'INFO'}, "Fitted: " + info)
         return {'FINISHED'}
 

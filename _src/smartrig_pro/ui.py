@@ -959,7 +959,16 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             dr.operator("smartrig.fit_drape", text="Drape (Cloth)", icon='MOD_CLOTH')
             mq = box.row()
             mq.operator("smartrig.garment_mannequin",
-                        text="Garment Mannequin (beta)", icon='OUTLINER_OB_ARMATURE')
+                        text="Rebuild Mannequin", icon='OUTLINER_OB_ARMATURE')
+            if bpy.data.objects.get("SRF_Mannequin") is not None:
+                mb = box.box()
+                mb.label(text="Mannequin (live)", icon='ARMATURE_DATA')
+                col = mb.column(align=True)
+                col.prop(props, "mann_arm_open")
+                col.prop(props, "mann_elbow_bend")
+                col.prop(props, "mann_neck_len")
+                col.prop(props, "mann_torso_vol")
+                col.prop(props, "mann_arm_vol")
             mm = box.row(); mm.scale_y = 1.3
             mm.operator("smartrig.mannequin_match",
                         text="Match to Character (beta)", icon='ARMATURE_DATA')
