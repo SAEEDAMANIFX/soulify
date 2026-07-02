@@ -1266,14 +1266,16 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     # / the user-confirmed garment width (clamped around gs so the design
     # girth is never destroyed).
     sc_chest = sc_waist = None
-    if body is not None and ("chest_w_l" in jt_src or "waist_w_l" in jt_src):
+    if body is not None and any(k in jt_src for k in
+                                ("chest_w_l", "waist_w_l",
+                                 "chest_d_f", "waist_d_f")):
         try:
             bl_ = utils.read_rest_coords(body)
             R3b = np.array(body.matrix_world.to_3x3())
             bw_ = bl_ @ R3b.T + np.array(body.matrix_world.translation[:])
             bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
 
-            def _band_scale(kl, kr, zkey):
+            def _band_scale(kl, kr, zkey, axis):
                 a_, b_ = jt_src.get(kl), jt_src.get(kr)
                 if a_ is None or b_ is None or zkey not in jt_dst:
                     return None
@@ -1283,11 +1285,20 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                 band = np.abs(bw_[:, 2] - jt_dst[zkey].z) < 0.02 * bh_
                 if band.sum() < 8:
                     return None
-                w_b = float(bw_[band, 0].max() - bw_[band, 0].min())
+                w_b = float(bw_[band, axis].max() - bw_[band, axis].min())
                 return float(np.clip(w_b / w_g, 0.8 * gs, 1.3 * gs))
 
-            sc_chest = _band_scale("chest_w_l", "chest_w_r", "chest")
-            sc_waist = _band_scale("waist_w_l", "waist_w_r", "pelvis")
+            def _combine(vals):
+                vals = [v for v in vals if v is not None]
+                return sum(vals) / len(vals) if vals else None
+
+            # width (x) + depth (y) spans combined per band
+            sc_chest = _combine([
+                _band_scale("chest_w_l", "chest_w_r", "chest", 0),
+                _band_scale("chest_d_f", "chest_d_b", "chest", 1)])
+            sc_waist = _combine([
+                _band_scale("waist_w_l", "waist_w_r", "pelvis", 0),
+                _band_scale("waist_d_f", "waist_d_b", "pelvis", 1)])
         except Exception as e:
             print("Soulify width markers:", e)
 

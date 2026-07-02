@@ -29,7 +29,8 @@ _ORDERED = ("neck", "chest", "pelvis",
             "shoulder_r", "elbow_r", "wrist_r",
             "hip_l", "knee_l", "ankle_l",
             "hip_r", "knee_r", "ankle_r",
-            "chest_w_l", "chest_w_r", "waist_w_l", "waist_w_r")
+            "chest_w_l", "chest_w_r", "waist_w_l", "waist_w_r",
+            "chest_d_f", "chest_d_b", "waist_d_f", "waist_d_b")
 
 # chain lines drawn between markers (like the character wizard) + the two
 # WIDTH spans (chest / waist girth control)
@@ -38,7 +39,8 @@ CHAINS = (("pelvis", "chest"), ("chest", "neck"),
           ("shoulder_r", "elbow_r"), ("elbow_r", "wrist_r"),
           ("hip_l", "knee_l"), ("knee_l", "ankle_l"),
           ("hip_r", "knee_r"), ("knee_r", "ankle_r"),
-          ("chest_w_l", "chest_w_r"), ("waist_w_l", "waist_w_r"))
+          ("chest_w_l", "chest_w_r"), ("waist_w_l", "waist_w_r"),
+          ("chest_d_f", "chest_d_b"), ("waist_d_f", "waist_d_b"))
 
 
 def _garment(context):
@@ -384,10 +386,14 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
             c = jt["chest"]
             jt["chest_w_l"] = c + Vector((-r_ch, 0.0, 0.0))
             jt["chest_w_r"] = c + Vector((r_ch, 0.0, 0.0))
+            jt["chest_d_f"] = c + Vector((0.0, -r_ch, 0.0))
+            jt["chest_d_b"] = c + Vector((0.0, r_ch, 0.0))
         if "pelvis" in jt and r_wa:
             p = jt["pelvis"]
             jt["waist_w_l"] = p + Vector((-r_wa, 0.0, 0.0))
             jt["waist_w_r"] = p + Vector((r_wa, 0.0, 0.0))
+            jt["waist_d_f"] = p + Vector((0.0, -r_wa, 0.0))
+            jt["waist_d_b"] = p + Vector((0.0, r_wa, 0.0))
         clear_markers()
         col = _marker_col(create=True)
         # size relative to the garment
@@ -486,6 +492,7 @@ class SMARTRIG_OT_fitwiz_go(bpy.types.Operator):
             if col is not None:
                 col.hide_viewport = True     # kept for a later refit
             clear_reference()
+            props.fitwiz_xray = 1.0      # solid again
             props.fitwiz_step = 0
         return r
 
@@ -503,6 +510,7 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
         clear_markers()
         clear_reference()
         _restore(context)
+        context.scene.smartrig.fitwiz_xray = 1.0
         context.scene.smartrig.fitwiz_step = 0
         return {'FINISHED'}
 

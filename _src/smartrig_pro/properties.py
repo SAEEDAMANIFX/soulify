@@ -83,6 +83,21 @@ def _fit_live_update(self, context):
         print("SmartRig fit live tune:", e)
 
 
+def _fitwiz_xray_update(self, context):
+    """Garment transparency in the wizard: viewport X-Ray with the slider
+    as its alpha (1.0 = solid, lower = see-through for marker placement)."""
+    try:
+        a = float(self.fitwiz_xray)
+        for scr in bpy.data.screens:
+            for ar in scr.areas:
+                if ar.type == 'VIEW_3D':
+                    sh = ar.spaces.active.shading
+                    sh.show_xray = a < 0.99
+                    sh.xray_alpha = max(a, 0.05)
+    except Exception as e:
+        print("Soulify fitwiz xray:", e)
+
+
 def _fitwiz_alpha_update(self, context):
     """Live opacity for the Fit Wizard reference images."""
     try:
@@ -534,6 +549,11 @@ class SmartRigProps(PropertyGroup):
         name="Fit Wizard Step", default=0, min=0, max=3,
         description="Internal: current step of the step-by-step Fit Wizard "
         "(0 off, 1 place, 2 markers, 3 extras)")
+    fitwiz_xray: FloatProperty(
+        name="Garment Transparency", default=1.0, min=0.05, max=1.0,
+        subtype='FACTOR', update=_fitwiz_xray_update,
+        description="See through the garment while placing markers "
+        "(1 = solid)")
     fitwiz_mirror: BoolProperty(
         name="Symmetry", default=True,
         description="Mirror marker moves to the other side (around the "
