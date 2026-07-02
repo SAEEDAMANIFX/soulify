@@ -1297,13 +1297,21 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                 if ("shoulder_l" in jt_dst and "shoulder_r" in jt_dst) \
                 else 0.25 * bh_
 
-            def _band_scale(kl, kr, zkey, axis):
+            _mcol = bpy.data.collections.get("SRF_FitMarkers")
+
+            def _band_scale(kl, kr, zkey, axis, spankey=None):
                 a_, b_ = jt_src.get(kl), jt_src.get(kr)
                 if a_ is None or b_ is None or zkey not in jt_dst:
                     return None
                 w_g = (a_ - b_).length
                 if w_g < 1e-6:
                     return None
+                # MORPH TARGETS: marker span (where the user says the
+                # fabric must sit) / the garment's design span
+                auto = _mcol.get("srf_span_" + spankey) \
+                    if (_mcol is not None and spankey) else None
+                if auto:
+                    return float(np.clip(w_g / float(auto), 0.6, 1.6))
                 j = jt_dst[zkey]
                 band = (np.abs(bw_[:, 2] - j.z) < 0.02 * bh_) \
                     & (np.abs(bw_[:, 0] - j.x) < 0.55 * sw_) \
@@ -1319,11 +1327,12 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
 
             # width (x) + depth (y) spans combined per band
             sc_chest = _combine([
-                _band_scale("chest_w_l", "chest_w_r", "chest", 0),
-                _band_scale("chest_d_f", "chest_d_b", "chest", 1)])
+                _band_scale("chest_w_l", "chest_w_r", "chest", 0, "chest_w"),
+                _band_scale("chest_d_f", "chest_d_b", "chest", 1, "chest_d")])
             sc_waist = _combine([
-                _band_scale("waist_w_l", "waist_w_r", "pelvis", 0),
-                _band_scale("waist_d_f", "waist_d_b", "pelvis", 1)])
+                _band_scale("waist_w_l", "waist_w_r", "pelvis", 0, "waist_w"),
+                _band_scale("waist_d_f", "waist_d_b", "pelvis", 1,
+                            "waist_d")])
         except Exception as e:
             print("Soulify width markers:", e)
 

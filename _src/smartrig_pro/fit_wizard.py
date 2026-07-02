@@ -456,6 +456,52 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
         # live symmetry pivot = the garment's own centre x
         bbx = [(g.matrix_world @ Vector(c)).x for c in g.bound_box]
         col["srf_cx"] = 0.5 * (min(bbx) + max(bbx))
+        # MORPH TARGETS (Saeed): remember the garment's DESIGN spans, then
+        # snap the size markers onto the CHARACTER's body (front of chest /
+        # back, front of waist / back...) - dragging them in/out morphs the
+        # girth: marker span / design span = the band scale
+        for key, kl, kr in (("chest_w", "chest_w_l", "chest_w_r"),
+                            ("waist_w", "waist_w_l", "waist_w_r"),
+                            ("chest_d", "chest_d_f", "chest_d_b"),
+                            ("waist_d", "waist_d_f", "waist_d_b")):
+            if kl in jt and kr in jt:
+                col["srf_span_" + key] = (jt[kl] - jt[kr]).length
+        body = props.fit_body_object
+        if body is not None:
+            try:
+                import numpy as np
+                from . import utils as _u
+                bl_ = _u.read_rest_coords(body)
+                Rb = np.array(body.matrix_world.to_3x3())
+                bw_ = bl_ @ Rb.T + np.array(body.matrix_world.translation[:])
+                bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
+                for key, kl, kr, ax in (("chest_w", "chest_w_l",
+                                         "chest_w_r", 0),
+                                        ("waist_w", "waist_w_l",
+                                         "waist_w_r", 0),
+                                        ("chest_d", "chest_d_f",
+                                         "chest_d_b", 1),
+                                        ("waist_d", "waist_d_f",
+                                         "waist_d_b", 1)):
+                    ml = bpy.data.objects.get(MARKER_PREFIX + kl)
+                    mr = bpy.data.objects.get(MARKER_PREFIX + kr)
+                    if ml is None or mr is None:
+                        continue
+                    c = 0.5 * (ml.location + mr.location)
+                    band = (np.abs(bw_[:, 2] - c.z) < 0.02 * bh_) \
+                        & (np.abs(bw_[:, 0] - c.x) < 0.28 * bh_ * 0.6) \
+                        & (np.abs(bw_[:, 1] - c.y) < 0.28 * bh_ * 0.6)
+                    if band.sum() < 8:
+                        continue
+                    half = 0.5 * float(bw_[band, ax].max()
+                                       - bw_[band, ax].min()) + 0.015 * bh_
+                    d = Vector((1.0, 0.0, 0.0)) if ax == 0 \
+                        else Vector((0.0, 1.0, 0.0))
+                    sgn = 1.0 if (ml.location - c).dot(d) >= 0 else -1.0
+                    ml.location = c + d * half * sgn
+                    mr.location = c - d * half * sgn
+            except Exception as e:
+                print("Soulify size targets:", e)
         # LOCK the garment while dragging markers (Saeed: no accidental
         # garment selection in the markers step) - unlocked on exit
         g.select_set(False)
@@ -479,6 +525,34 @@ class SMARTRIG_OT_fitwiz_side(bpy.types.Operator):
         except Exception:
             pass
         context.scene.smartrig.fitwiz_step = 3
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fitwiz_goto(bpy.types.Operator):
+    """Move back / forward through the wizard steps freely"""
+    bl_idname = "smartrig.fitwiz_goto"
+    bl_label = "Wizard Step"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    target: bpy.props.IntProperty(default=1, min=1, max=5)
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        s = self.target
+        g = props.garment_object
+        if g is not None and g.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        if s in (2, 3):
+            _show_markers(size_pass=False)
+        elif s == 4:
+            _show_markers(size_pass=True)
+        try:
+            bpy.ops.view3d.view_axis(type='LEFT' if s == 3 else 'FRONT')
+        except Exception:
+            pass
+        if s == 5 and g is not None:
+            g.hide_select = False
+        props.fitwiz_step = s
         return {'FINISHED'}
 
 
@@ -685,7 +759,7 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
 
 _CLASSES = (SMARTRIG_OT_fitwiz_start, SMARTRIG_OT_fitwiz_view,
             SMARTRIG_OT_fitwiz_markers, SMARTRIG_OT_fitwiz_side,
-            SMARTRIG_OT_fitwiz_size,
+            SMARTRIG_OT_fitwiz_goto, SMARTRIG_OT_fitwiz_size,
             SMARTRIG_OT_fitwiz_extras, SMARTRIG_OT_fitwiz_register,
             SMARTRIG_OT_fitwiz_show, SMARTRIG_OT_fitwiz_go,
             SMARTRIG_OT_fitwiz_cancel)

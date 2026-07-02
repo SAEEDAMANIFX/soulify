@@ -956,6 +956,16 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             hr.operator("smartrig.fitwiz_start", text="Start", icon='PLAY')
         else:
             hr.operator("smartrig.fitwiz_cancel", text="", icon='X')
+            nav = wiz.row(align=True)
+            b = nav.operator("smartrig.fitwiz_goto", text="",
+                             icon='TRIA_LEFT')
+            b.target = max(step - 1, 1)
+            f = nav.operator("smartrig.fitwiz_goto", text="",
+                             icon='TRIA_RIGHT')
+            f.target = min(step + 1, 5)
+            e = nav.operator("smartrig.fitwiz_goto", text="",
+                             icon='FF')
+            e.target = 5
             if step == 1:
                 wiz.label(text="1/5  Place the garment over the character",
                           icon='ORIENTATION_GLOBAL')
