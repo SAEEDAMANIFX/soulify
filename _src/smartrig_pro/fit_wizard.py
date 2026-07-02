@@ -34,6 +34,40 @@ def _garment(context):
     return context.scene.smartrig.garment_object
 
 
+def _role(key):
+    """Same colour system as the character markers."""
+    if key.endswith("_l"):
+        return 'left'
+    if key.endswith("_r"):
+        return 'right'
+    return 'center'
+
+
+def _isolate(context, g):
+    """Everything disappears - only the garment stays (Saeed's spec)."""
+    hidden = []
+    for ob in context.view_layer.objects:
+        if ob is not g and not ob.hide_get():
+            try:
+                ob.hide_set(True)
+                hidden.append(ob.name)
+            except Exception:
+                pass
+    context.scene["srf_wiz_hidden"] = hidden
+
+
+def _restore(context):
+    for nm in list(context.scene.get("srf_wiz_hidden", [])):
+        ob = bpy.data.objects.get(nm)
+        if ob is not None:
+            try:
+                ob.hide_set(False)
+            except Exception:
+                pass
+    if "srf_wiz_hidden" in context.scene:
+        del context.scene["srf_wiz_hidden"]
+
+
 def _marker_col(create=False):
     col = bpy.data.collections.get(MARKER_COL)
     if col is None and create:
@@ -80,8 +114,12 @@ class SMARTRIG_OT_fitwiz_start(bpy.types.Operator):
         if col is not None:
             col.hide_viewport = False
         props.fitwiz_step = 1
-        # select the garment so the user can move/scale it immediately
         g = props.garment_object
+        # SAEED'S SPEC: everything disappears - only the garment - and the
+        # view snaps to FRONT (same entrance as the character marker wizard)
+        _isolate(context, g)
+        from . import markers as _mk
+        _mk.set_front_view(context)
         for ob in context.selected_objects:
             ob.select_set(False)
         g.select_set(True)
@@ -136,13 +174,37 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
             if not isinstance(v, Vector):
                 continue
             em = bpy.data.objects.new(MARKER_PREFIX + key, None)
-            em.empty_display_type = 'SPHERE'
-            em.empty_display_size = 0.02 * h
+            # SAME SYSTEM as the character markers: tiny core, the coloured
+            # GPU glow (wizard overlay) is the visual; roles share colours
+            role = _role(key)
+            em.empty_display_type = 'PLAIN_AXES'
+            em.empty_display_size = 0.012 * h
             em.location = v
-            em.show_name = True
+            em.show_name = False
             em.show_in_front = True
+            em.color = {'center': (0.2, 0.9, 1.0, 1.0),
+                        'left': (1.0, 0.8, 0.1, 1.0),
+                        'right': (0.55, 0.45, 0.2, 1.0)}[role]
             col.objects.link(em)
             made += 1
+        # right side mirrors the left automatically (drag LEFT markers),
+        # exactly like the character wizard
+        for key in _ORDERED:
+            if not key.endswith("_r"):
+                continue
+            r_ob = bpy.data.objects.get(MARKER_PREFIX + key)
+            l_ob = bpy.data.objects.get(MARKER_PREFIX + key[:-2] + "_l")
+            if r_ob is None or l_ob is None:
+                continue
+            r_ob.lock_location = (True, True, True)
+            for c in list(r_ob.constraints):
+                r_ob.constraints.remove(c)
+            con = r_ob.constraints.new('COPY_LOCATION')
+            con.name = "SRF Mirror"
+            con.target = l_ob
+            con.invert_x = True
+            con.target_space = 'WORLD'
+            con.owner_space = 'WORLD'
         props.fitwiz_step = 2
         self.report({'INFO'}, "%d markers - drag the wrong ones" % made)
         return {'FINISHED'}
@@ -201,6 +263,7 @@ class SMARTRIG_OT_fitwiz_go(bpy.types.Operator):
         if props.garment_object is not None \
                 and props.garment_object.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
+        _restore(context)          # the character comes back for the fit
         r = bpy.ops.smartrig.mannequin_match()
         if 'FINISHED' in r:
             col = bpy.data.collections.get(MARKER_COL)
@@ -218,6 +281,7 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
 
     def execute(self, context):
         clear_markers()
+        _restore(context)
         context.scene.smartrig.fitwiz_step = 0
         return {'FINISHED'}
 

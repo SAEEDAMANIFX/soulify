@@ -336,3 +336,16 @@ wm.redraw_timer before trusting a screenshot; hidden-state checks said the
 body was hidden while the screenshot still showed it.
 Verified full cycle: 9 pre-filled markers on the shirt, user-style wrist
 correction, extras step, FIT 7.0s, design damage 10.6%, markers auto-hide.
+
+
+## v1.29.1 - Fit Wizard entrance + coloured markers (Saeed's spec, verified)
+- Start = ISOLATE (everything hides, only the garment) + FRONT ortho view
+  (markers.set_front_view), restore on FIT/cancel via scene['srf_wiz_hidden'].
+- Markers use the character-wizard system verbatim: tiny PLAIN_AXES core,
+  wizard.py GPU glow + labels extended via _fit_marker_items() (center cyan
+  / left yellow / right dark-gold), right side driven by COPY_LOCATION
+  invert_x from the left (drag LEFT only).
+- MARKERS ARE THE GROUND TRUTH (Saeed): dragging one tells the addon 'the
+  wrist/waist is HERE' - mannequin_match applies jt.update(marker_joints()).
+Verified: front-ortho screenshot with 9 glowing markers on the isolated
+shirt, mirror constraint live, scene restored after cancel.

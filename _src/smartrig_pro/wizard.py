@@ -98,18 +98,36 @@ def _marker_mult():
         return 1.0
 
 
+def _fit_marker_items():
+    """(object, role) for the Fit Wizard markers - same glow system."""
+    items = []
+    try:
+        from . import fit_wizard as _fw
+        fcol = bpy.data.collections.get(_fw.MARKER_COL)
+        if fcol is not None and not fcol.hide_viewport:
+            for o in fcol.objects:
+                if o.name.startswith(_fw.MARKER_PREFIX):
+                    key = o.name[len(_fw.MARKER_PREFIX):].split(".")[0]
+                    items.append((o, _fw._role(key)))
+    except Exception:
+        pass
+    return items
+
+
 def _draw_glow(region, rv3d):
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
     m = _marker_mult()
-    for name in markers.all_marker_names():
-        o = bpy.data.objects.get(name)
+    items = [(bpy.data.objects.get(nm), None) for nm in markers.all_marker_names()]
+    items += _fit_marker_items()
+    for o, role in items:
         if not o or o.hide_get():
             continue
+        name = o.name
         p = view3d_utils.location_3d_to_region_2d(region, rv3d, o.matrix_world.translation)
         if not p:
             continue
-        col = GLOW[_role(name)]
+        col = GLOW[role if role is not None else _role(name)]
         sel = _selected(o)
         s = (1.5 if sel else 1.0) * m
         for rr, aa in ((27 * s, 0.12), (17 * s, 0.24), (10 * s, 0.60)):
@@ -142,6 +160,19 @@ def _draw_labels(region, rv3d):
         blf.color(fid, min(col[0] + 0.3, 1), min(col[1] + 0.3, 1), min(col[2] + 0.3, 1), 1)
         blf.position(fid, p.x + 12, p.y + 8, 0)
         blf.draw(fid, label)
+    # Fit Wizard marker labels (same coloured system)
+    for o, role in _fit_marker_items():
+        p = view3d_utils.location_3d_to_region_2d(region, rv3d,
+                                                  o.matrix_world.translation)
+        if not p:
+            continue
+        col = GLOW[role]
+        blf.color(fid, min(col[0] + 0.3, 1), min(col[1] + 0.3, 1),
+                  min(col[2] + 0.3, 1), 1)
+        blf.position(fid, p.x + 12, p.y + 8, 0)
+        key = o.name.split("SRFM_", 1)[-1]
+        blf.draw(fid, key.replace("_l", " L").replace("_r", " R")
+                 .replace("_", " ").title())
     # fingertip labels (smaller, green)
     blf.size(fid, 13)
     blf.color(fid, 0.5, 1.0, 0.6, 1)
