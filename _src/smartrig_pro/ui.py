@@ -957,6 +957,9 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             col.prop(props, "garment_height")
             dr = box.row(); dr.scale_y = 1.3
             dr.operator("smartrig.fit_drape", text="Drape (Cloth)", icon='MOD_CLOTH')
+            mq = box.row()
+            mq.operator("smartrig.garment_mannequin",
+                        text="Garment Mannequin (beta)", icon='OUTLINER_OB_ARMATURE')
             row = box.row(align=True)
             row.operator("smartrig.fit_apply", text="Apply Fit", icon='CHECKMARK')
             row.operator("smartrig.fit_remove", text="Remove", icon='X')

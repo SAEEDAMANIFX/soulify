@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Soulify",
     "author": "Saeed",
-    "version": (1, 23, 5),
+    "version": (1, 24, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar (N) > Soulify",
     "description": "Give it a soul. Fit + Rig + Animate: automatic body/garment rigging from markers + mesh geometry, garment fitting, and animation tools.",
@@ -9,9 +9,9 @@ bl_info = {
 }
 
 import importlib
-from . import properties, utils, icons, detect, finger_ai, finger_render_ai, markers, fingers_manual, fit, generate, skinning, metarig, skirt, garment, kandura, wizard, ui
+from . import properties, utils, icons, detect, finger_ai, finger_render_ai, markers, fingers_manual, fit, generate, skinning, metarig, skirt, garment, mannequin, kandura, wizard, ui
 
-_modules = [properties, utils, icons, detect, finger_ai, finger_render_ai, markers, fingers_manual, fit, generate, skinning, metarig, skirt, garment, kandura, wizard, ui]
+_modules = [properties, utils, icons, detect, finger_ai, finger_render_ai, markers, fingers_manual, fit, generate, skinning, metarig, skirt, garment, mannequin, kandura, wizard, ui]
 
 
 def register():
