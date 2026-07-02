@@ -547,6 +547,42 @@ class SMARTRIG_OT_fitwiz_register(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_fitwiz_show(bpy.types.Operator):
+    """SEE the part on YOUR garment: highlights the registered vertices in
+    Edit Mode so you know exactly what the addon detected - and where"""
+    bl_idname = "smartrig.fitwiz_show"
+    bl_label = "Show Part"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    part: bpy.props.EnumProperty(items=[
+        ('SLEEVE', "Sleeve", "The arm tube: shoulder to cuff"),
+        ('COLLAR', "Collar", "The band around the neck opening"),
+        ('LOWER', "Lower", "Everything hanging below the waist"),
+        ('RIGID', "Rigid", "Belt / buttons / pockets / ornaments")])
+
+    def execute(self, context):
+        g = _garment(context)
+        if g is None:
+            return {'CANCELLED'}
+        name = SMARTRIG_OT_fitwiz_register._GROUPS[self.part]
+        vg = g.vertex_groups.get(name)
+        if vg is None:
+            self.report({'WARNING'}, "Nothing registered as %s yet"
+                        % self.part.title())
+            return {'CANCELLED'}
+        context.view_layer.objects.active = g
+        g.hide_select = False
+        g.select_set(True)
+        if g.mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='DESELECT')
+        g.vertex_groups.active_index = vg.index
+        bpy.ops.object.vertex_group_select()
+        self.report({'INFO'}, "%s highlighted on the garment"
+                    % self.part.title())
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_fitwiz_go(bpy.types.Operator):
     """FIT: the markers override the automatic analysis and the full match
     engine runs (warp + design preservation + live garment rig)"""
@@ -598,7 +634,8 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
 _CLASSES = (SMARTRIG_OT_fitwiz_start, SMARTRIG_OT_fitwiz_view,
             SMARTRIG_OT_fitwiz_markers, SMARTRIG_OT_fitwiz_side,
             SMARTRIG_OT_fitwiz_extras, SMARTRIG_OT_fitwiz_register,
-            SMARTRIG_OT_fitwiz_go, SMARTRIG_OT_fitwiz_cancel)
+            SMARTRIG_OT_fitwiz_show, SMARTRIG_OT_fitwiz_go,
+            SMARTRIG_OT_fitwiz_cancel)
 
 
 def register():

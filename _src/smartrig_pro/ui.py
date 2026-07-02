@@ -991,7 +991,18 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             elif step == 4:
                 wiz.label(text="4/4  Parts (pre-filled - correct if needed)",
                           icon='GROUP_VERTEX')
-                wiz.label(text="Edit Mode: select, then register as:")
+                wiz.label(text="See what was detected (highlights it):")
+                sr = wiz.row(align=True)
+                sr.operator("smartrig.fitwiz_show",
+                            text="Sleeve", icon='HIDE_OFF').part = 'SLEEVE'
+                sr.operator("smartrig.fitwiz_show",
+                            text="Collar", icon='HIDE_OFF').part = 'COLLAR'
+                sr2 = wiz.row(align=True)
+                sr2.operator("smartrig.fitwiz_show",
+                             text="Lower", icon='HIDE_OFF').part = 'LOWER'
+                sr2.operator("smartrig.fitwiz_show",
+                             text="Rigid", icon='HIDE_OFF').part = 'RIGID'
+                wiz.label(text="Fix: select verts, then register as:")
                 pr = wiz.row(align=True)
                 pr.operator("smartrig.fitwiz_register",
                             text="Sleeve").part = 'SLEEVE'
