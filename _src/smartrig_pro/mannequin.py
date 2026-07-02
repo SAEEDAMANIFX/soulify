@@ -1261,6 +1261,36 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     else:
         gs = 1.0
 
+    # WIDTH MARKERS (Fit Wizard): chest/waist girth control. When present,
+    # each torso band gets its own radial scale = body width at that height
+    # / the user-confirmed garment width (clamped around gs so the design
+    # girth is never destroyed).
+    sc_chest = sc_waist = None
+    if body is not None and ("chest_w_l" in jt_src or "waist_w_l" in jt_src):
+        try:
+            bl_ = utils.read_rest_coords(body)
+            R3b = np.array(body.matrix_world.to_3x3())
+            bw_ = bl_ @ R3b.T + np.array(body.matrix_world.translation[:])
+            bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
+
+            def _band_scale(kl, kr, zkey):
+                a_, b_ = jt_src.get(kl), jt_src.get(kr)
+                if a_ is None or b_ is None or zkey not in jt_dst:
+                    return None
+                w_g = (a_ - b_).length
+                if w_g < 1e-6:
+                    return None
+                band = np.abs(bw_[:, 2] - jt_dst[zkey].z) < 0.02 * bh_
+                if band.sum() < 8:
+                    return None
+                w_b = float(bw_[band, 0].max() - bw_[band, 0].min())
+                return float(np.clip(w_b / w_g, 0.8 * gs, 1.3 * gs))
+
+            sc_chest = _band_scale("chest_w_l", "chest_w_r", "chest")
+            sc_waist = _band_scale("waist_w_l", "waist_w_r", "pelvis")
+        except Exception as e:
+            print("Soulify width markers:", e)
+
     segs = []
     for a, b in _SEGS:
         if a in jt_src and b in jt_src and a in jt_dst and b in jt_dst:
@@ -1272,8 +1302,14 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             R = mathutils_matrix_to_np(v0.rotation_difference(v1).to_matrix())
             axial = v1.length / v0.length
             d0 = np.array((v0.normalized())[:])
-            # anisotropic: bone-length ratio ALONG the bone, global size across
-            S = gs * np.eye(3) + (axial - gs) * np.outer(d0, d0)
+            # anisotropic: bone-length ratio ALONG the bone; radial = the
+            # band's width-marker scale when available, else global size
+            rad = gs
+            if a == "pelvis" and sc_waist is not None:
+                rad = sc_waist
+            elif a == "chest" and sc_chest is not None:
+                rad = sc_chest
+            S = rad * np.eye(3) + (axial - rad) * np.outer(d0, d0)
             is_spine = a in ("pelvis", "chest")
             segs.append((np.array(a0[:]), np.array(b0[:]),
                          R @ S, np.array(a1[:]), is_spine, R))

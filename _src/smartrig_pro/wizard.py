@@ -114,10 +114,43 @@ def _fit_marker_items():
     return items
 
 
+def _draw_fit_chains(shader, region, rv3d):
+    """Connecting lines between the Fit Wizard markers (skeleton chains +
+    the chest/waist WIDTH spans) - same look as the character wizard."""
+    try:
+        from . import fit_wizard as _fw
+        fcol = bpy.data.collections.get(_fw.MARKER_COL)
+        if fcol is None or fcol.hide_viewport:
+            return
+        pts = []
+        for a, b in _fw.CHAINS:
+            oa = bpy.data.objects.get(_fw.MARKER_PREFIX + a)
+            ob = bpy.data.objects.get(_fw.MARKER_PREFIX + b)
+            if oa is None or ob is None:
+                continue
+            pa = view3d_utils.location_3d_to_region_2d(
+                region, rv3d, oa.matrix_world.translation)
+            pb = view3d_utils.location_3d_to_region_2d(
+                region, rv3d, ob.matrix_world.translation)
+            if pa and pb:
+                pts += [(pa.x, pa.y), (pb.x, pb.y)]
+        if not pts:
+            return
+        gpu.state.line_width_set(2.0)
+        batch = batch_for_shader(shader, 'LINES', {"pos": pts})
+        shader.bind()
+        shader.uniform_float("color", (0.9, 0.95, 1.0, 0.45))
+        batch.draw(shader)
+        gpu.state.line_width_set(1.0)
+    except Exception:
+        pass
+
+
 def _draw_glow(region, rv3d):
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
     m = _marker_mult()
+    _draw_fit_chains(shader, region, rv3d)
     items = [(bpy.data.objects.get(nm), None) for nm in markers.all_marker_names()]
     items += _fit_marker_items()
     for o, role in items:

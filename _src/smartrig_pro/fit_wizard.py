@@ -28,7 +28,17 @@ _ORDERED = ("neck", "chest", "pelvis",
             "shoulder_l", "elbow_l", "wrist_l",
             "shoulder_r", "elbow_r", "wrist_r",
             "hip_l", "knee_l", "ankle_l",
-            "hip_r", "knee_r", "ankle_r")
+            "hip_r", "knee_r", "ankle_r",
+            "chest_w_l", "chest_w_r", "waist_w_l", "waist_w_r")
+
+# chain lines drawn between markers (like the character wizard) + the two
+# WIDTH spans (chest / waist girth control)
+CHAINS = (("pelvis", "chest"), ("chest", "neck"),
+          ("shoulder_l", "elbow_l"), ("elbow_l", "wrist_l"),
+          ("shoulder_r", "elbow_r"), ("elbow_r", "wrist_r"),
+          ("hip_l", "knee_l"), ("knee_l", "ankle_l"),
+          ("hip_r", "knee_r"), ("knee_r", "ankle_r"),
+          ("chest_w_l", "chest_w_r"), ("waist_w_l", "waist_w_r"))
 
 
 def _garment(context):
@@ -315,6 +325,19 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
             self.report({'ERROR'}, "Could not analyze the garment.")
             return {'CANCELLED'}
         g["srf_wiz_label"] = str(jt.get("label", "garment"))
+        # WIDTH markers (Saeed): chest + waist girth control, pre-filled
+        # from the analyzed torso radii
+        radii = jt.get("radii") or {}
+        r_ch = radii.get("chest") or radii.get("torso")
+        r_wa = radii.get("torso") or r_ch
+        if "chest" in jt and r_ch:
+            c = jt["chest"]
+            jt["chest_w_l"] = c + Vector((-r_ch, 0.0, 0.0))
+            jt["chest_w_r"] = c + Vector((r_ch, 0.0, 0.0))
+        if "pelvis" in jt and r_wa:
+            p = jt["pelvis"]
+            jt["waist_w_l"] = p + Vector((-r_wa, 0.0, 0.0))
+            jt["waist_w_r"] = p + Vector((r_wa, 0.0, 0.0))
         clear_markers()
         col = _marker_col(create=True)
         # size relative to the garment

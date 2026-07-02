@@ -367,3 +367,18 @@ so the user places the garment + markers against real measurements.
 - Side backdrop faces the LEFT view (azimuth -90 render, rotz -90).
 Verified visually: character backdrop + blue measure lines + coloured dots
 behind the isolated shirt, opacity slider live at 0.85.
+
+
+## v1.30.0 - Marker chains + WIDTH markers (chest/waist girth control)
+- wizard.py _draw_fit_chains: white 45%-alpha lines between fit markers
+  (skeleton chains from fit_wizard.CHAINS) incl. the two WIDTH spans.
+- fit_wizard: chest_w_l/r + waist_w_l/r markers pre-filled from the
+  analyzed torso radii (radii['chest'/'torso']), mirrored like the rest.
+- warp_garment: when width markers exist, the torso bands get their OWN
+  radial scale = body x-width at the dst joint height / user-confirmed
+  garment width, CLAMPED to [0.8*gs, 1.3*gs] so design girth survives;
+  pelvis->chest uses waist scale, chest->neck uses chest scale.
+- Female reference = automatic: the reference is rendered from the picked
+  Body, so the character's own gender/proportions are the reference.
+Verified: 13 markers with chains + width spans over the measured backdrop;
+opacity slider live.
