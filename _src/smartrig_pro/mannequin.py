@@ -19,6 +19,83 @@ MANN_NAME = "SRF_Mannequin"
 
 # ------------------------------------------------------------ garment bones --
 
+def _trace_tube(co, tip_c, tip_r, toward, cx, z_stop, steps=16):
+    """March from a tube opening (cuff / leg hem) toward the torso along the
+    tube's OWN centerline - handles sleeves/legs modeled BENT (elbow/knee in
+    the design pose). Returns the centerline as a list of Vectors, tip first.
+    Stops when the tube opens into the torso (spread jump), when it CROSSES
+    the body midline (it drifted onto the other side - the shoulder_l-at-+x
+    bug), or when it climbs above the collar."""
+    p = np.array([tip_c.x, tip_c.y, tip_c.z], dtype=float)
+    d = np.array([toward.x, toward.y, toward.z], dtype=float)
+    d /= (np.linalg.norm(d) + 1e-12)
+    r = max(tip_r * 2.2, 1e-4)
+    sgn = 1.0 if tip_c.x >= cx else -1.0
+    lat0 = abs(tip_c.x - cx)
+    pts = [Vector(p)]
+    for _ in range(steps):
+        q = p + d * r * 0.8
+        sel = co[np.linalg.norm(co - q, axis=1) < r]
+        if len(sel) < 6:
+            break
+        c = sel.mean(axis=0)
+        if sgn * (c[0] - cx) < 0.20 * lat0:        # reached/crossed the midline
+            break
+        if c[2] > z_stop:                          # climbed into the collar
+            break
+        nd = c - p
+        nl = np.linalg.norm(nd)
+        if nl < 1e-9:
+            break
+        nd /= nl
+        d = 0.6 * d + 0.4 * nd                    # follow the bend, stay stable
+        d /= (np.linalg.norm(d) + 1e-12)
+        p = c
+        pts.append(Vector(c))
+        spread = float(np.percentile(np.linalg.norm(sel - c, axis=1), 80))
+        if spread > 2.6 * tip_r:                  # merged into the torso
+            break
+    return pts
+
+
+def _bend_joint(polyline):
+    """The design-pose ELBOW/KNEE: the centerline point deviating most from
+    the straight tip->root chord (a straight sleeve returns the midpoint)."""
+    if len(polyline) < 3:
+        return polyline[len(polyline) // 2] if polyline else None
+    a, b = polyline[0], polyline[-1]
+    ab = (b - a)
+    L = ab.length
+    if L < 1e-9:
+        return polyline[len(polyline) // 2]
+    ab /= L
+    best, bd = None, -1.0
+    for p in polyline[1:-1]:
+        d = ((p - a) - ab * ((p - a).dot(ab))).length
+        if d > bd:
+            bd, best = d, p
+    if bd < 0.03 * L:                              # effectively straight
+        return a.lerp(b, 0.5)
+    return best
+
+
+def _lower_mode(co, z0, span, cx, cy):
+    """How the garment treats the legs:
+      'LEGS'  - splits into two tubes below the crotch (pants/shalwar)
+      'LOOSE' - one wide column continues down (kandura/thobe/dress/skirt):
+                binds to pelvis/spine so KNEE BENDS NEVER TEAR IT
+      'NONE'  - garment ends above the crotch (shirt/top)"""
+    zc = z0 + 0.28 * span                          # below-crotch test band
+    sel = co[np.abs(co[:, 2] - zc) < 0.05 * span]
+    if len(sel) < 12:
+        return 'NONE'
+    xs = np.sort(sel[:, 0] - cx)
+    # two clusters w/ a central gap = legs
+    mid = np.abs(xs) < 0.25 * (xs.max() - xs.min() + 1e-9)
+    if mid.sum() < 0.08 * len(xs):
+        return 'LEGS'
+    return 'LOOSE'
+
 def garment_skeleton(g_ob):
     """Joints implied by the garment (world space):
       {'pelvis','chest','neck', 'shoulder_l','elbow_l','wrist_l', ...R,
@@ -71,19 +148,22 @@ def garment_skeleton(g_ob):
             return
         c, r = ring
         sgn = -1.0 if c.x < cx else 1.0
-        # the limb ROOT: where the tube meets the torso - lateral edge of the
-        # torso at just-below-neck height (sleeves) or the pelvis (legs)
         is_leg = c.z < z0 + 0.35 * span and abs(c.x - cx) < 0.30 * span
         if is_leg:
-            root = Vector((cx + sgn * jt["radii"]["torso"] * 0.55, cy,
-                           jt["pelvis"].z))
+            root_guess = Vector((cx + sgn * jt["radii"]["torso"] * 0.55, cy,
+                                 z0 + 0.42 * span))
             names = ("hip", "knee", "ankle")
         else:
-            root = Vector((cx + sgn * torso_r(z_neck - 0.12 * span) * 0.9,
-                           cy, z_neck - 0.10 * span))
+            root_guess = Vector((cx + sgn * torso_r(z_neck - 0.12 * span) * 0.9,
+                                 cy, z_neck - 0.10 * span))
             names = ("shoulder", "elbow", "wrist")
         tip = Vector(c)
-        mid = root.lerp(tip, 0.5)
+        # trace the REAL tube centerline (handles bent elbows/knees in the
+        # design pose); root = where the tube merged into the torso
+        line = _trace_tube(co, tip, r, (root_guess - tip), cx,
+                           z_neck - 0.05 * span)
+        root = line[-1] if len(line) >= 2 else root_guess
+        mid = _bend_joint(line) or root.lerp(tip, 0.5)
         jt["%s_%s" % (names[0], side)] = root
         jt["%s_%s" % (names[1], side)] = mid
         jt["%s_%s" % (names[2], side)] = tip
@@ -91,6 +171,34 @@ def garment_skeleton(g_ob):
 
     _limb("l", left)
     _limb("r", right)
+
+    # ---- lower body: pants legs / loose column (kandura, dress, skirt) ----
+    # the class is the PRIOR (a shirt's lower band is also a tube - it must
+    # not read as a loose column); the two-cluster split test decides pants
+    from .garment import classify_garment
+    label, _isb = classify_garment(g, rings)
+    split = _lower_mode(co, z0, span, cx, cy)
+    if split == 'LEGS':
+        mode = 'LEGS'
+    elif label in ("skirt", "dress/thobe"):
+        mode = 'LOOSE'
+    else:
+        mode = 'NONE'
+    jt["lower_mode"] = mode
+    jt["label"] = label
+    has_legs = any(k.startswith("hip_") for k in jt)
+    if mode == 'LOOSE' and not has_legs:
+        # kandura/long dress/skirt: the column hangs free. The mannequin still
+        # gets STRAIGHT legs inside it (needed to retarget onto the character)
+        # but they are marked FREE: the loose fabric binds to pelvis/spine, so
+        # bending the character's knees NEVER tears or drags the garment.
+        for side, sgn in (("l", -1.0), ("r", 1.0)):
+            hx = cx + sgn * jt["radii"]["torso"] * 0.5
+            jt["hip_%s" % side] = Vector((hx, cy, z0 + 0.45 * span))
+            jt["knee_%s" % side] = Vector((hx, cy, z0 + 0.22 * span))
+            jt["ankle_%s" % side] = Vector((hx, cy, z0 + 0.02 * span))
+            jt["radii"]["hip_%s" % side] = jt["radii"]["torso"] * 0.38
+        jt["free_legs"] = True
     return jt
 
 
@@ -149,7 +257,11 @@ def build_mannequin(jt, name=MANN_NAME):
                 r *= 0.8
         ob.data.skin_vertices[0].data[i].radius = (r, r)
     ob.display_type = 'SOLID'
-    ob["srf_joints"] = {k: list(v) for k, v in jt.items() if k != "radii"}
+    ob["srf_joints"] = {k: list(v) for k, v in jt.items()
+                        if isinstance(v, Vector)}
+    ob["srf_lower_mode"] = jt.get("lower_mode", 'NONE')
+    ob["srf_free_legs"] = bool(jt.get("free_legs", False))
+    ob["srf_label"] = jt.get("label", "?")
     return ob
 
 
