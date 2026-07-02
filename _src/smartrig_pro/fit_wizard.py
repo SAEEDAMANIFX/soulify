@@ -362,24 +362,8 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
                         'right': (0.55, 0.45, 0.2, 1.0)}[role]
             col.objects.link(em)
             made += 1
-        # right side mirrors the left automatically (drag LEFT markers),
-        # exactly like the character wizard
-        for key in _ORDERED:
-            if not key.endswith("_r"):
-                continue
-            r_ob = bpy.data.objects.get(MARKER_PREFIX + key)
-            l_ob = bpy.data.objects.get(MARKER_PREFIX + key[:-2] + "_l")
-            if r_ob is None or l_ob is None:
-                continue
-            r_ob.lock_location = (True, True, True)
-            for c in list(r_ob.constraints):
-                r_ob.constraints.remove(c)
-            con = r_ob.constraints.new('COPY_LOCATION')
-            con.name = "SRF Mirror"
-            con.target = l_ob
-            con.invert_x = True
-            con.target_space = 'WORLD'
-            con.owner_space = 'WORLD'
+        # ALL markers move freely: the world-x mirror lock made the right
+        # side feel dead and broke off-center garments (v1.30.3)
         # LOCK the garment while dragging markers (Saeed: no accidental
         # garment selection in the markers step) - unlocked on exit
         g.select_set(False)
