@@ -710,3 +710,28 @@ lives relative to the implied ARM, not the cloth wall). Switch to
 c = r - r_mannequin(bone, t) using garment_skeleton's traced tube radii;
 dst = surface_ray + c*gs. Then flip the default back from the warp
 (scene['srf_experimental_retarget'] gates it meanwhile, v1.26.2).
+
+
+## MetaTailor-style RIDE engine - status (v1.27.0-4)
+THE insight (answering 'how did MetaTailor succeed'): never map garment->body;
+bind the garment to the MANNEQUIN (Surface Deform) and MORPH THE MANNEQUIN
+into the character - the garment rides a smooth body-to-body deformation.
+Implemented in mannequin.retarget_ride + rig-first joints (_rig_joints: a
+Soulify-rigged character gives EXACT joints, AI only as fallback - always
+recommend Rig then Fit).
+Burned lessons:
+1. A Skin-modifier mannequin CANNOT be a Surface Deform target while its
+   stick verts move - the modifier regenerates topology -> binding garbage.
+   FREEZE the mannequin (new_from_object) then morph the frozen verts with
+   the bone-pair warp (smooth capsule body = the easy case for the warp).
+2. Progress metric: pen 45% -> 34% -> 14% -> 0% (with a thin OUTSIDE
+   shrinkwrap cleanup) BUT the fabric TEARS visually: Surface Deform bound
+   across a SPARSE mannequin surface (skin+subsurf2, few hundred verts;
+   sleeve fabric binds to far triangles). NEXT (exact): densify the mannequin
+   (subsurf 3+, extra stick verts mid-bone), bind with falloff ~2.5, and only
+   then morph; consider MESH_DEFORM (volume bind) instead of SURFACE_DEFORM.
+3. Numbers can PASS while the eye fails: z-range + penetration% said perfect
+   while the shirt was shredded plates. Add a TEAR metric to the regression
+   suite: max edge-length ratio evaluated/design (>2 = torn).
+Stable default remains the warp; ride gated behind
+scene['srf_experimental_retarget'].

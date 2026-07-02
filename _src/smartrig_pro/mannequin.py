@@ -306,6 +306,7 @@ def build_mannequin(jt, name=MANN_NAME):
                 r *= 0.8
         ob.data.skin_vertices[0].data[i].radius = (r, r)
     ob.display_type = 'SOLID'
+    ob["srf_order"] = order                        # stick vert i -> joint name
     ob["srf_joints"] = {k: list(v) for k, v in jt.items()
                         if isinstance(v, Vector)}
     ob["srf_radii"] = {k: float(v) for k, v in jt.get("radii", {}).items()}
@@ -492,6 +493,98 @@ def snap_rig_to_joints(arm_ob, jt_src, jt_dst, gs=1.0):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+# --------------------------- MetaTailor-style: ride the mannequin's surface --
+
+def retarget_ride(context, g_ob, jt_src, jt_dst, body, loose=False):
+    """How MetaTailor succeeded: NEVER map garment->body directly. Bind the
+    garment to the MANNEQUIN's surface (Surface Deform - native, silky), then
+    MORPH THE MANNEQUIN into the character by moving its stick joints (they
+    ARE its vertices) - the garment rides the morph with perfect, smooth
+    correspondence. No bone math, no rays."""
+    # 1. mannequin inside the garment - FROZEN to a plain mesh (the skin
+    # modifier regenerates topology when its stick verts move, which breaks
+    # the Surface Deform binding -> garbage). Frozen mesh + warp morph keeps
+    # the topology constant forever.
+    mq = build_mannequin(jt_src)
+    dg0 = context.evaluated_depsgraph_get()
+    frozen = bpy.data.meshes.new_from_object(mq.evaluated_get(dg0))
+    mq.modifiers.clear()
+    mq.data = frozen
+    # 2. bind the garment to the mannequin surface
+    for m in list(g_ob.modifiers):
+        if m.type == 'SURFACE_DEFORM' and m.name == "SRF_Ride":
+            g_ob.modifiers.remove(m)
+    md = g_ob.modifiers.new("SRF_Ride", 'SURFACE_DEFORM')
+    md.target = mq
+    md.falloff = 4.0
+    context.view_layer.objects.active = g_ob
+    with context.temp_override(object=g_ob, active_object=g_ob):
+        bpy.ops.object.surfacedeform_bind(modifier=md.name)
+    if not md.is_bound:
+        bpy.data.objects.remove(mq, do_unlink=True)
+        return False
+    # 3. morph the FROZEN mannequin body with the bone-pair warp (easy case:
+    # smooth capsule body, no tents possible) - topology constant, SD follows
+    me = mq.data
+    nm = len(me.vertices)
+    wm = np.array([v.co[:] for v in me.vertices], dtype=float)
+    segs = []
+    for name, hj, tj, _p in _BONES:
+        if hj in jt_src and tj in jt_src and hj in jt_dst and tj in jt_dst:
+            a0, b0 = jt_src[hj], jt_src[tj]
+            a1, b1 = jt_dst[hj], jt_dst[tj]
+            v0, v1 = (b0 - a0), (b1 - a1)
+            if v0.length < 1e-9 or v1.length < 1e-9:
+                continue
+            R = mathutils_matrix_to_np(v0.rotation_difference(v1).to_matrix())
+            segs.append((np.array(a0[:]), np.array(b0[:]), R,
+                         np.array(a1[:]),
+                         v1.length / v0.length, np.array(v0.normalized()[:])))
+    if not segs:
+        bpy.data.objects.remove(mq, do_unlink=True)
+        return False
+    W = np.zeros((nm, len(segs)))
+    for k, (a0, b0, _R, _a1, _ax, _d0) in enumerate(segs):
+        ab = b0 - a0
+        L2 = float(ab.dot(ab)) + 1e-12
+        t = np.clip(((wm - a0) @ ab) / L2, 0.0, 1.0)
+        cl = a0 + t[:, None] * ab
+        W[:, k] = 1.0 / (np.sum((wm - cl) ** 2, axis=1) + 1e-8) ** 2.5
+    W /= (W.sum(axis=1, keepdims=True) + 1e-12)
+    outm = np.zeros_like(wm)
+    for k, (a0, _b0, R, a1, axial, d0) in enumerate(segs):
+        S = np.eye(3) + (axial - 1.0) * np.outer(d0, d0)
+        outm += W[:, k:k + 1] * ((wm - a0) @ (R @ S).T + a1)
+    for i in range(nm):
+        me.vertices[i].co = outm[i]
+    me.update()
+    # 3.5 THE MetaTailor STEP: the mannequin now WEARS THE CHARACTER'S SKIN -
+    # shrinkwrap its generated surface onto the real body, so its surface
+    # becomes her surface and the garment rides out to the true silhouette
+    sw = mq.modifiers.new("SRF_Skin2Body", 'SHRINKWRAP')
+    sw.target = body
+    sw.wrap_method = 'NEAREST_SURFACEPOINT'
+    sw.wrap_mode = 'ON_SURFACE'
+    context.view_layer.update()
+    # 3.6 live cleanup on the garment itself: a thin OUTSIDE shrinkwrap vs the
+    # real body catches what the mannequin approximation misses
+    for m in list(g_ob.modifiers):
+        if m.name == "SRF_Clean":
+            g_ob.modifiers.remove(m)
+    from . import utils as _u
+    bco = _u.read_rest_coords(body)
+    cl = g_ob.modifiers.new("SRF_Clean", 'SHRINKWRAP')
+    cl.target = body
+    cl.wrap_mode = 'OUTSIDE'
+    cl.wrap_method = 'NEAREST_SURFACEPOINT'
+    cl.offset = 0.003 * float(bco[:, 2].max() - bco[:, 2].min())
+    # 4. keep it LIVE: the user can nudge any mannequin vertex (a joint) and
+    # the garment follows; hide the mannequin visually only
+    mq.hide_set(True)
+    mq.hide_render = True
+    return True
+
+
 # ------------------------------------- SURFACE RETARGET (the deep solution) --
 
 def retarget_surface(g_ob, jt_src, jt_dst, body, loose=False):
@@ -593,7 +686,6 @@ def retarget_surface(g_ob, jt_src, jt_dst, body, loose=False):
         v0 = y0.cross(u0)
         L0 = (b0 - a0).length
         L1 = (b1 - a1).length
-        # inner wall per (t,angle) cell = the fabric's own body-side surface
         tt = T[idx, k]
         P = wco[idx]
         ax0 = np.array(a0[:]) + np.outer(tt, np.array(y0[:])) * L0
@@ -601,14 +693,22 @@ def retarget_surface(g_ob, jt_src, jt_dst, body, loose=False):
         ru = rad @ np.array(u0[:])
         rv = rad @ np.array(v0[:])
         rr = np.hypot(ru, rv)
-        ang = np.arctan2(rv, ru)
-        tb = np.minimum((tt * NT).astype(int), NT - 1)
-        abn = ((ang + math.pi) / (2 * math.pi) * NA).astype(int) % NA
-        inner = np.full((NT, NA), np.nan)
-        for j in range(len(idx)):
-            cellv = inner[tb[j], abn[j]]
-            if not (cellv <= rr[j]):
-                inner[tb[j], abn[j]] = rr[j]
+        # CLEARANCE BASIS = the SOURCE MANNEQUIN's limb/torso radius, not the
+        # fabric's own inner wall (that collapsed sleeves skin-tight: a
+        # sleeve's designed looseness lives relative to the implied ARM)
+        nmk = s["name"]
+        if nmk == "spine1":
+            r_src = np.full(len(idx), radii.get("torso", 0.10 * span_g))
+        elif nmk == "spine2":
+            rc = radii.get("chest", radii.get("torso", 0.10 * span_g))
+            rn = radii.get("neck", 0.03 * span_g)
+            r_src = rc + (rn - rc) * tt
+        else:
+            side = nmk[-1]
+            r_src = np.full(len(idx),
+                            radii.get("shoulder_%s" % side,
+                                      radii.get("hip_%s" % side,
+                                                0.05 * span_g)))
         # decode on the character
         for j, i in enumerate(idx):
             if rr[j] < 1e-9:
@@ -617,8 +717,7 @@ def retarget_surface(g_ob, jt_src, jt_dst, body, loose=False):
             dir0 = Vector((rad[j][0], rad[j][1], rad[j][2])) / rr[j]
             dir1 = (R @ dir0)
             axis1 = a1 + y1 * (tt[j] * L1)
-            iw = inner[tb[j], abn[j]]
-            clear = max(rr[j] - (iw if not math.isnan(iw) else rr[j]), 0.0)
+            clear = max(rr[j] - float(r_src[j]), 0.0)
             # ray from the character's bone outward to her REAL surface.
             # The ray STARTS INSIDE the body (on the bone axis) - the FIRST
             # hit is the surface we stand on. Taking the last hit grabbed the
@@ -631,7 +730,7 @@ def retarget_surface(g_ob, jt_src, jt_dst, body, loose=False):
             if okc:
                 r_dst = ((bmw @ loc) - axis1).length
             if r_dst is None:
-                r_dst = (iw if not math.isnan(iw) else rr[j]) * gs
+                r_dst = float(r_src[j]) * gs       # off-body: implied radius
             out[i] = np.array((axis1 + dir1 * (r_dst + 0.004 * gs
                                                + clear * gs))[:])
 
@@ -676,9 +775,56 @@ _SEGS = [("pelvis", "chest"), ("chest", "neck"),
          ("hip_r", "knee_r"), ("knee_r", "ankle_r")]
 
 
+def _rig_joints(body):
+    """EXACT joints from a Soulify rig when the character is rigged first -
+    the recommended flow: Rig, then Fit (no AI guessing at all)."""
+    try:
+        from . import metarig as _mr
+        rig = _mr._generated_rig() or bpy.data.objects.get("SR_Metarig")
+        if rig is None or rig.type != 'ARMATURE':
+            return None
+        mw = rig.matrix_world
+        bones = rig.pose.bones if rig.mode == 'POSE' else rig.pose.bones
+
+        def head(*names):
+            for nm in names:
+                pb = rig.pose.bones.get(nm)
+                if pb is not None:
+                    return mw @ pb.head
+            return None
+
+        out = {}
+        pairs = {
+            "neck": ("neck", "neck_01", "spine.004", "spine.006"),
+            "chest": ("spine.003", "chest", "spine_03", "spine.002"),
+            "pelvis": ("spine", "spine_01", "root", "hips"),
+            "shoulder_l": ("upper_arm.L", "upper_arm_fk.L", "upper_arm.l"),
+            "elbow_l": ("forearm.L", "forearm_fk.L", "forearm.l"),
+            "wrist_l": ("hand.L", "hand_fk.L", "hand.l"),
+            "shoulder_r": ("upper_arm.R", "upper_arm_fk.R", "upper_arm.r"),
+            "elbow_r": ("forearm.R", "forearm_fk.R", "forearm.r"),
+            "wrist_r": ("hand.R", "hand_fk.R", "hand.r"),
+            "hip_l": ("thigh.L", "thigh_fk.L"), "knee_l": ("shin.L", "shin_fk.L"),
+            "ankle_l": ("foot.L", "foot_fk.L"),
+            "hip_r": ("thigh.R", "thigh_fk.R"), "knee_r": ("shin.R", "shin_fk.R"),
+            "ankle_r": ("foot.R", "foot_fk.R"),
+        }
+        for ours, cands in pairs.items():
+            p = head(*cands)
+            if p is not None:
+                out[ours] = p
+        return out if len(out) >= 8 else None
+    except Exception as e:
+        print("Soulify _rig_joints:", e)
+        return None
+
+
 def character_joints(body):
-    """The character's joints from the pose net (works for A-pose, T-pose or
-    anything the net was trained on). Returns {name: Vector} or None."""
+    """The character's joints. RIG FIRST (exact - the recommended flow: rig
+    the character with Soulify, then Fit), pose net as the fallback."""
+    rj = _rig_joints(body)
+    if rj is not None:
+        return rj
     try:
         from . import detect
         if not detect.available():
@@ -931,13 +1077,22 @@ class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
         # switched to the mannequin limb radii (see LESSONS: sleeves collapse
         # skin-tight when clearance is measured from the fabric's own inner
         # wall). Enable per scene: scene["srf_experimental_retarget"] = True
+        # STABLE DEFAULT = the warp. The MetaTailor-style ride (bind to a
+        # frozen mannequin, morph the mannequin) is gated experimental: its
+        # remaining gap is Surface-Deform binding quality across a sparse
+        # mannequin surface (needs a denser mannequin + falloff pass - see
+        # LESSONS). Enable: scene["srf_experimental_retarget"] = True
+        ok = False
         if context.scene.get("srf_experimental_retarget"):
             try:
-                ok = retarget_surface(g_ob, jt, dst, body, loose=loose)
+                ok = retarget_ride(context, g_ob, jt, dst, body, loose=loose)
             except Exception as e:
-                print("Soulify retarget_surface failed, warp fallback:", e)
-                ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
-        else:
+                print("Soulify retarget_ride failed:", e)
+        if not ok:
+            for mn in ("SRF_Ride", "SRF_Clean"):
+                m = g_ob.modifiers.get(mn)
+                if m:
+                    g_ob.modifiers.remove(m)
             ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
         if not ok:
             self.report({'ERROR'}, "No matching skeleton segments.")
