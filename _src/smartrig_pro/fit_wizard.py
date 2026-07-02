@@ -380,6 +380,10 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
             con.invert_x = True
             con.target_space = 'WORLD'
             con.owner_space = 'WORLD'
+        # LOCK the garment while dragging markers (Saeed: no accidental
+        # garment selection in the markers step) - unlocked on exit
+        g.select_set(False)
+        g.hide_select = True
         props.fitwiz_step = 2
         self.report({'INFO'}, "%d markers - drag the wrong ones" % made)
         return {'FINISHED'}
@@ -399,6 +403,7 @@ class SMARTRIG_OT_fitwiz_extras(bpy.types.Operator):
             return {'CANCELLED'}
         if g.vertex_groups.get(VG_RIGID) is None:
             g.vertex_groups.new(name=VG_RIGID)
+        g.hide_select = False          # extras step needs Edit Mode on it
         props.fitwiz_step = 3
         return {'FINISHED'}
 
@@ -435,9 +440,10 @@ class SMARTRIG_OT_fitwiz_go(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.smartrig
-        if props.garment_object is not None \
-                and props.garment_object.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
+        if props.garment_object is not None:
+            props.garment_object.hide_select = False
+            if props.garment_object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
         _restore(context)          # the character comes back for the fit
         r = bpy.ops.smartrig.mannequin_match()
         if 'FINISHED' in r:
@@ -456,6 +462,9 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        g = _garment(context)
+        if g is not None:
+            g.hide_select = False
         clear_markers()
         clear_reference()
         _restore(context)
