@@ -786,7 +786,6 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             hb = layout.box()
             hr = hb.row(); hr.alignment = 'CENTER'
             hr.label(text="Rig: %s" % rig.name, icon='CHECKMARK')
-        # ---- Cloth & secondary motion (live; full controls in Item) ----
         cb = layout.box()
         cb.label(text="Cloth & Secondary Motion", icon='PHYSICS')
         _any_live = False
@@ -794,7 +793,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             if krig.get("sk_jiggle"):
                 _any_live = True
                 jr = cb.row(align=True)
-                jr.label(text="Skirt Jiggle", icon_value=icons.get('skirt') or 0)
+                jr.label(text="Skirt Jiggle", icon='MOD_CLOTH')
                 _sbaked = (bool(krig.get("sk_jiggle_baked"))
                            or _sk.skirt_jiggle_has_keys(krig))
                 jr.operator("smartrig.bake_jiggle",
@@ -819,7 +818,6 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             cb.label(text="Live sliders: N-panel > Item.", icon='INFO')
         else:
             cb.label(text="Add Jiggle / Collision in the Rig tab.", icon='INFO')
-        # ---- planned animation systems (structure ready, honest 'planned') ----
         layout.separator(factor=0.5)
         layout.label(text="Animation Systems", icon='PLAY')
         for name, ic in (("Locomotion (drive bone)", 'ORIENTATION_GIMBAL'),
@@ -1100,4 +1098,80 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
                 w.label(text="A modifier is above Follow!", icon='ERROR')
                 w.operator("smartrig.skirt_follow", text="Re-bind (fix order)", icon='FILE_REFRESH')
         # ---- Anti-Penetration (Shrinkwrap Outside) ----
-        
+        amod = skirt.antipen_modifier(context)
+        if amod is not None:
+            ab = layout.column(align=True)
+            ab.label(text="Anti-Penetration", icon='MOD_SHRINKWRAP')
+            ab.prop(context.scene.smartrig, "skirt_antipen_offset", text="Offset", slider=True)
+        if (mpb is None or "collide" not in mpb) and "jiggle" not in rig \
+                and "chest_jiggle" not in rig and fmod is None and amod is None:
+            layout.label(text="Apply Collision / Jiggle / Follow first.", icon='INFO')
+            return
+        layout.separator()
+        layout.label(text="Keyframe these to animate the cloth.", icon='KEYTYPE_KEYFRAME_VEC')
+
+
+class SMARTRIG_PT_chest_item(bpy.types.Panel):
+    """Chest-jiggle live settings, in its OWN N-panel Item section (separate
+    from the skirt) so the animator can tweak + keyframe the bounce."""
+    bl_label = "Chest Jiggle"
+    bl_idname = "SMARTRIG_PT_chest_item"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Item"
+
+    @classmethod
+    def poll(cls, context):
+        from . import skirt
+        rig = skirt.kilt_rig(context)
+        return rig is not None and bool(rig.get("sk_chest_jiggle"))
+
+    def draw_header(self, context):
+        self.layout.label(text="", icon='PHYSICS')
+
+    def draw(self, context):
+        from . import skirt
+        layout = self.layout
+        rig = skirt.kilt_rig(context)
+        if rig is None or "chest_jiggle" not in rig:
+            return
+        c = layout.column(align=True)
+        c.prop(rig, '["chest_jiggle"]', text="Enable", slider=True)
+        c.prop(rig, '["chest_jiggle_amount"]', text="Strength", slider=True)
+        c.prop(rig, '["chest_jiggle_stiffness"]', text="Stiffness", slider=True)
+        c.prop(rig, '["chest_jiggle_damping"]', text="Damping", slider=True)
+        fb = layout.column(align=True)
+        fb.label(text="Wind & Gravity (chest)", icon='FORCE_WIND')
+        fb.prop(context.scene.smartrig, "chest_gravity", text="Gravity", slider=True)
+        fb.prop(context.scene.smartrig, "chest_wind", text="Wind", slider=True)
+        fb.prop(context.scene.smartrig, "chest_wind_speed", text="Wind Speed", slider=True)
+        wr = fb.row(align=True)
+        wr.prop(context.scene.smartrig, "chest_wind_dir", text="Dir")
+        wr.prop(context.scene.smartrig, "chest_wind_turb", text="Gust")
+        baked = bool(rig.get("sk_chest_jiggle_baked")) or skirt.chest_jiggle_has_keys(rig)
+        if baked:
+            bx = layout.box()
+            bx.label(text="BAKED to keyframes - live solver OFF", icon='CHECKMARK')
+        else:
+            layout.label(text="Live (not baked).", icon='PLAY')
+        br = layout.row(align=True)
+        br.operator("smartrig.chest_bake",
+                    text=("Baked ✓" if baked else "Bake"),
+                    icon=('CHECKMARK' if baked else 'ACTION'),
+                    depress=baked).remove = False
+        br.operator("smartrig.chest_bake", text="Clear Bake", icon='TRASH').remove = True
+        layout.label(text="Play to preview, or Bake for render/export.",
+                     icon='KEYTYPE_KEYFRAME_VEC')
+
+
+classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item, SMARTRIG_PT_chest_item)
+
+
+def register():
+    for c in classes:
+        bpy.utils.register_class(c)
+
+
+def unregister():
+    for c in reversed(classes):
+        bpy.utils.unregister_class(c)
