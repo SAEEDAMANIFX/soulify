@@ -248,7 +248,7 @@ def _make_reference(context, body):
                    "side": (-math.pi / 2, Vector((0.03, 0.0, 0.0)))}[tag]
         em.rotation_euler = (math.pi / 2, 0.0, rot_off[0])
         em.location = center + rot_off[1]
-        em.hide_select = False
+        em.hide_select = True     # background only: G can never grab it
         _ref_col(create=True).objects.link(em)
 
 
