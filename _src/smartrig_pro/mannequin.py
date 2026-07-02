@@ -1321,18 +1321,17 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                 w_b = float(bw_[band, axis].max() - bw_[band, axis].min())
                 return float(np.clip(w_b / w_g, 0.8 * gs, 1.3 * gs))
 
-            def _combine(vals):
-                vals = [v for v in vals if v is not None]
-                return sum(vals) / len(vals) if vals else None
-
-            # width (x) + depth (y) spans combined per band
-            sc_chest = _combine([
-                _band_scale("chest_w_l", "chest_w_r", "chest", 0, "chest_w"),
-                _band_scale("chest_d_f", "chest_d_b", "chest", 1, "chest_d")])
-            sc_waist = _combine([
-                _band_scale("waist_w_l", "waist_w_r", "pelvis", 0, "waist_w"),
-                _band_scale("waist_d_f", "waist_d_b", "pelvis", 1,
-                            "waist_d")])
+            # width (x) and depth (y) morphs are fully INDEPENDENT per band
+            sc_chest_w = _band_scale("chest_w_l", "chest_w_r", "chest",
+                                     0, "chest_w")
+            sc_chest_d = _band_scale("chest_d_f", "chest_d_b", "chest",
+                                     1, "chest_d")
+            sc_waist_w = _band_scale("waist_w_l", "waist_w_r", "pelvis",
+                                     0, "waist_w")
+            sc_waist_d = _band_scale("waist_d_f", "waist_d_b", "pelvis",
+                                     1, "waist_d")
+            sc_chest = (sc_chest_w, sc_chest_d)
+            sc_waist = (sc_waist_w, sc_waist_d)
         except Exception as e:
             print("Soulify width markers:", e)
 
@@ -1350,12 +1349,22 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             d0 = np.array((v0.normalized())[:])
             # anisotropic: bone-length ratio ALONG the bone; radial = the
             # band's width-marker scale when available, else global size
-            rad = gs
+            scw = scd = None
             if a == "pelvis" and sc_waist is not None:
-                rad = sc_waist
+                scw, scd = sc_waist
             elif a == "chest" and sc_chest is not None:
-                rad = sc_chest
-            S = rad * np.eye(3) + (axial - rad) * np.outer(d0, d0)
+                scw, scd = sc_chest
+            if scw is not None or scd is not None:
+                # anisotropic band: width (world-x) and depth (world-y)
+                # morph independently around the bone axis
+                u = np.array([1.0, 0.0, 0.0]) - d0 * d0[0]
+                u /= max(np.linalg.norm(u), 1e-9)
+                v = np.cross(d0, u)
+                S = axial * np.outer(d0, d0) \
+                    + (scw if scw is not None else gs) * np.outer(u, u) \
+                    + (scd if scd is not None else gs) * np.outer(v, v)
+            else:
+                S = gs * np.eye(3) + (axial - gs) * np.outer(d0, d0)
             is_spine = a in ("pelvis", "chest")
             segs.append((np.array(a0[:]), np.array(b0[:]),
                          R @ S, np.array(a1[:]), is_spine, R))
