@@ -546,7 +546,7 @@ class SmartRigProps(PropertyGroup):
         description="Slide the garment up/down the body, as a fraction of body "
         "height")
     fitwiz_step: IntProperty(
-        name="Fit Wizard Step", default=0, min=0, max=4,
+        name="Fit Wizard Step", default=0, min=0, max=5,
         description="Internal: current step of the step-by-step Fit Wizard "
         "(0 off, 1 place, 2 markers, 3 extras)")
     fitwiz_xray: FloatProperty(

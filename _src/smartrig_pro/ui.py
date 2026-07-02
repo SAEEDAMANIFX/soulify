@@ -957,7 +957,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         else:
             hr.operator("smartrig.fitwiz_cancel", text="", icon='X')
             if step == 1:
-                wiz.label(text="1/4  Place the garment over the character",
+                wiz.label(text="1/5  Place the garment over the character",
                           icon='ORIENTATION_GLOBAL')
                 r = wiz.row(align=True)
                 r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
@@ -970,7 +970,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 wiz.operator("smartrig.fitwiz_markers",
                              text="Next: Markers", icon='FORWARD')
             elif step == 2:
-                wiz.label(text="2/4  FRONT: drag any wrong marker",
+                wiz.label(text="2/5  JOINTS front: drag wrong markers",
                           icon='EMPTY_AXIS')
                 wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
                 wiz.prop(props, "fitwiz_xray", slider=True)
@@ -980,17 +980,28 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 r.operator("smartrig.fitwiz_side",
                            text="Next: Side", icon='FORWARD')
             elif step == 3:
-                wiz.label(text="3/4  SIDE: push markers forward / back",
+                wiz.label(text="3/5  JOINTS side: forward / back",
                           icon='ORIENTATION_VIEW')
                 wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
                 wiz.prop(props, "fitwiz_xray", slider=True)
                 wiz.prop(props, "fitwiz_ref_alpha", slider=True)
                 r = wiz.row(align=True)
                 r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
-                r.operator("smartrig.fitwiz_extras",
-                           text="Next: Extras", icon='FORWARD')
+                r.operator("smartrig.fitwiz_size",
+                           text="Next: Size", icon='FORWARD')
             elif step == 4:
-                wiz.label(text="4/4  Parts (pre-filled - correct if needed)",
+                wiz.label(text="4/5  SIZE: chest & waist girth",
+                          icon='FIXED_SIZE')
+                wiz.label(text="Width from Front - depth from Side")
+                wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
+                wiz.prop(props, "fitwiz_xray", slider=True)
+                r = wiz.row(align=True)
+                r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
+                r.operator("smartrig.fitwiz_view", text="Side").axis = 'LEFT'
+                wiz.operator("smartrig.fitwiz_extras",
+                             text="Next: Parts", icon='FORWARD')
+            elif step == 5:
+                wiz.label(text="5/5  Parts (pre-filled - correct if needed)",
                           icon='GROUP_VERTEX')
                 wiz.label(text="See what was detected (highlights it):")
                 sr = wiz.row(align=True)

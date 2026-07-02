@@ -32,6 +32,23 @@ _ORDERED = ("neck", "chest", "pelvis",
             "chest_w_l", "chest_w_r", "waist_w_l", "waist_w_r",
             "chest_d_f", "chest_d_b", "waist_d_f", "waist_d_b")
 
+# SIZE (girth) markers are a separate wizard step from the JOINT markers
+_SIZE_KEYS = ("chest_w_l", "chest_w_r", "waist_w_l", "waist_w_r",
+              "chest_d_f", "chest_d_b", "waist_d_f", "waist_d_b")
+
+
+def _show_markers(size_pass):
+    """size_pass False = joints only; True = size markers only."""
+    col = bpy.data.collections.get(MARKER_COL)
+    if col is None:
+        return
+    for ob in col.objects:
+        key = ob.name[len(MARKER_PREFIX):].split(".")[0]
+        try:
+            ob.hide_set((key in _SIZE_KEYS) != size_pass)
+        except Exception:
+            pass
+
 # chain lines drawn between markers (like the character wizard) + the two
 # WIDTH spans (chest / waist girth control)
 CHAINS = (("pelvis", "chest"), ("chest", "neck"),
@@ -443,6 +460,7 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
         # garment selection in the markers step) - unlocked on exit
         g.select_set(False)
         g.hide_select = True
+        _show_markers(size_pass=False)      # joints first, size later
         props.fitwiz_step = 2
         self.report({'INFO'}, "%d markers - drag the wrong ones" % made)
         return {'FINISHED'}
@@ -461,6 +479,23 @@ class SMARTRIG_OT_fitwiz_side(bpy.types.Operator):
         except Exception:
             pass
         context.scene.smartrig.fitwiz_step = 3
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fitwiz_size(bpy.types.Operator):
+    """SIZE pass: only the chest/waist measurement markers show - set the
+    garment's girth (width from the front, depth from the side)"""
+    bl_idname = "smartrig.fitwiz_size"
+    bl_label = "Size Pass"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        _show_markers(size_pass=True)
+        try:
+            bpy.ops.view3d.view_axis(type='FRONT')
+        except Exception:
+            pass
+        context.scene.smartrig.fitwiz_step = 4
         return {'FINISHED'}
 
 
@@ -519,7 +554,7 @@ class SMARTRIG_OT_fitwiz_extras(bpy.types.Operator):
                     g.vertex_groups[nm].add(
                         [int(i) for i in np.nonzero(m)[0]], 1.0, 'REPLACE')
         g.hide_select = False          # extras step needs Edit Mode on it
-        props.fitwiz_step = 4
+        props.fitwiz_step = 5
         return {'FINISHED'}
 
 
@@ -650,6 +685,7 @@ class SMARTRIG_OT_fitwiz_cancel(bpy.types.Operator):
 
 _CLASSES = (SMARTRIG_OT_fitwiz_start, SMARTRIG_OT_fitwiz_view,
             SMARTRIG_OT_fitwiz_markers, SMARTRIG_OT_fitwiz_side,
+            SMARTRIG_OT_fitwiz_size,
             SMARTRIG_OT_fitwiz_extras, SMARTRIG_OT_fitwiz_register,
             SMARTRIG_OT_fitwiz_show, SMARTRIG_OT_fitwiz_go,
             SMARTRIG_OT_fitwiz_cancel)
