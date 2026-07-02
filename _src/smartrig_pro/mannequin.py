@@ -1001,10 +1001,25 @@ def rigidify_components(base, cur, comps, max_frac=0.05, extra=None):
     return stiff
 
 
-def _rigid_group_clusters(g_ob, me, ev):
+def _group_mask(g_ob, me, name):
+    """Bool mask of a registered part group (weight > .5), or None."""
+    vg = g_ob.vertex_groups.get(name)
+    if vg is None:
+        return None
+    gi = vg.index
+    m = np.zeros(len(me.vertices), dtype=bool)
+    for v in me.vertices:
+        for ge in v.groups:
+            if ge.group == gi and ge.weight > 0.5:
+                m[v.index] = True
+                break
+    return m if m.any() else None
+
+
+def _rigid_group_clusters(g_ob, me, ev, name="SRF_Rigid"):
     """Connected clusters of the user's SRF_Rigid vertex group (Fit Wizard
     'register extras' step): each cluster moves as ONE rigid body."""
-    vg = g_ob.vertex_groups.get("SRF_Rigid")
+    vg = g_ob.vertex_groups.get(name)
     if vg is None:
         return []
     gi = vg.index
@@ -1313,6 +1328,7 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             print("Soulify width markers:", e)
 
     segs = []
+    seg_keys = []
     for a, b in _SEGS:
         if a in jt_src and b in jt_src and a in jt_dst and b in jt_dst:
             a0, b0 = jt_src[a], jt_src[b]
@@ -1334,6 +1350,7 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             is_spine = a in ("pelvis", "chest")
             segs.append((np.array(a0[:]), np.array(b0[:]),
                          R @ S, np.array(a1[:]), is_spine, R))
+            seg_keys.append(a)
     if not segs:
         return False
     pelvis_z = jt_src["pelvis"].z if "pelvis" in jt_src else -1e9
@@ -1367,9 +1384,27 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             t_r = 0.5 * (jt_src["shoulder_l"] - jt_src["shoulder_r"]).length
         if t_r > 0.0:
             core = rho_ < 1.45 * t_r
+            m_sl0 = _group_mask(g_ob, me, "SRF_Sleeve")
+            if m_sl0 is not None:
+                core &= ~m_sl0     # registered sleeves are never torso
             for k, (_, _, _, _, is_spine, _) in enumerate(segs):
                 if not is_spine:
                     W[core, k] = 0.0
+    # REGISTERED PARTS (Fit Wizard 4/4): the part carries its own binding -
+    # no garment-type guessing. Sleeve->arms, Collar->neck seg, Lower->spine.
+    def _restrict(mask, keep):
+        cols = [k for k, ka in enumerate(seg_keys) if keep(ka)]
+        if mask is None or not cols:
+            return
+        for k in range(len(seg_keys)):
+            if k not in cols:
+                W[mask, k] = 0.0
+    _restrict(_group_mask(g_ob, me, "SRF_Sleeve"),
+              lambda ka: ka in ("shoulder_l", "elbow_l",
+                                "shoulder_r", "elbow_r"))
+    _restrict(_group_mask(g_ob, me, "SRF_Collar"), lambda ka: ka == "chest")
+    _restrict(_group_mask(g_ob, me, "SRF_Lower"),
+              lambda ka: ka in ("pelvis", "chest"))
     W /= (W.sum(axis=1, keepdims=True) + 1e-12)
 
     # ---- DESIGN PRESERVATION (v1.28.0): detail-layer transfer ----
@@ -1404,7 +1439,9 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     for k, (a0, _, M, a1, _, _) in enumerate(segs):
         out += W[:, k:k + 1] * ((src - a0) @ M.T + a1)
 
-    extra = _rigid_group_clusters(g_ob, me, ev_all) if has_topo else []
+    extra = (_rigid_group_clusters(g_ob, me, ev_all)
+             + _rigid_group_clusters(g_ob, me, ev_all, "SRF_Collar")) \
+        if has_topo else []
     stiff = rigidify_components(wco, out, comps, extra=extra) \
         if (comps or extra) else np.zeros(n, dtype=bool)
     if has_topo:

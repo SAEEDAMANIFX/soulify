@@ -461,6 +461,46 @@ class SMARTRIG_OT_fitwiz_extras(bpy.types.Operator):
             return {'CANCELLED'}
         if g.vertex_groups.get(VG_RIGID) is None:
             g.vertex_groups.new(name=VG_RIGID)
+        # AUTO PRE-FILL the part registration (suggestion only - the user
+        # corrects): Sleeve = fabric outside the torso column above pelvis,
+        # Collar = above the neck marker, Lower = below the pelvis marker.
+        import numpy as np
+        me = g.data
+        nv = len(me.vertices)
+        co = np.empty(nv * 3)
+        me.vertices.foreach_get("co", co)
+        R3 = np.array(g.matrix_world.to_3x3())
+        w = co.reshape(-1, 3) @ R3.T + np.array(g.matrix_world.translation[:])
+
+        def mark(nm):
+            ob = bpy.data.objects.get(MARKER_PREFIX + nm)
+            return np.array(ob.matrix_world.translation[:]) if ob else None
+
+        pel, nk = mark("pelvis"), mark("neck")
+        wl_, wr_ = mark("waist_w_l"), mark("waist_w_r")
+        created = {}
+        for nm in ("SRF_Sleeve", "SRF_Collar", "SRF_Lower"):
+            vg = g.vertex_groups.get(nm)
+            created[nm] = vg is None
+            if vg is None:
+                g.vertex_groups.new(name=nm)
+        if pel is not None and nk is not None:
+            ax = nk - pel
+            L2 = float(ax @ ax) + 1e-12
+            tt = np.clip(((w - pel) @ ax) / L2, 0.0, 1.0)
+            rho = np.linalg.norm(w - (pel + tt[:, None] * ax), axis=1)
+            t_r = 0.5 * float(np.linalg.norm(wl_ - wr_)) \
+                if (wl_ is not None and wr_ is not None) \
+                else 0.22 * float(np.sqrt(L2))
+            fills = {
+                "SRF_Sleeve": (rho > 1.45 * t_r) & (w[:, 2] > pel[2]),
+                "SRF_Collar": w[:, 2] > nk[2],
+                "SRF_Lower": w[:, 2] < pel[2],
+            }
+            for nm, m in fills.items():
+                if created.get(nm) and m.any():
+                    g.vertex_groups[nm].add(
+                        [int(i) for i in np.nonzero(m)[0]], 1.0, 'REPLACE')
         g.hide_select = False          # extras step needs Edit Mode on it
         props.fitwiz_step = 4
         return {'FINISHED'}
@@ -470,22 +510,40 @@ class SMARTRIG_OT_fitwiz_register(bpy.types.Operator):
     """Add the selected vertices (Edit Mode) to the rigid extras - each
     connected piece will move as ONE solid object during the fit"""
     bl_idname = "smartrig.fitwiz_register"
-    bl_label = "Register Selected as Rigid"
+    bl_label = "Register Selected Part"
     bl_options = {'REGISTER', 'UNDO'}
+
+    part: bpy.props.EnumProperty(items=[
+        ('SLEEVE', "Sleeve", "Binds to the arms only"),
+        ('COLLAR', "Collar", "Follows the neck, stays crisp"),
+        ('LOWER', "Lower", "Kandura/dress/skirt bottom: spine-bound"),
+        ('RIGID', "Rigid", "Belt/buttons/ornaments: one solid piece")])
+
+    _GROUPS = {'SLEEVE': "SRF_Sleeve", 'COLLAR': "SRF_Collar",
+               'LOWER': "SRF_Lower", 'RIGID': VG_RIGID}
 
     def execute(self, context):
         g = _garment(context)
         if g is None or g.mode != 'EDIT':
             self.report({'ERROR'},
                         "Enter Edit Mode on the garment and select the "
-                        "extra piece (belt / pocket / button...)")
+                        "part first (sleeve / collar / belt...)")
             return {'CANCELLED'}
-        vg = g.vertex_groups.get(VG_RIGID)
+        name = self._GROUPS[self.part]
+        # one part per vertex: remove from the other part groups first
+        for other in self._GROUPS.values():
+            if other == name:
+                continue
+            vg = g.vertex_groups.get(other)
+            if vg is not None:
+                g.vertex_groups.active_index = vg.index
+                bpy.ops.object.vertex_group_remove_from()
+        vg = g.vertex_groups.get(name)
         if vg is None:
-            vg = g.vertex_groups.new(name=VG_RIGID)
+            vg = g.vertex_groups.new(name=name)
         g.vertex_groups.active_index = vg.index
         bpy.ops.object.vertex_group_assign()
-        self.report({'INFO'}, "Registered - it will stay solid")
+        self.report({'INFO'}, "Registered as %s" % self.part.title())
         return {'FINISHED'}
 
 

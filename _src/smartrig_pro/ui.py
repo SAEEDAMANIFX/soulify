@@ -989,10 +989,19 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 r.operator("smartrig.fitwiz_extras",
                            text="Next: Extras", icon='FORWARD')
             elif step == 4:
-                wiz.label(text="4/4  Register extras: belt, pockets, "
-                               "buttons, flowers", icon='GROUP_VERTEX')
-                wiz.label(text="Edit Mode: select the piece, then:")
-                wiz.operator("smartrig.fitwiz_register", icon='ADD')
+                wiz.label(text="4/4  Parts (pre-filled - correct if needed)",
+                          icon='GROUP_VERTEX')
+                wiz.label(text="Edit Mode: select, then register as:")
+                pr = wiz.row(align=True)
+                pr.operator("smartrig.fitwiz_register",
+                            text="Sleeve").part = 'SLEEVE'
+                pr.operator("smartrig.fitwiz_register",
+                            text="Collar").part = 'COLLAR'
+                pr2 = wiz.row(align=True)
+                pr2.operator("smartrig.fitwiz_register",
+                             text="Lower").part = 'LOWER'
+                pr2.operator("smartrig.fitwiz_register",
+                             text="Rigid").part = 'RIGID'
                 gr = wiz.row(); gr.scale_y = 1.6
                 gr.operator("smartrig.fitwiz_go",
                             text="FIT!", icon='ARMATURE_DATA')
