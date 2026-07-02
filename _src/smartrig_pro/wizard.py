@@ -107,6 +107,11 @@ def _fit_marker_items():
         if fcol is not None and not fcol.hide_viewport:
             for o in fcol.objects:
                 if o.name.startswith(_fw.MARKER_PREFIX):
+                    try:
+                        if o.hide_get():
+                            continue
+                    except Exception:
+                        pass
                     key = o.name[len(_fw.MARKER_PREFIX):].split(".")[0]
                     items.append((o, _fw._role(key)))
     except Exception:

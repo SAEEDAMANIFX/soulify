@@ -110,6 +110,10 @@ def _isolate(context, g):
     """Everything disappears - only the garment stays (Saeed's spec)."""
     hidden = list(context.scene.get("srf_wiz_hidden", []))
     for ob in context.view_layer.objects:
+        # never hide the wizard's own markers / reference backdrops
+        if ob.name.startswith(MARKER_PREFIX) \
+                or ob.name.startswith("SRF_Ref_"):
+            continue
         if ob is not g and not ob.hide_get():
             try:
                 ob.hide_set(True)
@@ -320,6 +324,11 @@ class SMARTRIG_OT_fitwiz_start(bpy.types.Operator):
         col = bpy.data.collections.get(MARKER_COL)
         if col is not None:
             col.hide_viewport = False
+            for mo in col.objects:
+                try:
+                    mo.hide_set(False)   # un-hide markers eaten by isolate
+                except Exception:
+                    pass
         props.fitwiz_step = 1
         g = props.garment_object
         # SAEED'S SPEC: everything disappears - only the garment - and the
