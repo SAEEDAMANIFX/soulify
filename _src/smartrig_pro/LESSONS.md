@@ -735,3 +735,17 @@ Burned lessons:
    suite: max edge-length ratio evaluated/design (>2 = torn).
 Stable default remains the warp; ride gated behind
 scene['srf_experimental_retarget'].
+
+
+## RIG-FIRST flow CONFIRMED (v1.27.5)
+User rigged the character with Soulify, then Fit: joints now come from the
+rig itself (exact) - the decisive quality jump. Two rig-reading bugs burned:
+1. Prefer SR_Metarig over the generated rig: pelvis candidates matched the
+   generated rig's 'root' bone AT THE ORIGIN -> hem dragged below the ground.
+   ('spine' head = true pelvis; never 'root'.)
+2. The rig's .L is the character's anatomical left (+x): apply the same
+   geometric mean-x side relabel as the AI path or the arms cross.
+Result (warp default): shirt hem->collar 0.71->1.59, penetration 0.1%,
+worn correctly incl. sleeves on arms. THE recommended flow: Rig -> Fit ->
+Drape. Tear metric added to tests: p99 edge ratio 3.6 (armpit stretch -
+acceptable), watch it in the regression suite.

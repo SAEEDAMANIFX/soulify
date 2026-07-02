@@ -780,7 +780,8 @@ def _rig_joints(body):
     the recommended flow: Rig, then Fit (no AI guessing at all)."""
     try:
         from . import metarig as _mr
-        rig = _mr._generated_rig() or bpy.data.objects.get("SR_Metarig")
+        # the METARIG first: clean Rigify names, heads = true joints
+        rig = bpy.data.objects.get("SR_Metarig") or _mr._generated_rig()
         if rig is None or rig.type != 'ARMATURE':
             return None
         mw = rig.matrix_world
@@ -797,7 +798,7 @@ def _rig_joints(body):
         pairs = {
             "neck": ("neck", "neck_01", "spine.004", "spine.006"),
             "chest": ("spine.003", "chest", "spine_03", "spine.002"),
-            "pelvis": ("spine", "spine_01", "root", "hips"),
+            "pelvis": ("spine", "ORG-spine", "spine_01", "hips"),
             "shoulder_l": ("upper_arm.L", "upper_arm_fk.L", "upper_arm.l"),
             "elbow_l": ("forearm.L", "forearm_fk.L", "forearm.l"),
             "wrist_l": ("hand.L", "hand_fk.L", "hand.l"),
@@ -813,6 +814,17 @@ def _rig_joints(body):
             p = head(*cands)
             if p is not None:
                 out[ours] = p
+        # SIDES ARE GEOMETRIC here too: the rig's .L is the character's
+        # anatomical left (+x facing -Y) while the garment labels world -x
+        for chain in (("shoulder", "elbow", "wrist"),
+                      ("hip", "knee", "ankle")):
+            lx = [out[j + "_l"].x for j in chain if j + "_l" in out]
+            rx = [out[j + "_r"].x for j in chain if j + "_r" in out]
+            if lx and rx and (sum(lx) / len(lx)) > (sum(rx) / len(rx)):
+                for j in chain:
+                    a, b = out.get(j + "_l"), out.get(j + "_r")
+                    if a is not None and b is not None:
+                        out[j + "_l"], out[j + "_r"] = b, a
         return out if len(out) >= 8 else None
     except Exception as e:
         print("Soulify _rig_joints:", e)
