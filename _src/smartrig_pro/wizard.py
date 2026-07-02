@@ -487,6 +487,28 @@ def _draw_fingers(region, rv3d):
     gpu.state.blend_set('NONE')
 
 
+def _draw_fit_labels(region, rv3d):
+    """Names next to every Fit Wizard marker (same coloured style)."""
+    fid = 0
+    blf.enable(fid, blf.SHADOW)
+    blf.shadow(fid, 5, 0, 0, 0, 1)
+    blf.size(fid, 15)
+    for o, role in _fit_marker_items():
+        p = view3d_utils.location_3d_to_region_2d(
+            region, rv3d, o.matrix_world.translation)
+        if not p:
+            continue
+        col = GLOW[role]
+        blf.color(fid, min(col[0] + 0.3, 1), min(col[1] + 0.3, 1),
+                  min(col[2] + 0.3, 1), 1)
+        blf.position(fid, p.x + 12, p.y + 8, 0)
+        key = o.name.split("SRFM_", 1)[-1]
+        blf.draw(fid, key.replace("_w_", " width ").replace("_d_", " depth ")
+                 .replace("_l", " L").replace("_r", " R")
+                 .replace("_f", " front").replace("_b", " back")
+                 .replace("_", " ").title())
+
+
 def _draw_cb():
     try:
         region = bpy.context.region
@@ -496,11 +518,15 @@ def _draw_cb():
         from . import fingers_manual
         has_body = any(bpy.data.objects.get(n) for n in markers.all_marker_names())
         has_fing = fingers_manual.has_manual(side="L") or fingers_manual.has_manual(side="R")
-        if not has_body and not has_fing:
+        has_fit = bool(_fit_marker_items())
+        if not has_body and not has_fing and not has_fit:
             return
         if has_body:
             _draw_lines(region, rv3d)
+        if has_body or has_fit:
             _draw_glow(region, rv3d)
+        if has_fit:
+            _draw_fit_labels(region, rv3d)
         if has_fing:
             _draw_fingers(region, rv3d)
     except Exception:

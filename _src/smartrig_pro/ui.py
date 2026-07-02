@@ -1002,6 +1002,11 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                              text="Lower", icon='HIDE_OFF').part = 'LOWER'
                 sr2.operator("smartrig.fitwiz_show",
                              text="Rigid", icon='HIDE_OFF').part = 'RIGID'
+                hb = wiz.box()
+                hb.label(text="Sleeve = arm tube, shoulder to cuff")
+                hb.label(text="Collar = band around the neck opening")
+                hb.label(text="Lower = skirt / hem below the waist")
+                hb.label(text="Rigid = belt, buttons, pockets, pins")
                 wiz.label(text="Fix: select verts, then register as:")
                 pr = wiz.row(align=True)
                 pr.operator("smartrig.fitwiz_register",
