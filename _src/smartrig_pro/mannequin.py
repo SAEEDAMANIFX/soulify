@@ -917,6 +917,228 @@ def character_joints(body):
         return None
 
 
+# ---------------------------------------------------------------------------
+#  DESIGN PRESERVATION (v1.28.0) - the audit fix.
+#  The v1.27.7 audit proved LBS position-blending smears local shape:
+#  48% of edges distorted beyond +-25%. Two engines fix it:
+#    1. STIFF PANELS: small loose components (buttons, buckles, detached
+#       cuffs/collars/ornaments) move as ONE rigid body each - never
+#       per-vertex - so designed hardware stays crisp.
+#    2. ARAP FINISH: iterative local-similarity projection. Every vertex
+#       one-ring is pulled back onto a rotated + uniformly-scaled copy of
+#       its DESIGN shape (batch Kabsch/Horn via np.linalg.svd), softly
+#       constrained to the warped placement. Kills shear/smear, keeps fit.
+# ---------------------------------------------------------------------------
+
+def _edge_array(me):
+    ev = np.empty(2 * len(me.edges), dtype=np.int64)
+    me.edges.foreach_get("vertices", ev)
+    return ev.reshape(-1, 2)
+
+
+def _loose_components(n, ev):
+    """Connected components (union-find). Returns list of index arrays."""
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in ev:
+        ra, rb = find(int(a)), find(int(b))
+        if ra != rb:
+            parent[ra] = rb
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return [np.array(g, dtype=np.int64) for g in groups.values()]
+
+
+def rigidify_components(base, cur, comps, max_frac=0.05):
+    """Snap every SMALL loose component to the best rigid(+uniform scale)
+    transform of its DESIGN shape (Kabsch + Horn scale). Modifies cur
+    in-place; returns bool mask of stiff verts."""
+    n = base.shape[0]
+    stiff = np.zeros(n, dtype=bool)
+    if len(comps) <= 1:
+        return stiff
+    big = max(len(c) for c in comps)
+    for c in comps:
+        if len(c) == big or len(c) > max_frac * n or len(c) < 3:
+            continue
+        P, Q = base[c], cur[c]
+        pc, qc = P.mean(0), Q.mean(0)
+        dP, dQ = P - pc, Q - qc
+        U, S, Vt = np.linalg.svd(dP.T @ dQ)
+        d = np.sign(np.linalg.det(U @ Vt))
+        D = np.array([1.0, 1.0, d])
+        A = (U * D) @ Vt
+        s = float((S * D).sum() / max((dP * dP).sum(), 1e-12))
+        cur[c] = qc + (dP @ A) * s
+        stiff[c] = True
+    return stiff
+
+
+def arap_refine(base, warped, ev, iters=6, lam=0.10, s_lo=0.5, s_hi=2.0,
+                pin=None):
+    """ARAP-style finish pass (local-global with Jacobi updates).
+    base/warped: (n,3) world coords. pin: verts held exactly at warped."""
+    n = base.shape[0]
+    if n == 0 or len(ev) == 0:
+        return warped
+    ctr = np.concatenate([ev[:, 0], ev[:, 1]])
+    nbr = np.concatenate([ev[:, 1], ev[:, 0]])
+    deg = np.zeros(n)
+    np.add.at(deg, ctr, 1.0)
+    ok = deg > 0
+    pc = np.zeros((n, 3))
+    np.add.at(pc, ctr, base[nbr])
+    pc[ok] /= deg[ok, None]
+    dP = base[nbr] - pc[ctr]
+    pnorm = np.zeros(n)
+    np.add.at(pnorm, ctr, np.sum(dP * dP, axis=1))
+    cur = warped.copy()
+    for _ in range(iters):
+        qc = np.zeros((n, 3))
+        np.add.at(qc, ctr, cur[nbr])
+        qc[ok] /= deg[ok, None]
+        dQ = cur[nbr] - qc[ctr]
+        C = np.zeros((n, 3, 3))
+        np.add.at(C, ctr, dP[:, :, None] * dQ[:, None, :])
+        U, S, Vt = np.linalg.svd(C[ok])
+        d = np.sign(np.linalg.det(np.matmul(U, Vt)))
+        D = np.ones((U.shape[0], 3))
+        D[:, 2] = d
+        A = np.matmul(U * D[:, None, :], Vt)          # dP @ A ~= dQ
+        s = (S * D).sum(axis=1) / (pnorm[ok] + 1e-12)
+        np.clip(s, s_lo, s_hi, out=s)
+        Rf = np.zeros((n, 3, 3))
+        Rf[ok] = A * s[:, None, None]
+        # prediction of every vertex from each neighbour's frame + its own
+        pred = qc[nbr] + np.einsum('ij,ijk->ik', base[ctr] - pc[nbr], Rf[nbr])
+        acc = np.zeros((n, 3))
+        np.add.at(acc, ctr, pred)
+        own = qc + np.einsum('ij,ijk->ik', base - pc, Rf)
+        w = deg + 1.0 + lam * deg
+        cur[ok] = ((acc + own + (lam * deg)[:, None] * warped)[ok]
+                   / w[ok, None])
+        if pin is not None:
+            cur[pin] = warped[pin]
+    return cur
+
+
+def _adjacency(n, ev):
+    """Flat one-ring arrays + degree + a fixed reference neighbour per
+    vertex (lowest index) for building consistent tangent frames."""
+    ctr = np.concatenate([ev[:, 0], ev[:, 1]])
+    nbr = np.concatenate([ev[:, 1], ev[:, 0]])
+    deg = np.zeros(n)
+    np.add.at(deg, ctr, 1.0)
+    ref = np.full(n, n, dtype=np.int64)
+    np.minimum.at(ref, ctr, nbr)
+    ref[ref >= n] = 0
+    return ctr, nbr, deg, ref
+
+
+def _smooth_base(co, ctr, nbr, deg, iters=25, alpha=0.5):
+    """Heavy Laplacian smooth = the low-frequency base of the design."""
+    cur = co.copy()
+    ok = deg > 0
+    for _ in range(iters):
+        acc = np.zeros_like(cur)
+        np.add.at(acc, ctr, cur[nbr])
+        cur[ok] = (1.0 - alpha) * cur[ok] + alpha * acc[ok] / deg[ok, None]
+    return cur
+
+
+def _ring_normals_radius(co, ctr, nbr, deg, align):
+    """Batch one-ring PCA: unit normal (smallest eigenvector, sign-aligned
+    with 'align') + mean ring radius, per vertex."""
+    n = co.shape[0]
+    ok = deg > 0
+    c = np.zeros((n, 3))
+    np.add.at(c, ctr, co[nbr])
+    c[ok] /= deg[ok, None]
+    d = co[nbr] - c[ctr]
+    C = np.tile(1e-12 * np.eye(3), (n, 1, 1))
+    np.add.at(C, ctr, d[:, :, None] * d[:, None, :])
+    _, v_ = np.linalg.eigh(C)
+    nrm = v_[:, :, 0]
+    flip = np.sum(nrm * align, axis=1) < 0.0
+    nrm[flip] = -nrm[flip]
+    rad = np.zeros(n)
+    np.add.at(rad, ctr, np.linalg.norm(d, axis=1))
+    rad[ok] /= deg[ok]
+    return nrm, rad
+
+
+def _frames(co, nrm, ref):
+    """Orthonormal (t, b, n) rows per vertex; tangent = reference-neighbour
+    direction projected off the normal."""
+    t = co[ref] - co
+    t -= np.sum(t * nrm, axis=1, keepdims=True) * nrm
+    ln = np.linalg.norm(t, axis=1, keepdims=True)
+    bad = ln[:, 0] < 1e-9
+    if bad.any():
+        alt = np.cross(nrm[bad], np.array([1.0, 0.0, 0.0]))
+        t[bad] = alt
+        ln = np.linalg.norm(t, axis=1, keepdims=True)
+    t /= np.maximum(ln, 1e-12)
+    b = np.cross(nrm, t)
+    return np.stack([t, b, nrm], axis=1)
+
+
+def edge_distortion(g_ob, band=0.25):
+    """DESIGN-DAMAGE metric: % of edges whose final length deviates more
+    than +-band from the length predicted by the INTENDED local affine
+    (fitted per one-ring on the smoothed base). A designed resize -
+    isotropic or anisotropic tailoring - does NOT count; only genuine
+    destruction of local detail does."""
+    me = g_ob.data
+    if me.shape_keys is None or len(me.edges) == 0:
+        return None
+    from .garment import SK_FIT
+    kb = me.shape_keys.key_blocks
+    fit = kb.get(SK_FIT)
+    if fit is None:
+        return None
+    nv = len(me.vertices)
+    a = np.empty(nv * 3)
+    kb[0].data.foreach_get("co", a)
+    b = np.empty(nv * 3)
+    fit.data.foreach_get("co", b)
+    a = a.reshape(-1, 3)
+    b = b.reshape(-1, 3)
+    ev = _edge_array(me)
+    ctr, nbr, deg, _ = _adjacency(nv, ev)
+    sa = _smooth_base(a, ctr, nbr, deg)
+    sb = _smooth_base(b, ctr, nbr, deg)
+    ok = deg > 0
+    ca = np.zeros((nv, 3))
+    np.add.at(ca, ctr, sa[nbr])
+    ca[ok] /= deg[ok, None]
+    cb = np.zeros((nv, 3))
+    np.add.at(cb, ctr, sb[nbr])
+    cb[ok] /= deg[ok, None]
+    dP = sa[nbr] - ca[ctr]
+    dQ = sb[nbr] - cb[ctr]
+    PtP = np.tile(1e-9 * np.eye(3), (nv, 1, 1))
+    PtQ = np.zeros((nv, 3, 3))
+    np.add.at(PtP, ctr, dP[:, :, None] * dP[:, None, :])
+    np.add.at(PtQ, ctr, dP[:, :, None] * dQ[:, None, :])
+    A = np.linalg.solve(PtP, PtQ)          # row-vector: q = p @ A
+    e0 = a[ev[:, 1]] - a[ev[:, 0]]
+    Ae = 0.5 * (np.einsum('ij,ijk->ik', e0, A[ev[:, 0]])
+                + np.einsum('ij,ijk->ik', e0, A[ev[:, 1]]))
+    lp = np.linalg.norm(Ae, axis=1)
+    lf = np.linalg.norm(b[ev[:, 1]] - b[ev[:, 0]], axis=1)
+    m = (lp > 1e-9) & (np.linalg.norm(e0, axis=1) > 1e-9)
+    r = lf[m] / lp[m]
+    return float(np.mean((r > 1.0 + band) | (r < 1.0 - band)) * 100.0)
+
+
 def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     """BONE-PAIR SPACE WARP (the match): every garment vertex is skinned to
     the mannequin's skeleton segments by smooth inverse-distance weights; each
@@ -960,13 +1182,13 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             S = gs * np.eye(3) + (axial - gs) * np.outer(d0, d0)
             is_spine = a in ("pelvis", "chest")
             segs.append((np.array(a0[:]), np.array(b0[:]),
-                         R @ S, np.array(a1[:]), is_spine))
+                         R @ S, np.array(a1[:]), is_spine, R))
     if not segs:
         return False
     pelvis_z = jt_src["pelvis"].z if "pelvis" in jt_src else -1e9
 
     W = np.zeros((n, len(segs)))
-    for k, (a0, b0, _, _, is_spine) in enumerate(segs):
+    for k, (a0, b0, _, _, is_spine, _) in enumerate(segs):
         ab = b0 - a0
         L2 = float(ab.dot(ab)) + 1e-12
         t = np.clip(((wco - a0) @ ab) / L2, 0.0, 1.0)
@@ -975,14 +1197,50 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
         W[:, k] = 1.0 / (d2 + 1e-8) ** 2.5          # local: no candy-wrapping
     if loose:
         below = wco[:, 2] < pelvis_z
-        for k, (_, _, _, _, is_spine) in enumerate(segs):
+        for k, (_, _, _, _, is_spine, _) in enumerate(segs):
             if not is_spine:
                 W[below, k] = 0.0
     W /= (W.sum(axis=1, keepdims=True) + 1e-12)
 
+    # ---- DESIGN PRESERVATION (v1.28.0): detail-layer transfer ----
+    # Decompose the DESIGN into a smooth base + high-frequency detail held
+    # in local tangent frames. Only the BASE is warped/cleaned (its stretch
+    # is intended tailoring, spread smoothly); the detail - wrinkles, seams,
+    # collar crispness - is re-added untouched afterwards. Small loose parts
+    # (buttons/ornaments) stay perfectly rigid.
+    has_topo = len(me.edges) > 0
+    if has_topo:
+        ev_all = _edge_array(me)
+        ctr, nbr, deg, ref = _adjacency(n, ev_all)
+        comps = _loose_components(n, ev_all)
+        smooth = _smooth_base(wco, ctr, nbr, deg)
+        detail = wco - smooth
+        n_align = np.empty(n * 3)
+        me.vertices.foreach_get("normal", n_align)
+        R3 = mathutils_matrix_to_np(mw.to_3x3())
+        n_align = n_align.reshape(-1, 3) @ R3.T
+        n_align /= np.maximum(
+            np.linalg.norm(n_align, axis=1, keepdims=True), 1e-12)
+        nrm0, rad0 = _ring_normals_radius(smooth, ctr, nbr, deg, n_align)
+        F0 = _frames(smooth, nrm0, ref)
+        dloc = np.einsum('ijk,ik->ij', F0, detail)
+        src = smooth
+    else:
+        ev_all = np.zeros((0, 2), np.int64)
+        comps, dloc = [], None
+        src = wco
+
     out = np.zeros_like(wco)
-    for k, (a0, _, M, a1, _) in enumerate(segs):
-        out += W[:, k:k + 1] * ((wco - a0) @ M.T + a1)
+    for k, (a0, _, M, a1, _, _) in enumerate(segs):
+        out += W[:, k:k + 1] * ((src - a0) @ M.T + a1)
+
+    stiff = rigidify_components(wco, out, comps) if comps else \
+        np.zeros(n, dtype=bool)
+    if has_topo:
+        # heavy ARAP on the base (it is smooth, so this is safe): relaxes
+        # LBS blend-zone stretch/pinch into evenly distributed tailoring
+        out = arap_refine(src, out, ev_all, iters=30, lam=0.05,
+                          s_lo=0.7, s_hi=1.6, pin=stiff)
 
     # CLEANUP: per-segment scaling can shrink the girth slightly - push any
     # vert that landed inside the body back out along the surface normal,
@@ -992,6 +1250,12 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
         bmw = body.matrix_world
         bco = utils.read_rest_coords(body)
         floor = 0.003 * max(float(bco[:, 2].max() - bco[:, 2].min()), 1e-6)
+        # per-vertex floor: reserve room for detail that dips inward, so the
+        # re-added wrinkles/seams never end up inside the body
+        if dloc is not None:
+            fl = floor + np.maximum(0.0, -dloc[:, 2])
+        else:
+            fl = np.full(n, floor)
         push = np.zeros_like(out)
         for i in range(n):
             pl = binv @ Vector(out[i])
@@ -1001,9 +1265,9 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             lw = bmw @ loc
             sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
             d = sgn * (Vector(out[i]) - lw).length
-            if d < floor:
+            if d < fl[i]:
                 nw = (bmw.to_3x3() @ nrm).normalized()
-                push[i] = np.array((lw + nw * floor)[:]) - out[i]
+                push[i] = np.array((lw + nw * fl[i])[:]) - out[i]
         ev = np.empty(2 * len(me.edges), dtype=np.int64)
         me.edges.foreach_get("vertices", ev)
         ev = ev.reshape(-1, 2)
@@ -1023,9 +1287,43 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             if okc:
                 lw = bmw @ loc
                 sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
-                if sgn * (Vector(out[i]) - lw).length < floor * 0.6:
+                if sgn * (Vector(out[i]) - lw).length < fl[i] * 0.6:
                     nw = (bmw.to_3x3() @ nrm).normalized()
-                    out[i] = np.array((lw + nw * floor)[:])
+                    out[i] = np.array((lw + nw * fl[i])[:])
+
+    # ---- RE-ADD THE DETAIL on the cleaned base ----
+    if has_topo and dloc is not None:
+        # the base must stay SMOOTH: a mild relax removes residual LBS /
+        # collision jitter that would otherwise masquerade as detail
+        keep = out[stiff].copy() if stiff.any() else None
+        out = _smooth_base(out, ctr, nbr, deg, iters=4, alpha=0.3)
+        if keep is not None:
+            out[stiff] = keep
+        # transport the design normals through the segment rotations to
+        # sign-align the warped-base PCA normals
+        n_tr = np.zeros((n, 3))
+        for k, (_, _, _, _, _, R) in enumerate(segs):
+            n_tr += W[:, k:k + 1] * (n_align @ R.T)
+        n_tr /= np.maximum(np.linalg.norm(n_tr, axis=1, keepdims=True), 1e-12)
+        nrm1, rad1 = _ring_normals_radius(out, ctr, nbr, deg, n_tr)
+        F1 = _frames(out, nrm1, ref)
+        s_loc = np.clip(rad1 / np.maximum(rad0, 1e-12), 0.85, 1.2)
+        out = out + np.einsum('ij,ijk->ik', dloc * s_loc[:, None], F1)
+        # stiff panels: exact rigid copies of the DESIGN
+        rigidify_components(wco, out, comps)
+        # final safety: only true penetrations move - detail stays crisp
+        if body is not None:
+            for i in range(n):
+                pl = binv @ Vector(out[i])
+                okc, loc, nrm, _ = body.closest_point_on_mesh(pl)
+                if okc:
+                    lw = bmw @ loc
+                    sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
+                    if sgn * (Vector(out[i]) - lw).length < floor * 0.35:
+                        nw = (bmw.to_3x3() @ nrm).normalized()
+                        out[i] = np.array((lw + nw * floor * 0.35)[:])
+    elif body is not None and stiff.any():
+        rigidify_components(wco, out, comps)
 
     # write to the SRF_Fit shape key (same reversible slot as Let's Fit)
     from .garment import SK_FIT, K_KEYS

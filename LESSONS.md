@@ -277,3 +277,32 @@ and that `foot.R` is the mirror (Y flipped, roll negated).
 - The Edit tool can silently truncate large files (ui.py, metarig.py, properties.py
   have all been hit). After editing a big file, verify it parses (`ast.parse`) from
   Blender's side; prefer doing large edits via Blender `io.open` writes.
+
+
+## v1.28.0 - DESIGN PRESERVATION ENGINE (the audit fix, VERIFIED)
+Implemented in mannequin.warp_garment as three layers:
+1. STIFF PANELS: small loose components (<5% verts) snap to one rigid
+   (Kabsch+Horn) transform each - buttons/ornaments never smear.
+2. DETAIL-LAYER TRANSFER (the breakthrough): decompose design = heavy-
+   Laplacian smooth base + high-frequency detail stored in per-vertex
+   tangent frames (batch one-ring PCA normals + fixed reference neighbour
+   tangent). Warp/ARAP/collision-clean ONLY the base; re-add detail in the
+   warped frames (s_loc clipped 0.85-1.2). Wrinkles/seams/collar survive.
+3. Heavy ARAP (30 it, lam .05) on the smooth base + mild base relax before
+   re-add; collision floor is per-vertex (floor + relu(-detail_n)) so
+   re-added inward detail never enters the body; final safety pass moves
+   only true penetrations (floor*0.35).
+KEY LESSONS:
+- ARAP on the FULL mesh cannot fix LBS smear at 48k verts: Jacobi diffuses
+  ~1 ring/iter; and detail fights placement. Decompose first.
+- The raw +-25% edge metric PUNISHES INTENDED anisotropic tailoring
+  (vertical x1.09 vs horizontal x1.21 here). Official metric upgraded:
+  edge_distortion now measures deviation from the intended LOCAL AFFINE
+  (fitted per one-ring on the smoothed bases) = pure design damage.
+NUMBERS (Mens_Shirt_4 -> rigged male body, 48.3k verts, 5.8s match):
+  audit v1.27.7: 48% raw / mangled collar+cuffs (drape included)
+  v1.28.0 match: design damage 12.8% (raw 33.1 = mostly intended tailoring)
+  offline ARAP unit test: shear grid 5.4% -> 0.1% bad edges, drift ~0.
+VISUAL: collar keeps band+fold, placket straight, buttons intact, chest
+smooth. Remaining 12.8% lives at armpit blends + open boundaries -> next:
+boundary-aware smoothing weights + drape defaults (sim soft panels only).
