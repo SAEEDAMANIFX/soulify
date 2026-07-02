@@ -60,12 +60,20 @@ def _mirror_handler(scene, depsgraph):
         return
     try:
         props = scene.smartrig
-        if props.fitwiz_step not in (2, 3) or not props.fitwiz_mirror:
+        if not props.fitwiz_mirror:
             return
+        # active WHENEVER visible fit markers exist (step gating made the
+        # mirror silently dead outside step 2 - v1.32.5)
         col = bpy.data.collections.get(MARKER_COL)
         if col is None or col.hide_viewport:
             return
-        cx = float(col.get("srf_cx", 0.0))
+        cx = col.get("srf_cx", None)
+        if cx is None:
+            cs = [o.location.x for o in col.objects
+                  if o.name.startswith(MARKER_PREFIX)
+                  and not (o.name.endswith("_l") or o.name.endswith("_r"))]
+            cx = sum(cs) / len(cs) if cs else 0.0
+        cx = float(cx)
         for u in depsgraph.updates:
             idb = getattr(u.id, "original", u.id)
             if not isinstance(idb, bpy.types.Object):
