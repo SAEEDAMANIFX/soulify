@@ -203,15 +203,19 @@ def classify_garment(g, rings):
     legs = [x for x in lower_small
             if x[0].z < g["zmin"] + 0.45 * span and _offset(*x)]
     if ratio >= 0.6:
+        # WIDE top opening = worn at waist/hips (bottoms). Offset low rings
+        # here really are leg openings.
         if len(legs) >= 2:
             return "pants/shalwar", True
         return "skirt", True
-    sleeves = [x for x in lower_small
-               if x[0].z >= g["zmin"] + 0.45 * span and _offset(*x)]
-    if len(sleeves) >= 2 and len(legs) < 2:
+    # NARROW top opening (collar-like) = worn from the neck/chest - it can
+    # NEVER be pants (pants have a wide waist). Offset rings are SLEEVE CUFFS
+    # at ANY height: in A-pose the sleeves hang DOWN beside the torso, exactly
+    # where pants legs would be (the Mens_Shirt_4 bug: cuffs at the bottom 45%
+    # were read as legs -> 'pants' -> hip anchor -> disaster).
+    sleeves = [x for x in lower_small if _offset(*x)]
+    if len(sleeves) >= 2:
         return "shirt", False
-    if len(legs) >= 2:
-        return "pants/shalwar", True
     return "dress/thobe", False
 
 
@@ -300,7 +304,11 @@ def auto_place(g_ob, body):
             acc += v * nv
         if acc.length > 1e-6:
             axis = acc.normalized()
-        if abs(axis.z) < 0.985:                    # lying down -> stand it up
+        # only a GENUINELY lying garment (axis >45 deg off vertical) gets
+        # re-oriented: shirt collars tilt back ~25-30 deg BY DESIGN and their
+        # normal was rotating upright shirts (Mens_Shirt_4 bug). The wedding
+        # dress that lay flat had axis.z ~= 0 - still caught.
+        if abs(axis.z) < 0.7:                      # lying down -> stand it up
             co0, ctr = _bbox_ctr()
             R = axis.rotation_difference(Vector((0.0, 0.0, 1.0))) \
                 .to_matrix().to_4x4()
@@ -364,8 +372,12 @@ def auto_place(g_ob, body):
     if lm is not None:
         if lm.get("hips"):
             z_hips = lm["hips"]; src = "AI"
-        if lm.get("neck"):
-            z_neck = lm["neck"]; src = "AI"
+        # NOTE: the pose net's 'neck' is the neck BONE JOINT between the
+        # shoulders (rigging semantics, ~71% height, R~0.14) - NOT where a
+        # collar rests. A collar sits on the NARROWEST neck cross-section
+        # (geometric min-R, ~86%, R~0.06). Using the AI joint scaled the
+        # Mens_Shirt collar x1.8 to fit around the chest. Keep z_neck
+        # geometric; AI is right for hips/chest/shoulders (joint semantics).
         if lm.get("chest"):
             z_chest = lm["chest"]
     # dresses are FITTED AT THE WAIST: if the garment has a clear waist ring
@@ -926,9 +938,10 @@ def remove_fit_mods(g_ob):
         m = g_ob.modifiers.get(n)
         if m:
             g_ob.modifiers.remove(m)
-    vg = g_ob.vertex_groups.get(VG_SNUG)
-    if vg:
-        g_ob.vertex_groups.remove(vg)
+    for vgn in (VG_SNUG, "SRF_Pin"):
+        vg = g_ob.vertex_groups.get(vgn)
+        if vg:
+            g_ob.vertex_groups.remove(vg)
 
 
 _TUNE_TOKEN = [0]                                  # debounce for heavy conform
@@ -1040,6 +1053,121 @@ class SMARTRIG_OT_lets_fit(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_fit_drape(bpy.types.Operator):
+    """Professional finish: run a short pinned CLOTH SIMULATION so the fitted
+    garment drapes naturally over the character (works with any body and any
+    clothing - physics, not training). The anchor band stays pinned; the
+    result is written back into the SRF_Fit shape key (fully reversible)"""
+    bl_idname = "smartrig.fit_drape"
+    bl_label = "Drape (Cloth)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    frames: bpy.props.IntProperty(
+        name="Settle Frames", default=25, min=5, max=120,
+        description="How many frames the cloth settles for")
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        g_ob = props.garment_object
+        if g_ob is None or g_ob.get(K_BASE) is None:
+            self.report({'ERROR'}, "Fit the garment first, then drape.")
+            return {'CANCELLED'}
+        body = bpy.data.objects.get(g_ob.get(K_BODY, "")) or props.fit_body_object
+        if body is None:
+            self.report({'ERROR'}, "Body not found - refit first.")
+            return {'CANCELLED'}
+        scene = context.scene
+        me = g_ob.data
+        n = len(me.vertices)
+        bh = g_ob.get(K_BODYH, 1.0)
+
+        # pin group: the anchor band (same falloff as the snug zone) so the
+        # garment hangs from its waistband/collar instead of falling off
+        mw = g_ob.matrix_world
+        zs = [(mw @ v.co).z for v in me.vertices]
+        z_top, z_lo = max(zs), min(zs)
+        span = max(z_top - z_lo, 1e-9)
+        vg = g_ob.vertex_groups.get("SRF_Pin")
+        if vg is None:
+            vg = g_ob.vertex_groups.new(name="SRF_Pin")
+        for i, z in enumerate(zs):
+            t = (z_top - z) / span
+            vg.add([i], max(0.0, 1.0 - t / 0.20), 'REPLACE')
+        # SMALL LOOSE PARTS (buttons, detached cuffs, brooches...) are rigid
+        # accessories, not cloth - unpinned they just FALL through the sim
+        # (Mens_Shirt cuffs landed at the knees). Pin them fully.
+        import bmesh
+        bm = bmesh.new(); bm.from_mesh(me)
+        bm.verts.ensure_lookup_table()
+        seen = set()
+        for v0 in bm.verts:
+            if v0.index in seen:
+                continue
+            stack = [v0]; comp = []
+            seen.add(v0.index)
+            while stack:
+                cur = stack.pop(); comp.append(cur.index)
+                for e in cur.link_edges:
+                    o = e.other_vert(cur)
+                    if o.index not in seen:
+                        seen.add(o.index); stack.append(o)
+            if len(comp) < 0.05 * n:               # accessory -> fully pinned
+                vg.add(comp, 1.0, 'REPLACE')
+        bm.free()
+
+        # temporary physics setup
+        col_added = False
+        if not any(m.type == 'COLLISION' for m in body.modifiers):
+            body.modifiers.new("SRF_Col", 'COLLISION')
+            col_added = True
+        body.collision.thickness_outer = 0.004 * bh
+        cl = g_ob.modifiers.new("SRF_Cloth", 'CLOTH')
+        cs = cl.settings
+        cs.vertex_group_mass = "SRF_Pin"
+        cs.quality = 6
+        cs.mass = 0.2
+        cs.tension_stiffness = 30.0                # fabric must not stretch long
+        cs.compression_stiffness = 30.0
+        cs.shear_stiffness = 8.0
+        cs.bending_stiffness = 0.4
+        cl.collision_settings.collision_quality = 3
+        cl.collision_settings.distance_min = 0.003 * bh
+        cl.collision_settings.use_self_collision = False
+        cl.point_cache.frame_start = scene.frame_current
+        cl.point_cache.frame_end = scene.frame_current + int(self.frames)
+
+        f0 = scene.frame_current
+        try:
+            for f in range(f0, f0 + int(self.frames) + 1):
+                scene.frame_set(f)
+            # capture the settled cloth
+            dg = context.evaluated_depsgraph_get()
+            ev = g_ob.evaluated_get(dg).to_mesh()
+            settled = [ev.vertices[i].co.copy() for i in range(n)]
+            g_ob.evaluated_get(dg).to_mesh_clear()
+        finally:
+            g_ob.modifiers.remove(cl)
+            if col_added:
+                m = body.modifiers.get("SRF_Col")
+                if m:
+                    body.modifiers.remove(m)
+            scene.frame_set(f0)
+
+        # write into the SRF_Fit shape key (create the key set if needed)
+        if me.shape_keys is None:
+            g_ob.shape_key_add(name="Basis", from_mix=False)
+            g_ob[K_KEYS] = True
+        sk = me.shape_keys.key_blocks.get(SK_FIT)
+        if sk is None:
+            sk = g_ob.shape_key_add(name=SK_FIT, from_mix=False)
+        sk.slider_min = 0.0
+        sk.value = 1.0
+        for i in range(n):
+            sk.data[i].co = settled[i]             # evaluated = local coords
+        self.report({'INFO'}, "Draped: cloth settled over %d frames." % self.frames)
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_fit_apply(bpy.types.Operator):
     """Bake the fit: apply the SRF_* conform modifiers to the garment mesh"""
     bl_idname = "smartrig.fit_apply"
@@ -1109,7 +1237,8 @@ class SMARTRIG_OT_fit_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_classes = (SMARTRIG_OT_lets_fit, SMARTRIG_OT_fit_apply, SMARTRIG_OT_fit_remove)
+_classes = (SMARTRIG_OT_lets_fit, SMARTRIG_OT_fit_drape,
+            SMARTRIG_OT_fit_apply, SMARTRIG_OT_fit_remove)
 
 
 def register():

@@ -1,4 +1,4 @@
-# SmartRig Pro
+# Soulify
 
 A Blender add-on that auto-rigs any character with a marker wizard, builds a
 **Rigify** metarig fitted to the markers, adds Rigify samples and a **Short Skirt
@@ -10,7 +10,7 @@ Author: Saeed · Repo: https://github.com/SAEEDAMANIFX/smartrig-pro
 ## Install
 1. Zip the `smartrig_pro/` folder (or use the provided `smartrig_pro.zip`).
 2. Blender → Edit → Preferences → Add-ons → Install… → pick the zip → enable
-   **SmartRig Pro**. Rigify must be enabled too.
+   **Soulify**. Rigify must be enabled too.
 
 ## Features
 - **Rig tab:** guided marker placement (body → feet → hands), per-finger picker,

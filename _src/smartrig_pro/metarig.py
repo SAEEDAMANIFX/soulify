@@ -683,6 +683,10 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
             return {'CANCELLED'}
         # after generate Rigify hides the metarig; record + report
         context.scene.smartrig.rig_generated = True
+        # rigging phase done -> auto-UNLOCK the character mesh so the user can
+        # select the body again (the lock only matters while placing markers)
+        if context.scene.smartrig.lock_mesh:
+            context.scene.smartrig.lock_mesh = False
         # professional round-trip: HIDE the metarig, REVEAL + activate the rig so
         # only one is visible at a time (Generate <-> Back to Metarig toggle).
         rig = _generated_rig()

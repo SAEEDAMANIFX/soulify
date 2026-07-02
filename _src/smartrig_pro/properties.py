@@ -357,6 +357,33 @@ class SmartRigProps(PropertyGroup):
         description="How strongly the skirt rotates with the leg (Pierrick-style). 0 = none")
     skirt_limit_deg: FloatProperty(name="Max Angle", default=60.0, min=5.0, max=150.0, update=_skirt_live_update,
         description="Maximum outward swing of a skirt panel (lower = less chance skirt bones overlap)")
+    kandura_object: PointerProperty(
+        name="Kandura", type=bpy.types.Object, poll=_mesh_poll,
+        description="The kandura (thobe) mesh")
+    kandura_has_neck: BoolProperty(
+        name="Neck", default=True,
+        description="This kandura has a neck opening / collar to rig")
+    kandura_has_placket: BoolProperty(
+        name="Placket", default=False,
+        description="This kandura has a placket (almarad): the vertical "
+        "button strip down the chest, like Qatari/Saudi kanduras")
+    kandura_has_buttons: BoolProperty(
+        name="Buttons", default=False,
+        description="The placket has buttons the automation should handle")
+    kandura_has_pocket: BoolProperty(
+        name="Pocket", default=False,
+        description="This kandura has a chest pocket to rig along")
+    kandura_has_side_pockets: BoolProperty(
+        name="Side Pockets", default=False,
+        description="This kandura has waist/side pocket openings at hip level")
+    kandura_sleeve_upper: IntProperty(
+        name="Upper Arm Bones", default=2, min=1, max=6,
+        description="Sleeve chain bones along the UPPER ARM part")
+    kandura_sleeve_lower: IntProperty(
+        name="Lower Arm Bones", default=2, min=1, max=6,
+        description="Sleeve chain bones along the FOREARM part (down to the cuff)")
+    show_kandura: BoolProperty(name="Kandura", default=False,
+        description="Collapse / expand the Kandura (thobe) section")
     show_skirt: BoolProperty(name="Skirt", default=False,
         description="Collapse / expand the Short Skirt section")
     show_skirt_adv: BoolProperty(name="Advanced", default=False,
@@ -389,11 +416,24 @@ class SmartRigProps(PropertyGroup):
     skin_smart_skirt: BoolProperty(name="Smart Skirt Weights", default=True,
         description="Skin the skirt from its known grid (angular column blend x vertical "
                     "row blend) instead of a generic heat map - cleaner, no cross-column bleed")
-    # ---- top tabs (ARP-style: Rig / Skin / Misc) ----
+    # ---- top-level phases: the Fit + Rig + Animate pipeline ----
     ui_tab: EnumProperty(
-        name="Tab", default='RIG',
-        items=[('RIG', "Rig", "Markers, metarig and Rigify samples"),
+        name="Phase", default='RIG',
+        items=[('FIT', "Fit", "Fit clothing onto the character automatically",
+                'MOD_CLOTH', 0),
+               ('RIG', "Rig", "Markers, metarig, skinning and Rigify samples",
+                'OUTLINER_OB_ARMATURE', 1),
+               ('ANIM', "Animate", "Cloth dynamics, locomotion, poses and more",
+                'PLAY', 2)])
+    rig_sub: EnumProperty(
+        name="Rig Section", default='BUILD',
+        items=[('BUILD', "Build", "Markers, metarig and Rigify samples"),
                ('SKIN', "Skin", "Bind / skin the mesh to the rig")])
+    ui_level: EnumProperty(
+        name="Level", default='SIMPLE',
+        items=[('SIMPLE', "Simple", "Show only the essential steps"),
+               ('PRO', "Pro", "Show every tool: bone roll, align, display and "
+                "advanced options")])
     rig_started: BoolProperty(
         name="Rig Started", default=False,
         description="Internal: becomes True after 'Let's Rig' so the Character/Parts "

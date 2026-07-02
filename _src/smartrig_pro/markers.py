@@ -820,7 +820,7 @@ def _placement_modal(op, context, event):
 class SMARTRIG_OT_place_guided(bpy.types.Operator):
     bl_idname = "smartrig.place_guided"
     bl_label = "Let's Rig"
-    bl_description = ("Start guided rigging. The SmartRig panel then shows each joint "
+    bl_description = ("Start guided rigging. The Soulify panel then shows each joint "
                       "with a picture: press 'Place this joint' and click it on the body. "
                       "Everything is driven from the panel - head, neck, shoulder, ...")
     bl_options = {'REGISTER'}
@@ -959,9 +959,9 @@ class SMARTRIG_OT_add_fingers(bpy.types.Operator):
 
 
 def full_cleanup(context):
-    """Remove EVERYTHING SmartRig created: markers, metarig, generated rigs,
+    """Remove EVERYTHING Soulify created: markers, metarig, generated rigs,
     skirt bones/collision, widgets, and UNBIND our meshes (DEF/SR_Skirt groups +
-    armature modifiers). Never touches non-SmartRig rigs (e.g. Auto-Rig Pro)."""
+    armature modifiers). Never touches non-Soulify rigs (e.g. Auto-Rig Pro)."""
     p = context.scene.smartrig
     try:
         if context.object and context.object.mode != 'OBJECT':

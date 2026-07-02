@@ -18,3 +18,7 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+*.bundle
+soulify_v*.zip
+smartrig_pro_v*.zip

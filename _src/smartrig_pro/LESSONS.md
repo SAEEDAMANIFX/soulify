@@ -574,3 +574,57 @@ Bonus: the residual + final clamp passes no longer re-query the BVH at all
 (plane math on stored correspondence) -> faster too. Verified at the user's
 exact tuned state (Ease 1%, Smooth 40, Scale 0.89, Height -0.05): back zone
 0.0% penetration, bodice smooth over the bust.
+
+## v1.20.28 — Edit Mode on a HIDDEN rig crashes every skirt toggle
+Collision / jiggle / masters add & remove all enter Edit Mode on the generated
+rig. If the user hid the rig (eye icon), `view_layer.objects.active = rig`
+"succeeds" but `context.active_object` is still None -> `mode_set` raises
+"Context missing active object". The chest-jiggle path was patched long ago;
+the 6 skirt paths were not. Fix: one shared `skirt._edit_rig(rig)` helper
+(leave mode -> hide_set(False) + hide_viewport=False -> select -> activate ->
+mode_set EDIT, never raises, returns bool). EVERY future Edit-Mode entry on the
+rig must go through it. Verified: add/remove collision+jiggle with the rig
+hidden — 0 stale SKC bones, parents restored, 26 columns rebuilt.
+
+## v1.20.29 — accessibility sentinel + no bare `objects.active = rig`
+`view_layer.objects.active = rig` RAISES when the rig's collection is excluded
+from the View Layer ("ViewLayer does not contain object"). Audited every bare
+assignment in skirt.py: removed the redundant ones, wrapped the rest, unified
+chest jiggle on `_edit_rig`. Convention: add/remove return **-1 = rig not
+accessible** (operators report `_NO_ACCESS`), 0 = nothing to do. Verified with
+the rig in an excluded collection: all 6 paths return -1, no traceback; hidden
+rig still auto-unhides and builds.
+
+## v1.20.30 — skirt masters deformed the BODY
+`eb.new()` defaults `use_deform=True`; the region masters (`skirt_master*`)
+were never set False, so the heat-map body bind assigned ~800 body verts to
+them -> grabbing a master dragged the body. Fix: (a) masters created with
+`use_deform=False`; (b) bind's split filter now disables EVERY skirt-related
+deform bone (DEF-skirt, skirt_master, skirt FK/tweak, SKC_) during the body
+bind, not just DEF-skirt.*. RULE: every new helper/control bone must set
+`use_deform = False` at creation. Verified: master +0.2 m -> skirt 0.2012 m,
+body 0.0000 m, collision+jiggle+masters coexisting.
+
+
+## Let's Fit v14 (Soulify v1.23.2-5): shirt recognition + the Drape button
+1. **A-pose sleeves are not pants legs**: cuffs hang LOW beside the torso,
+   exactly where leg openings sit. Rule: a NARROW top opening (ratio<0.6,
+   collar-like) can never be pants - offset rings there are sleeve cuffs at
+   ANY height -> shirt. Only wide-top garments read offset low rings as legs.
+2. **Collars tilt back ~25-30 deg BY DESIGN**: the orientation trigger is now
+   |axis.z| < 0.7 (>45 deg = genuinely lying). The collar normal was rotating
+   upright shirts; the flat-lying wedding dress (axis.z ~= 0) is still caught.
+3. **The pose net's 'neck' is the neck BONE JOINT (~71% height, between the
+   shoulders), not the collar line**: anchoring a collar there scaled the
+   shirt x1.8. Collars anchor on the GEOMETRIC narrowest neck cross-section
+   (min R in 75-93%, ~86%); AI keypoints stay for hips/chest/shoulders.
+   Verified: Mens_Shirt_4 -> 'shirt (neck, AI) scale x1.06' (asset pre-sized).
+4. **Drape (Cloth) operator** (`smartrig.fit_drape`): the professional finish
+   the user asked AI for - and the honest answer is PHYSICS, not a pretrained
+   model (DrapeNet/TailorNet etc. are SMPL-bound, GPU-heavy, fail on stylized
+   characters). Temporary Cloth sim: pin group = anchor band (top 20% falloff)
+   + ALL small loose components pinned fully (buttons/detached cuffs FELL to
+   the knees otherwise - accessories are not cloth); tension/compression 30
+   (12 let gravity stretch the shirt 40 cm); body gets a temporary COLLISION
+   modifier; settle N frames; write the evaluated result into SRF_Fit;
+   everything removed after. 17 s for a 48k shirt, penetration 0.1%.
