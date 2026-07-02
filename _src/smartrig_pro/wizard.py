@@ -162,7 +162,10 @@ def _draw_glow(region, rv3d):
             continue
         col = GLOW[role if role is not None else _role(name)]
         sel = _selected(o)
-        s = (1.5 if sel else 1.0) * m
+        # fit markers never shrink below full size (the rig marker_size
+        # preference made them vanish)
+        mm = m if role is None else max(m, 1.0)
+        s = (1.5 if sel else 1.0) * mm
         for rr, aa in ((27 * s, 0.12), (17 * s, 0.24), (10 * s, 0.60)):
             b = batch_for_shader(shader, 'TRI_FAN', {"pos": _circle(p.x, p.y, rr)})
             shader.bind(); shader.uniform_float("color", (col[0], col[1], col[2], aa)); b.draw(shader)
@@ -492,7 +495,7 @@ def _draw_fit_labels(region, rv3d):
     fid = 0
     blf.enable(fid, blf.SHADOW)
     blf.shadow(fid, 5, 0, 0, 0, 1)
-    blf.size(fid, 15)
+    blf.size(fid, 11)
     for o, role in _fit_marker_items():
         p = view3d_utils.location_3d_to_region_2d(
             region, rv3d, o.matrix_world.translation)
