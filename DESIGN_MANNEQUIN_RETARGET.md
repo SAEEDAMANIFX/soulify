@@ -88,3 +88,26 @@ TensorRT), Apple Silicon (CoreML) and Windows GPUs (DirectML); CPU fallback:
 3. **Sanity layer stays** (shoulder-between-neck-and-elbow etc.) - nets
    propose, geometry disposes.
 Execution providers enabled in detect._session (v1.25.4).
+
+
+## FINAL ARCHITECTURE SYNTHESIS (from MetaTailor tech breakdown, 2026-07-02)
+The user's research confirms the endgame. MetaTailor's core secret: it
+REQUIRES a rigged character and uses HER OWN SKIN WEIGHTS as the transfer
+medium - no joint detection, no invented binding. Map to Soulify:
+
+1. RIG FIRST (confirmed twice today) - Soulify's core competency.
+2. PLACE the garment (our placement/orientation/classification: done).
+3. **WEIGHT TRANSFER body -> garment** (Blender's native Data Transfer,
+   NEAREST_POLY): the garment inherits the character's weights; add an
+   Armature modifier with HER rig -> 'self-adaptive' = the body's own
+   deformation carries the cloth; animation-ready forever. THIS replaces all
+   invented binding math (segment weights, Surface Deform rides).
+4. DESIGN PRESERVATION = OUR EDGE over MetaTailor: ARAP finish pass + rigid
+   stiff panels (collar/cuffs/plackets/buttons) per the v1.27.7 audit
+   (48% edge distortion must become <10%).
+5. Layer ordering = per-garment Ease offsets + an order index (shirt over
+   pants); physics secondary motion = the existing skirt jiggle/wind systems.
+6. Engine bridges (Unreal/Unity) = later, after quality.
+
+Next session order: (A) Data-Transfer binding + armature hookup,
+(B) ARAP + stiff panels, (C) regression matrix with the distortion metric.
