@@ -68,3 +68,23 @@ garment mesh ──> 1. GARMENT SKELETON      (tube centerlines: torso axis from
 - No bundled neural garment models (SMPL-bound, GPU-heavy, fail on stylized
   characters — evaluated and rejected twice).
 - Cloth simulation stays OPTIONAL polish, never the load-bearing fit.
+
+
+## AI Bone Placement v2 (approved direction, next session)
+
+Detection is now the accuracy bottleneck (collapsed shoulders, mid-depth-plane
+Y). Upgrade plan - all on onnxruntime so it accelerates on NVIDIA (CUDA/
+TensorRT), Apple Silicon (CoreML) and Windows GPUs (DirectML); CPU fallback:
+
+1. **Multi-view triangulation** (biggest win, zero new models): render the
+   character from FRONT + SIDE (+3/4 optional), run the pose net per view,
+   triangulate each keypoint from the known cameras -> true 3D joints, no
+   more mid-depth-plane Y guess, no collapsed laterals. The render+backproject
+   machinery in detect.py already exists - generalize to N views.
+2. **Model ensemble**: add a strong permissively-licensed pretrained 2D pose
+   ONNX (RTMPose ~13 MB, Apache-2.0) next to smartrig_pose.onnx: RTMPose
+   carries realistic bodies, Saeed's model carries stylized ones - pick per
+   keypoint by confidence.
+3. **Sanity layer stays** (shoulder-between-neck-and-elbow etc.) - nets
+   propose, geometry disposes.
+Execution providers enabled in detect._session (v1.25.4).

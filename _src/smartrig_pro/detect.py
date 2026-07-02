@@ -93,8 +93,18 @@ def _session():
         import onnxruntime as ort
         so = ort.SessionOptions()
         so.log_severity_level = 3
-        _SESSION = ort.InferenceSession(model_path(), so,
-                                        providers=["CPUExecutionProvider"])
+        # hardware acceleration wherever available: CUDA/TensorRT on NVIDIA,
+        # CoreML on Apple Silicon, DirectML on Windows GPUs - CPU always last.
+        want = ["TensorrtExecutionProvider", "CUDAExecutionProvider",
+                "CoreMLExecutionProvider", "DmlExecutionProvider",
+                "CPUExecutionProvider"]
+        avail = set(ort.get_available_providers())
+        providers = [p for p in want if p in avail] or ["CPUExecutionProvider"]
+        _SESSION = ort.InferenceSession(model_path(), so, providers=providers)
+        try:
+            print("Soulify detect: ONNX providers =", _SESSION.get_providers())
+        except Exception:
+            pass
     return _SESSION
 
 
