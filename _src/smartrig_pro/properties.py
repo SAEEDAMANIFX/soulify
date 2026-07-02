@@ -70,6 +70,13 @@ def _fit_live_update(self, context):
     no rebuild - mandatory update= callback (LESSONS: sliders without callbacks
     read as 'broken' on a paused frame)."""
     try:
+        import bpy as _bpy
+        from . import mannequin as _mq
+        if _bpy.data.objects.get(_mq.RIG_NAME) is not None:
+            # a Mannequin Match owns SRF_Fit: the old conform engine must
+            # NOT overwrite it (it re-tents shirts into skirts). Tune is
+            # disabled in the UI in this state; guard here too.
+            return
         from . import garment
         garment.live_fit_tune(context)
     except Exception as e:
@@ -510,6 +517,10 @@ class SmartRigProps(PropertyGroup):
         name="Height", default=0.0, min=-0.25, max=0.25, update=_fit_live_update,
         description="Slide the garment up/down the body, as a fraction of body "
         "height")
+    fitwiz_step: IntProperty(
+        name="Fit Wizard Step", default=0, min=0, max=3,
+        description="Internal: current step of the step-by-step Fit Wizard "
+        "(0 off, 1 place, 2 markers, 3 extras)")
     mode_chosen: BoolProperty(
         name="Mode Chosen", default=False,
         description="Internal: becomes True after the user picks Character or Parts, "

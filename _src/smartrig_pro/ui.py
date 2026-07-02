@@ -947,10 +947,46 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             box.label(text="Tip: Rig the character first (Rig tab) "
                            "for exact joints", icon='INFO')
 
+        # -- 1.5 FIT WIZARD (step by step, like the rig marker wizard) -------
+        step = props.fitwiz_step
+        wiz = box.box()
+        hr = wiz.row()
+        hr.label(text="Fit Wizard (step by step)", icon='PRESET')
+        if step == 0:
+            hr.operator("smartrig.fitwiz_start", text="Start", icon='PLAY')
+        else:
+            hr.operator("smartrig.fitwiz_cancel", text="", icon='X')
+            if step == 1:
+                wiz.label(text="1/3  Place the garment over the character",
+                          icon='ORIENTATION_GLOBAL')
+                r = wiz.row(align=True)
+                r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
+                r.operator("smartrig.fitwiz_view", text="Side").axis = 'LEFT'
+                r.operator("smartrig.lets_fit", text="Auto Place")
+                wiz.label(text="Move / Rotate / Scale freely (G R S)")
+                wiz.operator("smartrig.fitwiz_markers",
+                             text="Next: Markers", icon='FORWARD')
+            elif step == 2:
+                wiz.label(text="2/3  Drag any wrong marker (cuff = wrist!)",
+                          icon='EMPTY_AXIS')
+                r = wiz.row(align=True)
+                r.operator("smartrig.fitwiz_markers", text="Rebuild")
+                r.operator("smartrig.fitwiz_extras",
+                           text="Next: Extras", icon='FORWARD')
+            elif step == 3:
+                wiz.label(text="3/3  Register extras: belt, pockets, "
+                               "buttons, flowers", icon='GROUP_VERTEX')
+                wiz.label(text="Edit Mode: select the piece, then:")
+                wiz.operator("smartrig.fitwiz_register", icon='ADD')
+                gr = wiz.row(); gr.scale_y = 1.6
+                gr.operator("smartrig.fitwiz_go",
+                            text="FIT!", icon='ARMATURE_DATA')
+
         # -- 2. ONE CLICK ---------------------------------------------------
         fitted = g_ob.get(K_BASE) is not None \
             or g_ob.modifiers.get(MOD_WRAP) is not None
         big = box.row(); big.scale_y = 1.7
+        big.enabled = step == 0
         big.operator("smartrig.mannequin_match",
                      text="Fit to Character", icon='ARMATURE_DATA')
         srow = box.row(align=True)
@@ -965,9 +1001,16 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             return
 
         # -- 3. TUNE (live) --------------------------------------------------
+        # Tune drives the CONFORM engine (Place Garment). After a Mannequin
+        # Match it would overwrite the match with a tent - so it locks.
+        matched = bpy.data.objects.get("SRF_GarmentRig") is not None
         tune = box.box()
         tune.label(text="Tune (live)", icon='TOOL_SETTINGS')
+        if matched:
+            tune.label(text="Locked: garment is Matched (use Hand Control)",
+                       icon='LOCKED')
         col = tune.column(align=True)
+        col.enabled = not matched
         col.prop(props, "garment_ease")
         col.prop(props, "garment_smooth")
         col.prop(props, "garment_scale")

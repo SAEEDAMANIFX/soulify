@@ -306,3 +306,33 @@ NUMBERS (Mens_Shirt_4 -> rigged male body, 48.3k verts, 5.8s match):
 VISUAL: collar keeps band+fold, placket straight, buttons intact, chest
 smooth. Remaining 12.8% lives at armpit blends + open boundaries -> next:
 boundary-aware smoothing weights + drape defaults (sim soft panels only).
+
+
+## v1.29.0 - FIT WIZARD (step-by-step, Saeed's design) - SHIPPED
+The auto garment-skeleton guessing was the weak link (cuff/wrist, hem);
+the fit engine itself is strong. Applied the SAME lesson as the rig marker
+wizard: automation makes the first guess, the user corrects, the engine
+gets exact inputs.
+- fit_wizard.py: Start (place over the ACTUAL character = the anatomy
+  reference, front/side view buttons, auto-place) -> Markers (empties
+  SRFM_<joint> in SRF_FitMarkers, PRE-FILLED from garment_skeleton, user
+  drags the wrong ones) -> Extras (SRF_Rigid vertex group; 'Register
+  Selected as Rigid' in Edit Mode for belts/pockets/buttons/flowers) ->
+  FIT! (runs mannequin_match).
+- mannequin_match: marker empties OVERRIDE the analysis (jt.update).
+- warp_garment: _rigid_group_clusters(SRF_Rigid) -> connected clusters
+  each snap to ONE rigid transform (rigidify_components extra=...).
+- properties.fitwiz_step drives the wizard UI states in _draw_fit.
+- Big 'Fit to Character' disabled while the wizard is active.
+Also in v1.28.1 (same push): Tune(live) LOCKED after a match (it drove the
+old conform engine and re-tented shirts into skirts - the contradiction
+Saeed spotted); Taubin (shrink-free) smooth base; capped per-vert collision
+floor; wrist auto-extension with NARROW tube + 1.35L cap (uncapped mask
+caught the hem and crushed sleeves); _rig_joints prefers the GENERATED
+rig's ORG- bones (current pose) over the metarig rest; collisions vs the
+EVALUATED body; drape bending 0.4 -> 8.0 (sim settles, never re-sculpts).
+DEBUG LESSON: MCP screenshots can be STALE - hide/unhide + tag_redraw +
+wm.redraw_timer before trusting a screenshot; hidden-state checks said the
+body was hidden while the screenshot still showed it.
+Verified full cycle: 9 pre-filled markers on the shirt, user-style wrist
+correction, extras step, FIT 7.0s, design damage 10.6%, markers auto-hide.

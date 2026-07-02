@@ -783,12 +783,15 @@ def _rig_joints(body):
     the recommended flow: Rig, then Fit (no AI guessing at all)."""
     try:
         from . import metarig as _mr
-        # the METARIG first: clean Rigify names, heads = true joints
-        rig = bpy.data.objects.get("SR_Metarig") or _mr._generated_rig()
+        # THE GENERATED RIG FIRST: its ORG- bones carry the character's
+        # CURRENT POSE (arms down, bent, anything). The metarig only knows
+        # the rest pose - matching to it while the body is posed detaches
+        # the garment from the visible character (v1.28.0 bug).
+        bpy.context.view_layer.update()
+        rig = _mr._generated_rig() or bpy.data.objects.get("SR_Metarig")
         if rig is None or rig.type != 'ARMATURE':
             return None
         mw = rig.matrix_world
-        bones = rig.pose.bones if rig.mode == 'POSE' else rig.pose.bones
 
         def head(*names):
             for nm in names:
@@ -799,19 +802,27 @@ def _rig_joints(body):
 
         out = {}
         pairs = {
-            "neck": ("neck", "neck_01", "spine.004", "spine.006"),
-            "chest": ("spine.003", "chest", "spine_03", "spine.002"),
-            "pelvis": ("spine", "ORG-spine", "spine_01", "hips"),
-            "shoulder_l": ("upper_arm.L", "upper_arm_fk.L", "upper_arm.l"),
-            "elbow_l": ("forearm.L", "forearm_fk.L", "forearm.l"),
-            "wrist_l": ("hand.L", "hand_fk.L", "hand.l"),
-            "shoulder_r": ("upper_arm.R", "upper_arm_fk.R", "upper_arm.r"),
-            "elbow_r": ("forearm.R", "forearm_fk.R", "forearm.r"),
-            "wrist_r": ("hand.R", "hand_fk.R", "hand.r"),
-            "hip_l": ("thigh.L", "thigh_fk.L"), "knee_l": ("shin.L", "shin_fk.L"),
-            "ankle_l": ("foot.L", "foot_fk.L"),
-            "hip_r": ("thigh.R", "thigh_fk.R"), "knee_r": ("shin.R", "shin_fk.R"),
-            "ankle_r": ("foot.R", "foot_fk.R"),
+            "neck": ("ORG-spine.004", "neck", "neck_01", "spine.004",
+                     "spine.006"),
+            "chest": ("ORG-spine.003", "spine.003", "chest", "spine_03",
+                      "spine.002"),
+            "pelvis": ("ORG-spine", "spine", "spine_01", "hips"),
+            "shoulder_l": ("ORG-upper_arm.L", "upper_arm.L",
+                           "upper_arm_fk.L", "upper_arm.l"),
+            "elbow_l": ("ORG-forearm.L", "forearm.L", "forearm_fk.L",
+                        "forearm.l"),
+            "wrist_l": ("ORG-hand.L", "hand.L", "hand_fk.L", "hand.l"),
+            "shoulder_r": ("ORG-upper_arm.R", "upper_arm.R",
+                           "upper_arm_fk.R", "upper_arm.r"),
+            "elbow_r": ("ORG-forearm.R", "forearm.R", "forearm_fk.R",
+                        "forearm.r"),
+            "wrist_r": ("ORG-hand.R", "hand.R", "hand_fk.R", "hand.r"),
+            "hip_l": ("ORG-thigh.L", "thigh.L", "thigh_fk.L"),
+            "knee_l": ("ORG-shin.L", "shin.L", "shin_fk.L"),
+            "ankle_l": ("ORG-foot.L", "foot.L", "foot_fk.L"),
+            "hip_r": ("ORG-thigh.R", "thigh.R", "thigh_fk.R"),
+            "knee_r": ("ORG-shin.R", "shin.R", "shin_fk.R"),
+            "ankle_r": ("ORG-foot.R", "foot.R", "foot_fk.R"),
         }
         for ours, cands in pairs.items():
             p = head(*cands)
@@ -956,29 +967,80 @@ def _loose_components(n, ev):
     return [np.array(g, dtype=np.int64) for g in groups.values()]
 
 
-def rigidify_components(base, cur, comps, max_frac=0.05):
-    """Snap every SMALL loose component to the best rigid(+uniform scale)
-    transform of its DESIGN shape (Kabsch + Horn scale). Modifies cur
-    in-place; returns bool mask of stiff verts."""
+def _rigid_snap(base, cur, c):
+    """Best rigid(+uniform scale) transform of the DESIGN onto cur (Kabsch
+    + Horn scale) for index set c; writes cur in-place."""
+    P, Q = base[c], cur[c]
+    pc, qc = P.mean(0), Q.mean(0)
+    dP, dQ = P - pc, Q - qc
+    U, S, Vt = np.linalg.svd(dP.T @ dQ)
+    d = np.sign(np.linalg.det(U @ Vt))
+    D = np.array([1.0, 1.0, d])
+    A = (U * D) @ Vt
+    s = float((S * D).sum() / max((dP * dP).sum(), 1e-12))
+    cur[c] = qc + (dP @ A) * s
+
+
+def rigidify_components(base, cur, comps, max_frac=0.05, extra=None):
+    """Snap every SMALL loose component - plus every USER-REGISTERED rigid
+    cluster (belt/pockets/buttons via the SRF_Rigid group) - to one rigid
+    transform of its DESIGN shape. Returns bool mask of stiff verts."""
     n = base.shape[0]
     stiff = np.zeros(n, dtype=bool)
-    if len(comps) <= 1:
-        return stiff
-    big = max(len(c) for c in comps)
-    for c in comps:
-        if len(c) == big or len(c) > max_frac * n or len(c) < 3:
-            continue
-        P, Q = base[c], cur[c]
-        pc, qc = P.mean(0), Q.mean(0)
-        dP, dQ = P - pc, Q - qc
-        U, S, Vt = np.linalg.svd(dP.T @ dQ)
-        d = np.sign(np.linalg.det(U @ Vt))
-        D = np.array([1.0, 1.0, d])
-        A = (U * D) @ Vt
-        s = float((S * D).sum() / max((dP * dP).sum(), 1e-12))
-        cur[c] = qc + (dP @ A) * s
-        stiff[c] = True
+    if len(comps) > 1:
+        big = max(len(c) for c in comps)
+        for c in comps:
+            if len(c) == big or len(c) > max_frac * n or len(c) < 3:
+                continue
+            _rigid_snap(base, cur, c)
+            stiff[c] = True
+    for c in (extra or []):
+        if len(c) >= 3:
+            _rigid_snap(base, cur, c)
+            stiff[c] = True
     return stiff
+
+
+def _rigid_group_clusters(g_ob, me, ev):
+    """Connected clusters of the user's SRF_Rigid vertex group (Fit Wizard
+    'register extras' step): each cluster moves as ONE rigid body."""
+    vg = g_ob.vertex_groups.get("SRF_Rigid")
+    if vg is None:
+        return []
+    gi = vg.index
+    tag = np.zeros(len(me.vertices), dtype=bool)
+    for v in me.vertices:
+        for ge in v.groups:
+            if ge.group == gi and ge.weight > 0.5:
+                tag[v.index] = True
+                break
+    if tag.sum() < 3:
+        return []
+    import collections
+    adj = collections.defaultdict(list)
+    for a, b in ev:
+        a, b = int(a), int(b)
+        if tag[a] and tag[b]:
+            adj[a].append(b)
+            adj[b].append(a)
+    seen = set()
+    clusters = []
+    for i in np.nonzero(tag)[0]:
+        i = int(i)
+        if i in seen:
+            continue
+        q, comp = [i], []
+        seen.add(i)
+        while q:
+            x = q.pop()
+            comp.append(x)
+            for y in adj[x]:
+                if y not in seen:
+                    seen.add(y)
+                    q.append(y)
+        if len(comp) >= 3:
+            clusters.append(np.array(comp, dtype=np.int64))
+    return clusters
 
 
 def arap_refine(base, warped, ev, iters=6, lam=0.10, s_lo=0.5, s_hi=2.0,
@@ -1042,14 +1104,20 @@ def _adjacency(n, ev):
     return ctr, nbr, deg, ref
 
 
-def _smooth_base(co, ctr, nbr, deg, iters=25, alpha=0.5):
-    """Heavy Laplacian smooth = the low-frequency base of the design."""
+def _smooth_base(co, ctr, nbr, deg, iters=25, alpha=0.5, mu=-0.53):
+    """Low-frequency base of the design via TAUBIN smoothing (lambda|mu):
+    plain Laplacian SHRINKS open boundaries (hem/cuffs pulled in -> the
+    detail layer explodes there and re-adds as flared skirts / sleeves on
+    hands). Taubin's negative step cancels the shrink."""
     cur = co.copy()
     ok = deg > 0
-    for _ in range(iters):
+    dn = np.maximum(deg, 1.0)[:, None]
+    for i in range(iters * 2):
+        step = alpha if (i % 2 == 0) else mu
         acc = np.zeros_like(cur)
         np.add.at(acc, ctr, cur[nbr])
-        cur[ok] = (1.0 - alpha) * cur[ok] + alpha * acc[ok] / deg[ok, None]
+        lap = acc / dn - cur
+        cur[ok] += step * lap[ok]
     return cur
 
 
@@ -1153,6 +1221,32 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     base = [v.co.copy() for v in me.vertices]
     wco = np.array([(mw @ c)[:] for c in base], dtype=float)
 
+    # WRIST = the true end of the sleeve: the tube trace can stop a few cm
+    # short of the cuff, and everything beyond the source wrist extrapolates
+    # (x axial scale) - that is how sleeves ended up riding the hands.
+    # Extend each source wrist to the farthest fabric along the forearm axis.
+    for side in ("l", "r"):
+        e = jt_src.get("elbow_" + side)
+        w_ = jt_src.get("wrist_" + side)
+        if e is None or w_ is None:
+            continue
+        L = (w_ - e).length
+        if L < 1e-9:
+            continue
+        dv = (w_ - e) / L
+        dn_ = np.array(dv[:])
+        rel = wco - np.array(e[:])
+        t = rel @ dn_
+        rho = np.linalg.norm(rel - t[:, None] * dn_, axis=1)
+        # NARROW tube + hard cap: a wide/uncapped mask caught the HEM near
+        # the forearm ray, dragged the source wrist to the hem and crushed
+        # the sleeve toward the elbow (v1.28.1 first attempt)
+        m_ = (t > 0.8 * L) & (t < 1.4 * L) & (rho < 0.35 * L)
+        if m_.any():
+            tmax = min(float(t[m_].max()), 1.35 * L)
+            if tmax > L:
+                jt_src["wrist_" + side] = e + dv * tmax
+
     # GLOBAL radial scale: girth is a design property - it scales with overall
     # body size (shoulder width), NEVER with individual bone lengths (that
     # shrank the fabric onto the skin and crumpled it)
@@ -1234,8 +1328,9 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     for k, (a0, _, M, a1, _, _) in enumerate(segs):
         out += W[:, k:k + 1] * ((src - a0) @ M.T + a1)
 
-    stiff = rigidify_components(wco, out, comps) if comps else \
-        np.zeros(n, dtype=bool)
+    extra = _rigid_group_clusters(g_ob, me, ev_all) if has_topo else []
+    stiff = rigidify_components(wco, out, comps, extra=extra) \
+        if (comps or extra) else np.zeros(n, dtype=bool)
     if has_topo:
         # heavy ARAP on the base (it is smooth, so this is safe): relaxes
         # LBS blend-zone stretch/pinch into evenly distributed tailoring
@@ -1246,20 +1341,26 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     # vert that landed inside the body back out along the surface normal,
     # then feather the pushes (Laplacian) so the fabric stays silky
     if body is not None:
-        binv = body.matrix_world.inverted()
-        bmw = body.matrix_world
+        # collisions against the EVALUATED body: the character may be POSED
+        # (armature/subsurf) - the rest mesh lies (documented lesson)
+        dg_ = bpy.context.evaluated_depsgraph_get()
+        bev = body.evaluated_get(dg_)
+        binv = bev.matrix_world.inverted()
+        bmw = bev.matrix_world
         bco = utils.read_rest_coords(body)
         floor = 0.003 * max(float(bco[:, 2].max() - bco[:, 2].min()), 1e-6)
         # per-vertex floor: reserve room for detail that dips inward, so the
         # re-added wrinkles/seams never end up inside the body
         if dloc is not None:
-            fl = floor + np.maximum(0.0, -dloc[:, 2])
+            # capped: an unreliable boundary frame must never balloon the
+            # clearance (that flared hems into skirts in v1.28.0)
+            fl = floor + np.minimum(np.maximum(0.0, -dloc[:, 2]), floor)
         else:
             fl = np.full(n, floor)
         push = np.zeros_like(out)
         for i in range(n):
             pl = binv @ Vector(out[i])
-            okc, loc, nrm, _ = body.closest_point_on_mesh(pl)
+            okc, loc, nrm, _ = bev.closest_point_on_mesh(pl)
             if not okc:
                 continue
             lw = bmw @ loc
@@ -1283,7 +1384,7 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
         # strict second pass after feathering
         for i in range(n):
             pl = binv @ Vector(out[i])
-            okc, loc, nrm, _ = body.closest_point_on_mesh(pl)
+            okc, loc, nrm, _ = bev.closest_point_on_mesh(pl)
             if okc:
                 lw = bmw @ loc
                 sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
@@ -1310,12 +1411,12 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
         s_loc = np.clip(rad1 / np.maximum(rad0, 1e-12), 0.85, 1.2)
         out = out + np.einsum('ij,ijk->ik', dloc * s_loc[:, None], F1)
         # stiff panels: exact rigid copies of the DESIGN
-        rigidify_components(wco, out, comps)
+        rigidify_components(wco, out, comps, extra=extra)
         # final safety: only true penetrations move - detail stays crisp
         if body is not None:
             for i in range(n):
                 pl = binv @ Vector(out[i])
-                okc, loc, nrm, _ = body.closest_point_on_mesh(pl)
+                okc, loc, nrm, _ = bev.closest_point_on_mesh(pl)
                 if okc:
                     lw = bmw @ loc
                     sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
@@ -1323,7 +1424,7 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                         nw = (bmw.to_3x3() @ nrm).normalized()
                         out[i] = np.array((lw + nw * floor * 0.35)[:])
     elif body is not None and stiff.any():
-        rigidify_components(wco, out, comps)
+        rigidify_components(wco, out, comps, extra=extra)
 
     # write to the SRF_Fit shape key (same reversible slot as Let's Fit)
     from .garment import SK_FIT, K_KEYS
@@ -1366,6 +1467,15 @@ class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
         if jt is None:
             self.report({'ERROR'}, "Could not read the garment's structure.")
             return {'CANCELLED'}
+        # FIT WIZARD OVERRIDE: user-corrected marker empties beat the
+        # automatic analysis (same philosophy as the rig marker wizard)
+        try:
+            from . import fit_wizard as _fw
+            mj = _fw.marker_joints()
+            if mj:
+                jt.update(mj)
+        except Exception as e:
+            print("Soulify fit wizard markers:", e)
         dst = character_joints(body)
         if dst is None:
             self.report({'ERROR'},

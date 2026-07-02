@@ -1133,8 +1133,11 @@ class SMARTRIG_OT_fit_drape(bpy.types.Operator):
         cs.mass = 0.2
         cs.tension_stiffness = 30.0                # fabric must not stretch long
         cs.compression_stiffness = 30.0
-        cs.shear_stiffness = 8.0
-        cs.bending_stiffness = 0.4
+        cs.shear_stiffness = 15.0
+        # the audit convicted low bending: the sim erased DESIGNED wrinkles
+        # and replaced them with noise. Stiff bending keeps the tailoring;
+        # the sim only settles gravity/contact.
+        cs.bending_stiffness = 8.0
         cl.collision_settings.collision_quality = 3
         cl.collision_settings.distance_min = 0.003 * bh
         cl.collision_settings.use_self_collision = False
