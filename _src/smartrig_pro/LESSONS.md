@@ -749,3 +749,15 @@ Result (warp default): shirt hem->collar 0.71->1.59, penetration 0.1%,
 worn correctly incl. sleeves on arms. THE recommended flow: Rig -> Fit ->
 Drape. Tear metric added to tests: p99 edge ratio 3.6 (armpit stretch -
 acceptable), watch it in the regression suite.
+
+
+## Stale-slider balloon + post-match slider fights (v1.27.7)
+User pressed Mannequin on an already-FITTED garment with hours-old slider
+values (Neck -0.5, Limb Vol 1.4) -> balloon mannequin + the slider warp
+re-tented the shirt from design ('why is the shirt bottom like a skirt and
+the mannequin broken?'). Two permanent rules:
+1. Mannequin sliders are OFFSETS from the just-built base -> neutralize all
+   five on every garment_mannequin build.
+2. After a MATCH exists (SRF_GarmentRig present), the sliders must NOT warp
+   the garment - hand control belongs to the rig's Pose Mode; slider warp
+   only shapes PRE-match.

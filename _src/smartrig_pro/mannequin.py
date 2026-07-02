@@ -362,7 +362,10 @@ def live_adjust(context):
         nm["srf_joints_base"] = base_store
         neutral = (abs(p.mann_arm_open) < 1e-3 and abs(p.mann_elbow_bend) < 1e-3
                    and abs(p.mann_neck_len) < 1e-3)
-        if not neutral:                            # neutral = keep the fit as-is
+        # after a MATCH, hand control belongs to SRF_GarmentRig (Pose Mode) -
+        # the slider warp would fight it and re-tent the garment from design
+        matched = bpy.data.objects.get(RIG_NAME) is not None
+        if not neutral and not matched:            # pre-match shaping only
             try:
                 warp_garment(g, base, adj,
                              loose=(m.get("srf_lower_mode") == 'LOOSE'))
@@ -1137,6 +1140,14 @@ class SMARTRIG_OT_garment_mannequin(bpy.types.Operator):
         if g_ob is None or g_ob.type != 'MESH':
             self.report({'ERROR'}, "Pick the garment mesh first.")
             return {'CANCELLED'}
+        # sliders are OFFSETS from the freshly-built base: stale values from a
+        # previous garment ballooned the mannequin (Neck -0.5 / Volume 1.4 on
+        # rebuild). Neutralize on every build.
+        props.mann_arm_open = 0.0
+        props.mann_elbow_bend = 0.0
+        props.mann_neck_len = 0.0
+        props.mann_torso_vol = 1.0
+        props.mann_arm_vol = 1.0
         jt = garment_skeleton(g_ob)
         if jt is None:
             self.report({'ERROR'}, "Could not read the garment's structure.")
