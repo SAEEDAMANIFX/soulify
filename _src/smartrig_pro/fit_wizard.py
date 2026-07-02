@@ -108,12 +108,13 @@ def _role(key):
 
 def _isolate(context, g):
     """Everything disappears - only the garment stays (Saeed's spec)."""
-    hidden = []
+    hidden = list(context.scene.get("srf_wiz_hidden", []))
     for ob in context.view_layer.objects:
         if ob is not g and not ob.hide_get():
             try:
                 ob.hide_set(True)
-                hidden.append(ob.name)
+                if ob.name not in hidden:
+                    hidden.append(ob.name)
             except Exception:
                 pass
     context.scene["srf_wiz_hidden"] = hidden
@@ -502,6 +503,11 @@ class SMARTRIG_OT_fitwiz_go(bpy.types.Operator):
             if props.garment_object.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
         _restore(context)          # the character comes back for the fit
+        if props.fit_body_object is not None:
+            try:
+                props.fit_body_object.hide_set(False)   # ALWAYS visible
+            except Exception:
+                pass
         r = bpy.ops.smartrig.mannequin_match()
         if 'FINISHED' in r:
             col = bpy.data.collections.get(MARKER_COL)

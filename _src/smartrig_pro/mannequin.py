@@ -1275,6 +1275,13 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             bw_ = bl_ @ R3b.T + np.array(body.matrix_world.translation[:])
             bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
 
+            # ARMS EXCLUSION (the old A-pose lesson): at waist height the
+            # HANDS sit in the band and explode the measured width - keep
+            # only the torso column around the joint
+            sw_ = (jt_dst["shoulder_l"] - jt_dst["shoulder_r"]).length \
+                if ("shoulder_l" in jt_dst and "shoulder_r" in jt_dst) \
+                else 0.25 * bh_
+
             def _band_scale(kl, kr, zkey, axis):
                 a_, b_ = jt_src.get(kl), jt_src.get(kr)
                 if a_ is None or b_ is None or zkey not in jt_dst:
@@ -1282,7 +1289,10 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                 w_g = (a_ - b_).length
                 if w_g < 1e-6:
                     return None
-                band = np.abs(bw_[:, 2] - jt_dst[zkey].z) < 0.02 * bh_
+                j = jt_dst[zkey]
+                band = (np.abs(bw_[:, 2] - j.z) < 0.02 * bh_) \
+                    & (np.abs(bw_[:, 0] - j.x) < 0.55 * sw_) \
+                    & (np.abs(bw_[:, 1] - j.y) < 0.55 * sw_)
                 if band.sum() < 8:
                     return None
                 w_b = float(bw_[band, axis].max() - bw_[band, axis].min())
