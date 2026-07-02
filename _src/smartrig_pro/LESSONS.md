@@ -675,3 +675,17 @@ stretch pulled the shirt over the head - parent/roll/stretch math needs its
 own careful pass); warp for the snap, armature for the human. The interactive
 skin-modifier mannequin + timer sliders (v1.25.0-1) are superseded by the rig
 but kept for garment-only inspection.
+
+
+## AI Bone Placement v2 - multi-view fusion SHIPPED (v1.25.5)
+`detect.detect` now runs TWO passes: FRONT (exact X/Z) + SIDE at azimuth 90
+(true DEPTH Y instead of the ray-midpoint guess). Fusion per joint: X from
+front, Y from side, Z averaged; a Z disagreement > 8% of height = the side
+view is looking at the wrong limb (L/R overlap in profile) -> keep front-only.
+_setup_camera(azimuth=). Execution providers auto-pick TensorRT/CUDA/CoreML/
+DirectML/CPU (v1.25.4). Verified on the male body: full 15-joint skeleton,
+elbow_l depth refined, one-click match 1.4 s / 0% penetration + live rig.
+Also documented in detect_height_fractions: the net's 'shoulder' label is the
+CLAVICLE HEAD (sternal, central) - never use it as the arm-start; the
+elbow-based sanity rebuild in mannequin.character_joints is the permanent
+treatment, not a workaround.

@@ -117,7 +117,10 @@ def _mesh_bounds(obj):
     return lo, hi
 
 
-def _setup_camera(scene, obj):
+def _setup_camera(scene, obj, azimuth=0.0):
+    """azimuth 0 = FRONT (looking down +Y); 90 = the character's SIDE
+    (looking down -X). Same framing as training."""
+    import math as _m
     lo, hi = _mesh_bounds(obj)
     center = (lo + hi) * 0.5
     # SAME framing as training (smartrig_dataset_gen): mesh bounds + margin so
@@ -132,8 +135,8 @@ def _setup_camera(scene, obj):
     cam.data.type = 'PERSP'
     cam.data.lens = 50.0
     cam.data.sensor_width = 36.0
-    # front view: az=0, el=0  ->  looking down +Y
-    cam.location = center + Vector((0.0, -radius, 0.0))
+    a = _m.radians(azimuth)
+    cam.location = center + Vector((radius * _m.sin(a), -radius * _m.cos(a), 0.0))
     cam.rotation_euler = (cam.location - center).to_track_quat('Z', 'Y').to_euler()
     return cam, center
 
@@ -266,26 +269,52 @@ def detect(obj, min_conf=0.25):
     if not available():
         return None
     scene = bpy.context.scene
-    cam, center = _setup_camera(scene, obj)
-    try:
+    lo, hi = _mesh_bounds(obj)
+    h = float(hi.z - lo.z)
+
+    def _pass(azimuth):
+        cam, center = _setup_camera(scene, obj, azimuth=azimuth)
         fp = _render_front(scene, cam)
         rgb = _load_rgb(fp)
         conf, kps = _infer(rgb)
+        pts, kc = {}, {}
+        if conf >= min_conf:
+            for i, name in enumerate(JOINT_NAMES):
+                if i >= len(kps):
+                    break
+                kx, ky, c = (float(kps[i][0]), float(kps[i][1]),
+                             float(kps[i][2]))
+                p = _backproject(cam, center, kx, ky, obj)
+                if p is not None:
+                    pts[name] = p
+                    kc[name] = c
+        return conf, pts, kc
+
+    try:
+        conf, pts, kc = _pass(0.0)                 # FRONT: exact X and Z
         if conf < min_conf:
             return None
-        pts, kc = {}, {}
-        for i, name in enumerate(JOINT_NAMES):
-            if i >= len(kps):
-                break
-            kx, ky, c = (float(kps[i][0]), float(kps[i][1]), float(kps[i][2]))
-            p = _backproject(cam, center, kx, ky, obj)
-            if p is not None:
-                pts[name] = p
-                kc[name] = c
-        lo, hi = _mesh_bounds(obj)
+        # MULTI-VIEW: the SIDE pass measures true DEPTH (Y) - the front view
+        # can only guess it from ray/mesh intersections. Fuse per joint:
+        # X from front, Y from side, Z averaged; a Z disagreement > 8% of the
+        # height means the side detection is looking at the wrong thing
+        # (L/R overlap in profile) - keep the front-only point then.
+        try:
+            conf_s, pts_s, kc_s = _pass(90.0)
+            if conf_s >= min_conf:
+                for name, pf in list(pts.items()):
+                    ps = pts_s.get(name)
+                    if ps is None or kc_s.get(name, 0.0) < 0.3:
+                        continue
+                    if abs(ps.z - pf.z) > 0.08 * max(h, 1e-6):
+                        continue
+                    pts[name] = Vector((pf.x, ps.y, 0.5 * (pf.z + ps.z)))
+                    kc[name] = max(kc.get(name, 0.0), kc_s.get(name, 0.0))
+        except Exception as e:
+            print("Soulify detect: side pass failed:", e)
         return {
             "conf": conf, "points": pts, "kconf": kc,
-            "ground": float(lo.z), "top": float(hi.z), "h": float(hi.z - lo.z),
+            "ground": float(lo.z), "top": float(hi.z), "h": h,
         }
     finally:
         c = bpy.data.objects.get("SR_INFER_CAM")
