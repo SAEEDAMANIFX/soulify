@@ -18,6 +18,43 @@ PREFIX = "skirt"
 VGROUP = "SR_Skirt"
 
 
+def _edit_rig(rig):
+    """Robustly enter Edit Mode on `rig` and return True on success.
+
+    Blender refuses ``mode_set`` when the active object is HIDDEN:
+    ``context.active_object`` becomes None even after assigning
+    ``view_layer.objects.active`` -> "Context missing active object".
+    So: leave the current mode, UNHIDE the rig (eye + monitor), select it,
+    make it active, then enter Edit Mode. Never raises."""
+    if rig is None:
+        return False
+    try:
+        if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+    except Exception:
+        pass
+    try:
+        rig.hide_set(False)          # eye icon (view-layer hide)
+    except Exception:
+        pass                          # rig not in the current view layer
+    rig.hide_viewport = False         # monitor icon (global disable)
+    try:
+        rig.select_set(True)
+    except Exception:
+        pass
+    try:
+        bpy.context.view_layer.objects.active = rig
+        bpy.ops.object.mode_set(mode='EDIT')
+    except Exception:
+        return False
+    return rig.mode == 'EDIT'
+
+
+_NO_ACCESS = ("Rig is not accessible - unhide it (eye icon) "
+              "or enable its collection in the View Layer.")
+
+
+
 def skirt_verts_world(props):
     """World-space vertices of the skirt: separate object, or the registered
     vertex group on the merged character mesh. Returns Nx3 ndarray or None."""
@@ -866,7 +903,6 @@ def remove_skirt_collision(rig):
         return 0
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
-    bpy.context.view_layer.objects.active = rig
     n = 0
     restore = {}
     for pb in rig.pose.bones:
@@ -897,7 +933,8 @@ def remove_skirt_collision(rig):
                     ad.drivers.remove(dr)
                 except Exception:
                     pass
-    bpy.ops.object.mode_set(mode='EDIT')
+    if not _edit_rig(rig):
+        return -1
     ebs = rig.data.edit_bones
     # restore re-parented controls FIRST (before deleting the SKC_dt parents)
     for cname, pname in restore.items():
@@ -997,13 +1034,13 @@ def remove_skirt_masters(rig):
         return 0
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
-    bpy.context.view_layer.objects.active = rig
     restore = {}
     for pb in rig.pose.bones:
         if "sk_master_origparent" in pb:
             restore[pb.name] = str(pb["sk_master_origparent"])
             del pb["sk_master_origparent"]
-    bpy.ops.object.mode_set(mode='EDIT')
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
     for nm, pn in restore.items():
         b = eb.get(nm)
@@ -1059,14 +1096,15 @@ def add_skirt_masters(rig, props):
     pc = Counter(par for (_t, par, _h) in tops.values() if par)
     common_parent = pc.most_common(1)[0][0] if pc else None
 
-    bpy.context.view_layer.objects.active = rig
-    bpy.ops.object.mode_set(mode='EDIT')
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
 
     def Lp(v):
         return rwi @ v
     up = 0.12 * rad
     gm = eb.new("skirt_master")
+    gm.use_deform = False              # control bone - must NEVER take weights
     gh = Lp(Vector((cx, cy, cz)))
     gm.head = gh; gm.tail = gh + Vector((0, 0, up))
     if common_parent and eb.get(common_parent):
@@ -1092,6 +1130,7 @@ def add_skirt_masters(rig, props):
     for s in range(N):
         nm = "skirt_master.%02d" % s
         sb = eb.new(nm); secnames.append(nm)
+        sb.use_deform = False          # control bone - must NEVER take weights
         sec_ang = s * (2 * math.pi / N)
         # 1) RELIABLE anchor from the skirt BONES (always on the skirt, no strays)
         if sec_pts[s]:
@@ -1485,8 +1524,11 @@ def add_skirt_follow_body(rig, props):
         bpy.ops.object.mode_set(mode='OBJECT')
     # rest pose so the bind captures the neutral shape
     if rig.mode != 'OBJECT':
-        bpy.context.view_layer.objects.active = rig
-        bpy.ops.object.mode_set(mode='POSE')
+        try:
+            bpy.context.view_layer.objects.active = rig
+            bpy.ops.object.mode_set(mode='POSE')
+        except Exception:
+            pass
     for pbn in rig.pose.bones:
         pbn.matrix_basis.identity()
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -1675,8 +1717,8 @@ def add_skirt_jiggle(rig, props):
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     remove_skirt_jiggle(rig)
-    bpy.context.view_layer.objects.active = rig
-    bpy.ops.object.mode_set(mode='EDIT')
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
     orig = {}
     n_cols = 0
@@ -1741,8 +1783,8 @@ def remove_skirt_jiggle(rig):
               "jiggle_stiffness", "jiggle_damping"):
         if k in rig:
             del rig[k]
-    bpy.context.view_layer.objects.active = rig
-    bpy.ops.object.mode_set(mode='EDIT')
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
     for rootname, pname in restore.items():
         rc = eb.get(rootname)
@@ -1773,17 +1815,8 @@ def remove_chest_jiggle(rig):
               "chest_jiggle_amount", "chest_jiggle_stiffness", "chest_jiggle_damping"):
         if k in rig:
             del rig[k]
-    try:
-        rig.hide_set(False)
-    except Exception:
-        pass
-    rig.hide_viewport = False
-    bpy.context.view_layer.objects.active = rig
-    rig.select_set(True)
-    try:
-        bpy.ops.object.mode_set(mode='EDIT')
-    except Exception:
-        return 0
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
     for rootname, pname in restore.items():       # legacy single-bone version
         rc = eb.get(rootname)
@@ -1838,8 +1871,11 @@ def add_chest_jiggle(rig, props):
         bpy.ops.object.select_all(action='DESELECT')
     except Exception:
         pass
-    bpy.context.view_layer.objects.active = rig
-    rig.select_set(True)
+    try:
+        bpy.context.view_layer.objects.active = rig
+        rig.select_set(True)
+    except Exception:
+        pass
     remove_chest_jiggle(rig)
     segs = max(2, int(getattr(props, "chest_jiggle_segments", 3)) + 1)
     geo = {}
@@ -1847,11 +1883,8 @@ def add_chest_jiggle(rig, props):
         b = rig.data.bones[ctrl]
         geo[ctrl] = (b.tail_local.copy(), (b.tail_local - b.head_local).copy(),
                      defb if rig.data.bones.get(defb) else None)
-    bpy.context.view_layer.objects.active = rig
-    try:
-        bpy.ops.object.mode_set(mode='EDIT')
-    except Exception:
-        return 0
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
     made = []
     for ctrl, (tip, dvec, defb) in geo.items():
@@ -2227,8 +2260,8 @@ def add_skirt_collision(rig, props, h=None):
     for ci in colrows:
         colrows[ci].sort()
 
-    bpy.context.view_layer.objects.active = rig
-    bpy.ops.object.mode_set(mode='EDIT')
+    if not _edit_rig(rig):
+        return -1
     eb = rig.data.edit_bones
     for ci, rws in colrows.items():
         prev = None
@@ -2397,9 +2430,15 @@ class SMARTRIG_OT_skirt_collision(bpy.types.Operator):
         p = context.scene.smartrig
         if not p.skirt_collide:
             r = remove_skirt_collision(rig)
+            if r < 0:
+                self.report({'ERROR'}, _NO_ACCESS)
+                return {'CANCELLED'}
             self.report({'INFO'}, "Skirt collision removed (%d constraints)." % r)
             return {'FINISHED'}
         n = add_skirt_collision(rig, p, h)
+        if n < 0:
+            self.report({'ERROR'}, _NO_ACCESS)
+            return {'CANCELLED'}
         if not n:
             self.report({'WARNING'}, "No skirt bones or no collider bones found.")
             return {'CANCELLED'}
@@ -2424,9 +2463,15 @@ class SMARTRIG_OT_skirt_masters(bpy.types.Operator):
             return {'CANCELLED'}
         if self.remove:
             r = remove_skirt_masters(rig)
+            if r < 0:
+                self.report({'ERROR'}, _NO_ACCESS)
+                return {'CANCELLED'}
             self.report({'INFO'}, "Removed %d master controls." % r)
             return {'FINISHED'}
         n = add_skirt_masters(rig, context.scene.smartrig)
+        if n < 0:
+            self.report({'ERROR'}, _NO_ACCESS)
+            return {'CANCELLED'}
         if not n:
             self.report({'WARNING'}, "No skirt bones found (build + generate the skirt first).")
             return {'CANCELLED'}
@@ -2783,7 +2828,10 @@ def bind_mesh(props, context):
     def _parent_auto(ob):
         bpy.ops.object.select_all(action='DESELECT')
         ob.select_set(True); rig.select_set(True)
-        context.view_layer.objects.active = rig
+        try:
+            context.view_layer.objects.active = rig
+        except Exception:
+            return
         _vis = []
         try:
             for coll in rig.data.collections_all:
@@ -2819,10 +2867,11 @@ def bind_mesh(props, context):
     _clean(mesh)
     saved = {}
     if split:
-        for n in skirt_bones:
-            bd = rig.data.bones.get(n)
-            if bd is not None:
-                saved[n] = bd.use_deform; bd.use_deform = False
+        _skirtish = ("DEF-" + PREFIX + ".", PREFIX + "_master", PREFIX + ".",
+                     "tweak_" + PREFIX + ".", "SKC_")
+        for b in rig.data.bones:
+            if b.use_deform and b.name.startswith(_skirtish):
+                saved[b.name] = b.use_deform; b.use_deform = False
     _parent_auto(mesh)
     for n, v in saved.items():
         bd = rig.data.bones.get(n)
@@ -2947,9 +2996,15 @@ class SMARTRIG_OT_skirt_jiggle(bpy.types.Operator):
         if rig is None:
             self.report({'ERROR'}, "Generate the rig first."); return {'CANCELLED'}
         if self.remove:
-            remove_skirt_jiggle(rig)
+            r = remove_skirt_jiggle(rig)
+            if r < 0:
+                self.report({'ERROR'}, _NO_ACCESS)
+                return {'CANCELLED'}
             self.report({'INFO'}, "Skirt jiggle removed."); return {'FINISHED'}
         n = add_skirt_jiggle(rig, context.scene.smartrig)
+        if n < 0:
+            self.report({'ERROR'}, _NO_ACCESS)
+            return {'CANCELLED'}
         if not n:
             self.report({'WARNING'}, "No skirt bones found."); return {'CANCELLED'}
         self.report({'INFO'}, "Skirt jiggle applied (%d columns). Play the timeline." % n)
@@ -2971,7 +3026,10 @@ class SMARTRIG_OT_bake_jiggle(bpy.types.Operator):
             self.report({'ERROR'}, "Apply skirt jiggle first."); return {'CANCELLED'}
         sc = context.scene
         if context.object is not rig or rig.mode != 'POSE':
-            context.view_layer.objects.active = rig; rig.hide_set(False)
+            try:
+                context.view_layer.objects.active = rig; rig.hide_set(False)
+            except Exception:
+                pass
             try:
                 bpy.ops.object.mode_set(mode='POSE')
             except Exception:
@@ -3087,8 +3145,11 @@ class SMARTRIG_OT_chest_bake(bpy.types.Operator):
             return {'CANCELLED'}
         jigs = [pb for pb in rig.pose.bones if pb.name.startswith("SKC_jigB")]
         if context.object is not rig or rig.mode != 'POSE':
-            context.view_layer.objects.active = rig
-            rig.hide_set(False)
+            try:
+                context.view_layer.objects.active = rig
+                rig.hide_set(False)
+            except Exception:
+                pass
             try:
                 bpy.ops.object.mode_set(mode='POSE')
             except Exception:
@@ -3223,10 +3284,16 @@ class SMARTRIG_OT_chest_jiggle(bpy.types.Operator):
             self.report({'ERROR'}, "Generate the rig first.")
             return {'CANCELLED'}
         if self.remove:
-            remove_chest_jiggle(rig)
+            r = remove_chest_jiggle(rig)
+            if r < 0:
+                self.report({'ERROR'}, _NO_ACCESS)
+                return {'CANCELLED'}
             self.report({'INFO'}, "Chest jiggle removed.")
             return {'FINISHED'}
         n = add_chest_jiggle(rig, context.scene.smartrig)
+        if n < 0:
+            self.report({'ERROR'}, _NO_ACCESS)
+            return {'CANCELLED'}
         if not n:
             self.report({'WARNING'}, "No breast bones found on the rig.")
             return {'CANCELLED'}

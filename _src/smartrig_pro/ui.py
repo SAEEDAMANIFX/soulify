@@ -33,23 +33,30 @@ def _step(layout, num, label, icon, state, icon_value=0):
 
 
 class SMARTRIG_PT_panel(bpy.types.Panel):
-    bl_label = "SmartRig Pro"
+    bl_label = "Soulify"
     bl_idname = "SMARTRIG_PT_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "SmartRig"
+    bl_category = "Soulify"
 
     def draw(self, context):
         layout = self.layout
         props = context.scene.smartrig
-        # ===== Let's Fit takes over the panel while it's active =====
-        if props.fit_started:
-            off = layout.row(); off.scale_y = 1.4
-            off.prop(props, "fit_started", text="Done Fitting", toggle=True,
-                     icon='BACK')
+        # ===== header: the FIT / RIG / ANIMATE pipeline + Simple|Pro level =====
+        tabs = layout.row(align=True)
+        tabs.scale_y = 1.5
+        tabs.prop(props, "ui_tab", expand=True)
+        lv = layout.row(align=True)
+        lv.scale_y = 0.9
+        lv.prop(props, "ui_level", expand=True)
+        layout.separator(factor=0.4)
+        if props.ui_tab == 'FIT':
             self._draw_fit(layout, context)
             return
-        # ===== ENTRY: show ONLY "Let's Rig" until it's pressed (no tabs yet) =====
+        if props.ui_tab == 'ANIM':
+            self._draw_animate(layout, context)
+            return
+        # ===== RIG phase =====
         _rig_obj = None
         try:
             from .metarig import _generated_rig
@@ -66,16 +73,9 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             big = layout.row(); big.scale_y = 2.0
             big.prop(props, "rig_started", text="Let's Rig", toggle=True,
                      icon='OUTLINER_OB_ARMATURE')
-            fit = layout.row(); fit.scale_y = 2.0
-            fit.prop(props, "fit_started", text="Let's Fit", toggle=True,
-                     icon='MOD_CLOTH')
             if not has_sel_mesh:
                 layout.label(text="Select your character first", icon='INFO')
             return
-        # compact Let's Fit entry stays available while rigging
-        frow = layout.row()
-        frow.prop(props, "fit_started", text="Let's Fit", toggle=True,
-                  icon='MOD_CLOTH')
         # ===== after Let's Rig, before choosing: show ONLY the question =====
         _chosen = (props.mode_chosen or _has_mk or _rig_obj is not None
                    or props.guide_active or bpy.data.objects.get("SR_Metarig") is not None)
@@ -90,11 +90,11 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             c2.operator("smartrig.pick_mode", text="Parts (skirt / cloth / ...)",
                         icon='MOD_CLOTH').mode = 'PARTS'
             return
-        # ===== mode chosen: tabs + a compact mode switch, then the tools =====
-        trow = layout.row(align=True)
-        trow.scale_y = 1.3
-        trow.prop(props, "ui_tab", expand=True)
-        if props.ui_tab == 'SKIN':
+        # ===== mode chosen: Build | Skin sections, then the tools =====
+        srow = layout.row(align=True)
+        srow.scale_y = 1.2
+        srow.prop(props, "rig_sub", expand=True)
+        if props.rig_sub == 'SKIN':
             self._draw_skin(layout, context)
             return
         mrow = layout.row(align=True)
@@ -111,7 +111,8 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         # ===== GUIDED click-placement (Step 1: body markers) =====
         if props.guide_active:
             self._marker_tools(layout, context)
-            self._align_tools(layout, context)
+            if props.ui_level == 'PRO':
+                self._align_tools(layout, context)
             body_done = bpy.data.objects.get("ankle.L") is not None
             if not body_done:
                 # ---- still placing body markers: show ONLY the body guide ----
@@ -220,11 +221,13 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                          or fingers_manual.list_fingers("hand", "L"))
 
         self._marker_tools(layout, context)
-        self._display_tools(layout, context)
-        self._align_tools(layout, context)
+        if props.ui_level == 'PRO':
+            self._display_tools(layout, context)
+            self._align_tools(layout, context)
 
-        # ---- BONE ROLL box (metarig or reference) ----
-        if has_ref or bpy.data.objects.get('SR_Metarig') is not None:
+        # ---- BONE ROLL box (metarig or reference; Pro only) ----
+        if props.ui_level == 'PRO' and (
+                has_ref or bpy.data.objects.get('SR_Metarig') is not None):
             rbx = layout.box()
             _rh = rbx.row(align=True)
             _rh.prop(props, "show_roll", text="Bone Roll", emboss=False,
@@ -244,8 +247,8 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 rbx.operator("smartrig.roll_fingers_pro", text="Pro Finger Roll (selected)",
                              icon_value=hand_iv)
 
-        # ---- Options (under Bone Roll); appears once the metarig is built ----
-        if bpy.data.objects.get('SR_Metarig') is not None:
+        # ---- Options (under Bone Roll); metarig built + Pro only ----
+        if props.ui_level == 'PRO' and bpy.data.objects.get('SR_Metarig') is not None:
             _ob = layout.box()
             _oh = _ob.row(align=True)
             _oh.prop(props, "show_options", text="Options", emboss=False,
@@ -764,6 +767,72 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         # Skirt leg collision lives in the RIG tab (rigging) and the N-panel Item
         # tab (animation) — NOT here. Skinning = binding only.
 
+    # ----------------------------------------------------------------- ANIMATE
+    def _draw_animate(self, layout, context):
+        """ANIMATE phase: everything the animator needs AFTER the rig is built.
+        Live cloth/secondary-motion controls (with bake), plus the planned
+        animation systems shown honestly as 'planned'."""
+        from . import metarig as _mr
+        from . import skirt as _sk
+        props = context.scene.smartrig
+        rig = _mr._generated_rig()
+        krig = _sk.kilt_rig(context)
+        if rig is None and krig is None:
+            box = layout.box()
+            box.label(text="No rig in this scene yet.", icon='INFO')
+            box.label(text="Build one in the Rig tab first.")
+            return
+        if rig is not None:
+            hb = layout.box()
+            hr = hb.row(); hr.alignment = 'CENTER'
+            hr.label(text="Rig: %s" % rig.name, icon='CHECKMARK')
+        # ---- Cloth & secondary motion (live; full controls in Item) ----
+        cb = layout.box()
+        cb.label(text="Cloth & Secondary Motion", icon='PHYSICS')
+        _any_live = False
+        if krig is not None:
+            if krig.get("sk_jiggle"):
+                _any_live = True
+                jr = cb.row(align=True)
+                jr.label(text="Skirt Jiggle", icon_value=icons.get('skirt') or 0)
+                _sbaked = (bool(krig.get("sk_jiggle_baked"))
+                           or _sk.skirt_jiggle_has_keys(krig))
+                jr.operator("smartrig.bake_jiggle",
+                            text=("Baked" if _sbaked else "Bake"),
+                            icon=('CHECKMARK' if _sbaked else 'ACTION'),
+                            depress=_sbaked).remove = False
+            if krig.get("sk_chest_jiggle"):
+                _any_live = True
+                cr = cb.row(align=True)
+                cr.label(text="Chest Jiggle", icon='PHYSICS')
+                _cbaked = (bool(krig.get("sk_chest_jiggle_baked"))
+                           or _sk.chest_jiggle_has_keys(krig))
+                cr.operator("smartrig.chest_bake",
+                            text=("Baked" if _cbaked else "Bake"),
+                            icon=('CHECKMARK' if _cbaked else 'ACTION'),
+                            depress=_cbaked).remove = False
+            if krig.get("sk_follow") or krig.get("sk_antipen"):
+                _any_live = True
+                cb.label(text="Follow Body / Anti-Penetration active",
+                         icon='MOD_MESHDEFORM')
+        if _any_live:
+            cb.label(text="Live sliders: N-panel > Item.", icon='INFO')
+        else:
+            cb.label(text="Add Jiggle / Collision in the Rig tab.", icon='INFO')
+        # ---- planned animation systems (structure ready, honest 'planned') ----
+        layout.separator(factor=0.5)
+        layout.label(text="Animation Systems", icon='PLAY')
+        for name, ic in (("Locomotion (drive bone)", 'ORIENTATION_GIMBAL'),
+                         ("Action Packs (walk / run / fight)", 'ACTION'),
+                         ("Animation Layers", 'NLA'),
+                         ("Lipsync (audio to mouth)", 'SPEAKER'),
+                         ("Pose Library (expressions)", 'ARMATURE_DATA'),
+                         ("Ground Adaptation", 'SNAP_FACE_CENTER')):
+            pb = layout.box()
+            rr = pb.row()
+            rr.label(text=name, icon=ic)
+            rr.label(text="planned", icon='TIME')
+
     # ---------------------------------------------------------------- LET'S FIT
     def _draw_fit(self, layout, context):
         """Automatic garment fitting: pick a clothing mesh, press Fit Garment,
@@ -1031,80 +1100,4 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
                 w.label(text="A modifier is above Follow!", icon='ERROR')
                 w.operator("smartrig.skirt_follow", text="Re-bind (fix order)", icon='FILE_REFRESH')
         # ---- Anti-Penetration (Shrinkwrap Outside) ----
-        amod = skirt.antipen_modifier(context)
-        if amod is not None:
-            ab = layout.column(align=True)
-            ab.label(text="Anti-Penetration", icon='MOD_SHRINKWRAP')
-            ab.prop(context.scene.smartrig, "skirt_antipen_offset", text="Offset", slider=True)
-        if (mpb is None or "collide" not in mpb) and "jiggle" not in rig \
-                and "chest_jiggle" not in rig and fmod is None and amod is None:
-            layout.label(text="Apply Collision / Jiggle / Follow first.", icon='INFO')
-            return
-        layout.separator()
-        layout.label(text="Keyframe these to animate the cloth.", icon='KEYTYPE_KEYFRAME_VEC')
-
-
-class SMARTRIG_PT_chest_item(bpy.types.Panel):
-    """Chest-jiggle live settings, in its OWN N-panel Item section (separate
-    from the skirt) so the animator can tweak + keyframe the bounce."""
-    bl_label = "Chest Jiggle"
-    bl_idname = "SMARTRIG_PT_chest_item"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Item"
-
-    @classmethod
-    def poll(cls, context):
-        from . import skirt
-        rig = skirt.kilt_rig(context)
-        return rig is not None and bool(rig.get("sk_chest_jiggle"))
-
-    def draw_header(self, context):
-        self.layout.label(text="", icon='PHYSICS')
-
-    def draw(self, context):
-        from . import skirt
-        layout = self.layout
-        rig = skirt.kilt_rig(context)
-        if rig is None or "chest_jiggle" not in rig:
-            return
-        c = layout.column(align=True)
-        c.prop(rig, '["chest_jiggle"]', text="Enable", slider=True)
-        c.prop(rig, '["chest_jiggle_amount"]', text="Strength", slider=True)
-        c.prop(rig, '["chest_jiggle_stiffness"]', text="Stiffness", slider=True)
-        c.prop(rig, '["chest_jiggle_damping"]', text="Damping", slider=True)
-        fb = layout.column(align=True)
-        fb.label(text="Wind & Gravity (chest)", icon='FORCE_WIND')
-        fb.prop(context.scene.smartrig, "chest_gravity", text="Gravity", slider=True)
-        fb.prop(context.scene.smartrig, "chest_wind", text="Wind", slider=True)
-        fb.prop(context.scene.smartrig, "chest_wind_speed", text="Wind Speed", slider=True)
-        wr = fb.row(align=True)
-        wr.prop(context.scene.smartrig, "chest_wind_dir", text="Dir")
-        wr.prop(context.scene.smartrig, "chest_wind_turb", text="Gust")
-        baked = bool(rig.get("sk_chest_jiggle_baked")) or skirt.chest_jiggle_has_keys(rig)
-        if baked:
-            bx = layout.box()
-            bx.label(text="BAKED to keyframes - live solver OFF", icon='CHECKMARK')
-        else:
-            layout.label(text="Live (not baked).", icon='PLAY')
-        br = layout.row(align=True)
-        br.operator("smartrig.chest_bake",
-                    text=("Baked ✓" if baked else "Bake"),
-                    icon=('CHECKMARK' if baked else 'ACTION'),
-                    depress=baked).remove = False
-        br.operator("smartrig.chest_bake", text="Clear Bake", icon='TRASH').remove = True
-        layout.label(text="Play to preview, or Bake for render/export.",
-                     icon='KEYTYPE_KEYFRAME_VEC')
-
-
-classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item, SMARTRIG_PT_chest_item)
-
-
-def register():
-    for c in classes:
-        bpy.utils.register_class(c)
-
-
-def unregister():
-    for c in reversed(classes):
-        bpy.utils.unregister_class(c)
+        

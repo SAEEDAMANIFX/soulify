@@ -574,3 +574,33 @@ Bonus: the residual + final clamp passes no longer re-query the BVH at all
 (plane math on stored correspondence) -> faster too. Verified at the user's
 exact tuned state (Ease 1%, Smooth 40, Scale 0.89, Height -0.05): back zone
 0.0% penetration, bodice smooth over the bust.
+
+## v1.20.28 — Edit Mode on a HIDDEN rig crashes every skirt toggle
+Collision / jiggle / masters add & remove all enter Edit Mode on the generated
+rig. If the user hid the rig (eye icon), `view_layer.objects.active = rig`
+"succeeds" but `context.active_object` is still None -> `mode_set` raises
+"Context missing active object". The chest-jiggle path was patched long ago;
+the 6 skirt paths were not. Fix: one shared `skirt._edit_rig(rig)` helper
+(leave mode -> hide_set(False) + hide_viewport=False -> select -> activate ->
+mode_set EDIT, never raises, returns bool). EVERY future Edit-Mode entry on the
+rig must go through it. Verified: add/remove collision+jiggle with the rig
+hidden — 0 stale SKC bones, parents restored, 26 columns rebuilt.
+
+## v1.20.29 — accessibility sentinel + no bare `objects.active = rig`
+`view_layer.objects.active = rig` RAISES when the rig's collection is excluded
+from the View Layer ("ViewLayer does not contain object"). Audited every bare
+assignment in skirt.py: removed the redundant ones, wrapped the rest, unified
+chest jiggle on `_edit_rig`. Convention: add/remove return **-1 = rig not
+accessible** (operators report `_NO_ACCESS`), 0 = nothing to do. Verified with
+the rig in an excluded collection: all 6 paths return -1, no traceback; hidden
+rig still auto-unhides and builds.
+
+## v1.20.30 — skirt masters deformed the BODY
+`eb.new()` defaults `use_deform=True`; the region masters (`skirt_master*`)
+were never set False, so the heat-map body bind assigned ~800 body verts to
+them -> grabbing a master dragged the body. Fix: (a) masters created with
+`use_deform=False`; (b) bind's split filter now disables EVERY skirt-related
+deform bone (DEF-skirt, skirt_master, skirt FK/tweak, SKC_) during the body
+bind, not just DEF-skirt.*. RULE: every new helper/control bone must set
+`use_deform = False` at creation. Verified: master +0.2 m -> skirt 0.2012 m,
+body 0.0000 m, collision+jiggle+masters coexisting.

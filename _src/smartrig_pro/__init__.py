@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "SmartRig Pro",
+    "name": "Soulify",
     "author": "Saeed",
-    "version": (1, 20, 27),
+    "version": (1, 22, 0),
     "blender": (4, 0, 0),
-    "location": "View3D > Sidebar (N) > SmartRig",
-    "description": "Automatic body rig from markers + mesh geometry, with neural (ONNX) joint-proportion detection.",
+    "location": "View3D > Sidebar (N) > Soulify",
+    "description": "Give it a soul. Fit + Rig + Animate: automatic body/garment rigging from markers + mesh geometry, garment fitting, and animation tools.",
     "category": "Rigging",
 }
 
