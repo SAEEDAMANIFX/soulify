@@ -761,3 +761,27 @@ the mannequin broken?'). Two permanent rules:
 2. After a MATCH exists (SRF_GarmentRig present), the sliders must NOT warp
    the garment - hand control belongs to the rig's Pose Mode; slider warp
    only shapes PRE-match.
+
+
+## THE VERDICT: design preservation is the missing engine (v1.27.7 audit)
+User demanded an original-vs-fitted comparison. Measured (edge-length ratio
+vs design): 48% OF ALL EDGES distorted beyond +-25% (collar 33%, body 53%,
+hem 57%, p95 stretch up to 2.8x). Professional target: <5-10% outside true
+stretch zones. The crisp collar, structured cuffs and ironed designer
+wrinkles are objectively destroyed. Two convicted causes:
+1. The LBS warp transfers POSITIONS, not SHAPE: per-vertex blended transforms
+   smear local geometry. Design detail lives in relative neighborhoods.
+2. Drape (cloth sim) REPLACES designed detail with generic sim noise; only
+   the top band is pinned.
+
+THE FIX (next implementation, in order):
+A. **ARAP finish pass** after any placement (warp/ride): iterate local
+   rigid Procrustes per vertex neighborhood against the DESIGN shape with
+   soft constraints to the placed positions - restores collar/cuff/wrinkle
+   geometry exactly while keeping global placement. ~80 lines numpy,
+   5-10 iterations, the single biggest quality jump available.
+B. **Stiff panels**: collars/cuffs/plackets/buttons = loose parts + high-
+   curvature strips -> move as RIGID clusters (one best-fit rigid transform
+   each); excluded from per-vertex warp AND from cloth sim (pinned fully).
+C. Drape defaults: bending stiffness up, sim only the soft panels.
+Success metric for the regression suite: edge-distortion% (>25% band) < 10.
