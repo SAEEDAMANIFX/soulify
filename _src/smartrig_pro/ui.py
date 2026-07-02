@@ -963,6 +963,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 r.operator("smartrig.fitwiz_view", text="Front").axis = 'FRONT'
                 r.operator("smartrig.fitwiz_view", text="Side").axis = 'LEFT'
                 r.operator("smartrig.lets_fit", text="Auto Place")
+                wiz.prop(props, "fitwiz_mirror", icon='MOD_MIRROR')
                 wiz.prop(props, "fitwiz_xray", slider=True)
                 wiz.prop(props, "fitwiz_ref_alpha", slider=True)
                 wiz.label(text="Move / Rotate / Scale freely (G R S)")
