@@ -925,56 +925,79 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
 
     # ---------------------------------------------------------------- LET'S FIT
     def _draw_fit(self, layout, context):
-        """Automatic garment fitting: pick a clothing mesh, press Fit Garment,
-        tune live, then Apply. Works on any clothing type (skirt / shirt / pants /
-        thobe...) - analysis is fully automatic."""
+        """The Fit phase, organized in USE ORDER (Rig the character first!):
+        1) pick garment+body  2) Fit to Character (one click)  3) tune live
+        4) hand control (garment rig / mannequin)  5) Drape  6) Apply/Remove."""
         props = context.scene.smartrig
         from .garment import (K_BASE, K_INFO, MOD_WRAP)
+
+        # -- 1. WHAT --------------------------------------------------------
         box = layout.box()
         box.label(text="Fit Clothing to Character", icon='MOD_CLOTH')
-        box.prop(props, "garment_object", text="Garment")
-        box.prop(props, "fit_body_object", text="Body")
+        col = box.column(align=True)
+        col.prop(props, "garment_object", text="Garment")
+        col.prop(props, "fit_body_object", text="Body")
         g_ob = props.garment_object
-        fitted = g_ob is not None and (g_ob.get(K_BASE) is not None
-                                       or g_ob.modifiers.get(MOD_WRAP) is not None)
-        box.prop(props, "garment_preserve")
-        big = box.row(); big.scale_y = 1.6
-        big.operator("smartrig.lets_fit",
-                     text="Refit" if fitted else "Fit Garment", icon='PLAY')
         if g_ob is None:
             box.label(text="Pick the clothing mesh first", icon='INFO')
             return
-        if fitted:
-            info = g_ob.get(K_INFO)
-            if info:
-                box.label(text="Auto-fit: %s" % info, icon='CHECKMARK')
-            tune = box.box()
-            tune.label(text="Tune (live)", icon='TOOL_SETTINGS')
-            col = tune.column(align=True)
-            col.prop(props, "garment_ease")
-            col.prop(props, "garment_smooth")
-            col.prop(props, "garment_scale")
-            col.prop(props, "garment_height")
-            dr = box.row(); dr.scale_y = 1.3
-            dr.operator("smartrig.fit_drape", text="Drape (Cloth)", icon='MOD_CLOTH')
-            mq = box.row()
-            mq.operator("smartrig.garment_mannequin",
-                        text="Rebuild Mannequin", icon='OUTLINER_OB_ARMATURE')
-            if bpy.data.objects.get("SRF_Mannequin") is not None:
-                mb = box.box()
-                mb.label(text="Mannequin (live)", icon='ARMATURE_DATA')
-                col = mb.column(align=True)
-                col.prop(props, "mann_arm_open")
-                col.prop(props, "mann_elbow_bend")
-                col.prop(props, "mann_neck_len")
-                col.prop(props, "mann_torso_vol")
-                col.prop(props, "mann_arm_vol")
-            mm = box.row(); mm.scale_y = 1.3
-            mm.operator("smartrig.mannequin_match",
-                        text="Match to Character (beta)", icon='ARMATURE_DATA')
-            row = box.row(align=True)
-            row.operator("smartrig.fit_apply", text="Apply Fit", icon='CHECKMARK')
-            row.operator("smartrig.fit_remove", text="Remove", icon='X')
+        # the recommended flow reminder
+        has_rig = (bpy.data.objects.get("SR_Metarig") is not None)
+        if not has_rig:
+            box.label(text="Tip: Rig the character first (Rig tab) "
+                           "for exact joints", icon='INFO')
+
+        # -- 2. ONE CLICK ---------------------------------------------------
+        fitted = g_ob.get(K_BASE) is not None \
+            or g_ob.modifiers.get(MOD_WRAP) is not None
+        big = box.row(); big.scale_y = 1.7
+        big.operator("smartrig.mannequin_match",
+                     text="Fit to Character", icon='ARMATURE_DATA')
+        srow = box.row(align=True)
+        srow.operator("smartrig.lets_fit",
+                      text="Refit (place only)" if fitted else "Place Garment",
+                      icon='PLAY')
+        srow.prop(props, "garment_preserve", text="", icon='MOD_MESHDEFORM')
+        info = g_ob.get(K_INFO)
+        if info:
+            box.label(text=str(info), icon='CHECKMARK')
+        if not fitted:
+            return
+
+        # -- 3. TUNE (live) --------------------------------------------------
+        tune = box.box()
+        tune.label(text="Tune (live)", icon='TOOL_SETTINGS')
+        col = tune.column(align=True)
+        col.prop(props, "garment_ease")
+        col.prop(props, "garment_smooth")
+        col.prop(props, "garment_scale")
+        col.prop(props, "garment_height")
+
+        # -- 4. HAND CONTROL -------------------------------------------------
+        hc = box.box()
+        hc.label(text="Hand Control", icon='ARMATURE_DATA')
+        if bpy.data.objects.get("SRF_GarmentRig") is not None:
+            hc.label(text="Pose Mode on SRF_GarmentRig: grab any bone",
+                     icon='CHECKMARK')
+        mrow = hc.row(align=True)
+        mrow.operator("smartrig.garment_mannequin",
+                      text="Mannequin", icon='OUTLINER_OB_ARMATURE')
+        if bpy.data.objects.get("SRF_Mannequin") is not None:
+            col = hc.column(align=True)
+            col.prop(props, "mann_arm_open")
+            col.prop(props, "mann_elbow_bend")
+            col.prop(props, "mann_neck_len")
+            col.prop(props, "mann_torso_vol")
+            col.prop(props, "mann_arm_vol")
+
+        # -- 5. FINISH -------------------------------------------------------
+        fin = box.box()
+        fin.label(text="Finish", icon='CHECKMARK')
+        dr = fin.row(); dr.scale_y = 1.3
+        dr.operator("smartrig.fit_drape", text="Drape (Cloth)", icon='MOD_CLOTH')
+        row = fin.row(align=True)
+        row.operator("smartrig.fit_apply", text="Apply Fit", icon='CHECKMARK')
+        row.operator("smartrig.fit_remove", text="Remove", icon='X')
 
     # ------------------------------------------------------------------ PARTS
     def _draw_parts(self, layout, context):

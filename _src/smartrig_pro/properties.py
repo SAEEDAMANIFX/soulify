@@ -426,13 +426,16 @@ class SmartRigProps(PropertyGroup):
     skin_smart_skirt: BoolProperty(name="Smart Skirt Weights", default=True,
         description="Skin the skirt from its known grid (angular column blend x vertical "
                     "row blend) instead of a generic heat map - cleaner, no cross-column bleed")
-    # ---- top-level phases: the Fit + Rig + Animate pipeline ----
+    # ---- top-level phases in THE recommended order: Rig -> Fit -> Animate
+    # (rig the character first = exact joints, then dress her, then animate)
     ui_tab: EnumProperty(
         name="Phase", default='RIG',
-        items=[('FIT', "Fit", "Fit clothing onto the character automatically",
-                'MOD_CLOTH', 0),
-               ('RIG', "Rig", "Markers, metarig, skinning and Rigify samples",
-                'OUTLINER_OB_ARMATURE', 1),
+        items=[('RIG', "Rig", "Rig the character FIRST - markers, metarig, "
+                "skinning and Rigify samples",
+                'OUTLINER_OB_ARMATURE', 0),
+               ('FIT', "Fit", "Then fit clothing onto the rigged character "
+                "automatically",
+                'MOD_CLOTH', 1),
                ('ANIM', "Animate", "Cloth dynamics, locomotion, poses and more",
                 'PLAY', 2)])
     rig_sub: EnumProperty(
