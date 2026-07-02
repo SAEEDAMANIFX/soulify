@@ -628,3 +628,31 @@ body 0.0000 m, collision+jiggle+masters coexisting.
    (12 let gravity stretch the shirt 40 cm); body gets a temporary COLLISION
    modifier; settle N frames; write the evaluated result into SRF_Fit;
    everything removed after. 17 s for a 48k shirt, penetration 0.1%.
+
+
+## Mannequin Retargeting Phase 2 - THE MATCH works (v1.24.3-9)
+`smartrig.mannequin_match`: garment skeleton -> character joints -> bone-pair
+space warp (numpy LBS) -> inline cleanup. Shirt matched onto a new male body
+in 1 s, 0% penetration, then Drape = naturally worn open shirt. Bugs burned:
+1. **Anatomy definitions must MATCH on both sides**: garment side anchors on
+   collar+shoulder-width proportions; using the pose net's neck/chest BONE
+   joints (58-71% height) on the character side crushed the shirt between
+   its own definitions. Character side now: geometric collar line + the same
+   1.55/0.55 shoulder-width proportions.
+2. **A garment's hem is not its pelvis**: source pelvis/chest come from
+   neck - 1.55/0.55 x traced shoulder width, never from the garment bbox.
+3. **Sides are geometric, not semantic**: the net names the character's
+   anatomical left (facing -Y = +x); the garment names world -x. Re-label
+   every dst chain by mean-x sign or the arms cross through the body.
+4. **The net can collapse shoulder keypoints to the centre** (x~0 while
+   elbows at +-0.4 -> shoulder width 6 cm -> pelvis at the neck). Sanity rule:
+   a shoulder sits laterally between neck and elbow; rebuild from the elbow
+   when |lat| < 30% of the elbow's.
+5. **Anisotropic segment scale**: bone-length ratio ALONG the bone only;
+   radial = GLOBAL size ratio (shoulder widths). Per-segment uniform scale
+   shrank the girth onto the skin. Weight power 2.5 kills candy-wrapping.
+6. Warp writes into SRF_Fit + registers K_ORIG/K_BASE/K_BODY/K_BODYH so
+   Drape/Remove/sliders keep working. Cleanup: push-out along surface normal
+   + 3 Laplacian passes + strict re-clamp.
+Next: pin accessories to their nearest CLOTH ISLAND (a rolled cuff floated at
+its pre-drape spot), then Phase 3 = rig handoff + regression matrix.

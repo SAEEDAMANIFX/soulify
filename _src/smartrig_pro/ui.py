@@ -960,6 +960,9 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             mq = box.row()
             mq.operator("smartrig.garment_mannequin",
                         text="Garment Mannequin (beta)", icon='OUTLINER_OB_ARMATURE')
+            mm = box.row(); mm.scale_y = 1.3
+            mm.operator("smartrig.mannequin_match",
+                        text="Match to Character (beta)", icon='ARMATURE_DATA')
             row = box.row(align=True)
             row.operator("smartrig.fit_apply", text="Apply Fit", icon='CHECKMARK')
             row.operator("smartrig.fit_remove", text="Remove", icon='X')

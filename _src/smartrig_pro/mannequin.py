@@ -172,6 +172,22 @@ def garment_skeleton(g_ob):
     _limb("l", left)
     _limb("r", right)
 
+    # ---- ANATOMICAL torso joints ----
+    # A garment's hem is NOT the pelvis (mapping a shirt's hem to the body
+    # pelvis crushed the shirt). Anchor anatomy on what the garment really
+    # tells us: the collar (neck) and the traced shoulder roots. Human
+    # proportions: neck->pelvis ~= 1.55 x shoulder width; chest ~= 0.55 x.
+    if "shoulder_l" in jt and "shoulder_r" in jt:
+        sw = (jt["shoulder_l"] - jt["shoulder_r"]).length
+        if sw > 1e-6:
+            jt["chest"] = Vector((cx, cy, z_neck - 0.55 * sw))
+            jt["pelvis"] = Vector((cx, cy, z_neck - 1.55 * sw))
+    elif g["top_r"] / max_r >= 0.6:
+        # bottoms (skirt/pants): the top ring IS the waist -> pelvis
+        jt["pelvis"] = Vector((cx, cy, tc.z))
+        jt["chest"] = Vector((cx, cy, tc.z + 3.0 * g["top_r"]))
+        jt["neck"] = Vector((cx, cy, tc.z + 5.5 * g["top_r"]))
+
     # ---- lower body: pants legs / loose column (kandura, dress, skirt) ----
     # the class is the PRIOR (a shirt's lower band is also a tube - it must
     # not read as a loose column); the two-cluster split test decides pants
@@ -265,6 +281,273 @@ def build_mannequin(jt, name=MANN_NAME):
     return ob
 
 
+# ----------------------------------------------------- phase 2: retargeting --
+
+# skeleton segments used by the warp (present ones only)
+_SEGS = [("pelvis", "chest"), ("chest", "neck"),
+         ("shoulder_l", "elbow_l"), ("elbow_l", "wrist_l"),
+         ("shoulder_r", "elbow_r"), ("elbow_r", "wrist_r"),
+         ("hip_l", "knee_l"), ("knee_l", "ankle_l"),
+         ("hip_r", "knee_r"), ("knee_r", "ankle_r")]
+
+
+def character_joints(body):
+    """The character's joints from the pose net (works for A-pose, T-pose or
+    anything the net was trained on). Returns {name: Vector} or None."""
+    try:
+        from . import detect
+        if not detect.available():
+            return None
+        hidden = []
+        for o in bpy.context.scene.objects:
+            if o.type == 'MESH' and o is not body and not o.hide_render:
+                o.hide_render = True
+                hidden.append(o)
+        try:
+            res = detect.detect(body)
+        finally:
+            for o in hidden:
+                o.hide_render = False
+        if not res:
+            return None
+        pts, kc = res["points"], res["kconf"]
+        out = {}
+        for ours, theirs in (("shoulder_l", "shoulder_l"), ("elbow_l", "elbow_l"),
+                             ("wrist_l", "wrist_l"),
+                             ("shoulder_r", "shoulder_r"), ("elbow_r", "elbow_r"),
+                             ("wrist_r", "wrist_r"),
+                             ("hip_l", "hip_l"), ("knee_l", "knee_l"),
+                             ("ankle_l", "ankle_l"),
+                             ("hip_r", "hip_r"), ("knee_r", "knee_r"),
+                             ("ankle_r", "ankle_r")):
+            if theirs in pts and kc.get(theirs, 0.0) >= 0.3:
+                out[ours] = pts[theirs]
+        # SIDES ARE GEOMETRIC, not semantic: the garment names its left tube by
+        # world -x; the net names the CHARACTER's anatomical left (+x when
+        # facing -Y). Mismatched names crossed the arms through the body.
+        # Re-label every chain by the sign of its mean x.
+        for chain in (("shoulder", "elbow", "wrist"), ("hip", "knee", "ankle")):
+            lx = [out[j + "_l"].x for j in chain if j + "_l" in out]
+            rx = [out[j + "_r"].x for j in chain if j + "_r" in out]
+            if lx and rx and (sum(lx) / len(lx)) > (sum(rx) / len(rx)):
+                for j in chain:
+                    a, b = out.get(j + "_l"), out.get(j + "_r")
+                    if a is not None and b is not None:
+                        out[j + "_l"], out[j + "_r"] = b, a
+        # torso joints must use the SAME definitions as the garment side:
+        # neck = narrowest geometric neck (collar line), chest/pelvis by the
+        # same shoulder-width proportions used in garment_skeleton.
+        from .garment import body_profile
+        z0b, z1b, Rb, Cb = body_profile(body)
+        bhb = max(z1b - z0b, 1e-6)
+        zn = min([z0b + (0.75 + 0.18 * k / 29.0) * bhb for k in range(30)],
+                 key=lambda z: Rb(z))
+        cN = Cb(zn)
+        out["neck"] = Vector((cN.x, cN.y, zn))
+        # SANITY: the net sometimes collapses shoulder keypoints to the centre
+        # (this male body: shoulders at x~0 while elbows at +-0.4 -> shoulder
+        # width 6 cm -> pelvis computed AT the neck -> total crush). A shoulder
+        # must sit laterally between the neck and its elbow; rebuild it from
+        # the elbow when it doesn't.
+        for side in ("l", "r"):
+            el = out.get("elbow_" + side)
+            sh = out.get("shoulder_" + side)
+            if el is None:
+                continue
+            lat_el = el.x - cN.x
+            if sh is None or abs(sh.x - cN.x) < 0.30 * abs(lat_el):
+                out["shoulder_" + side] = Vector((
+                    cN.x + 0.45 * lat_el, el.y,
+                    zn - 0.35 * max(zn - el.z, 0.0)))
+        if "shoulder_l" in out and "shoulder_r" in out:
+            sw = (out["shoulder_l"] - out["shoulder_r"]).length
+            out["chest"] = Vector((cN.x, cN.y, zn - 0.55 * sw))
+            out["pelvis"] = Vector((cN.x, cN.y, zn - 1.55 * sw))
+        elif "pelvis" in pts:
+            out["pelvis"] = pts["pelvis"]
+        return out if len(out) >= 6 else None
+    except Exception as e:
+        print("Soulify mannequin character_joints:", e)
+        return None
+
+
+def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
+    """BONE-PAIR SPACE WARP (the match): every garment vertex is skinned to
+    the mannequin's skeleton segments by smooth inverse-distance weights; each
+    segment carries its fabric with the rigid rotation+scale that maps the
+    mannequin bone onto the character bone. Works for any pose difference
+    (A->T etc.) because every bone is solved independently.
+    loose=True (kandura/dress/skirt): fabric below the pelvis follows ONLY the
+    spine segments - knees never drag the garment."""
+    me = g_ob.data
+    n = len(me.vertices)
+    mw = g_ob.matrix_world
+    base = [v.co.copy() for v in me.vertices]
+    wco = np.array([(mw @ c)[:] for c in base], dtype=float)
+
+    # GLOBAL radial scale: girth is a design property - it scales with overall
+    # body size (shoulder width), NEVER with individual bone lengths (that
+    # shrank the fabric onto the skin and crumpled it)
+    if "shoulder_l" in jt_src and "shoulder_r" in jt_src \
+            and "shoulder_l" in jt_dst and "shoulder_r" in jt_dst:
+        gs = (jt_dst["shoulder_l"] - jt_dst["shoulder_r"]).length \
+            / max((jt_src["shoulder_l"] - jt_src["shoulder_r"]).length, 1e-9)
+    elif "pelvis" in jt_src and "chest" in jt_src \
+            and "pelvis" in jt_dst and "chest" in jt_dst:
+        gs = (jt_dst["chest"] - jt_dst["pelvis"]).length \
+            / max((jt_src["chest"] - jt_src["pelvis"]).length, 1e-9)
+    else:
+        gs = 1.0
+
+    segs = []
+    for a, b in _SEGS:
+        if a in jt_src and b in jt_src and a in jt_dst and b in jt_dst:
+            a0, b0 = jt_src[a], jt_src[b]
+            a1, b1 = jt_dst[a], jt_dst[b]
+            v0, v1 = (b0 - a0), (b1 - a1)
+            if v0.length < 1e-9 or v1.length < 1e-9:
+                continue
+            R = mathutils_matrix_to_np(v0.rotation_difference(v1).to_matrix())
+            axial = v1.length / v0.length
+            d0 = np.array((v0.normalized())[:])
+            # anisotropic: bone-length ratio ALONG the bone, global size across
+            S = gs * np.eye(3) + (axial - gs) * np.outer(d0, d0)
+            is_spine = a in ("pelvis", "chest")
+            segs.append((np.array(a0[:]), np.array(b0[:]),
+                         R @ S, np.array(a1[:]), is_spine))
+    if not segs:
+        return False
+    pelvis_z = jt_src["pelvis"].z if "pelvis" in jt_src else -1e9
+
+    W = np.zeros((n, len(segs)))
+    for k, (a0, b0, _, _, is_spine) in enumerate(segs):
+        ab = b0 - a0
+        L2 = float(ab.dot(ab)) + 1e-12
+        t = np.clip(((wco - a0) @ ab) / L2, 0.0, 1.0)
+        cl = a0 + t[:, None] * ab
+        d2 = np.sum((wco - cl) ** 2, axis=1)
+        W[:, k] = 1.0 / (d2 + 1e-8) ** 2.5          # local: no candy-wrapping
+    if loose:
+        below = wco[:, 2] < pelvis_z
+        for k, (_, _, _, _, is_spine) in enumerate(segs):
+            if not is_spine:
+                W[below, k] = 0.0
+    W /= (W.sum(axis=1, keepdims=True) + 1e-12)
+
+    out = np.zeros_like(wco)
+    for k, (a0, _, M, a1, _) in enumerate(segs):
+        out += W[:, k:k + 1] * ((wco - a0) @ M.T + a1)
+
+    # CLEANUP: per-segment scaling can shrink the girth slightly - push any
+    # vert that landed inside the body back out along the surface normal,
+    # then feather the pushes (Laplacian) so the fabric stays silky
+    if body is not None:
+        binv = body.matrix_world.inverted()
+        bmw = body.matrix_world
+        bco = utils.read_rest_coords(body)
+        floor = 0.003 * max(float(bco[:, 2].max() - bco[:, 2].min()), 1e-6)
+        push = np.zeros_like(out)
+        for i in range(n):
+            pl = binv @ Vector(out[i])
+            okc, loc, nrm, _ = body.closest_point_on_mesh(pl)
+            if not okc:
+                continue
+            lw = bmw @ loc
+            sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
+            d = sgn * (Vector(out[i]) - lw).length
+            if d < floor:
+                nw = (bmw.to_3x3() @ nrm).normalized()
+                push[i] = np.array((lw + nw * floor)[:]) - out[i]
+        ev = np.empty(2 * len(me.edges), dtype=np.int64)
+        me.edges.foreach_get("vertices", ev)
+        ev = ev.reshape(-1, 2)
+        for _ in range(3):
+            acc = np.zeros_like(push); cnt = np.zeros(n)
+            np.add.at(acc, ev[:, 0], push[ev[:, 1]])
+            np.add.at(cnt, ev[:, 0], 1.0)
+            np.add.at(acc, ev[:, 1], push[ev[:, 0]])
+            np.add.at(cnt, ev[:, 1], 1.0)
+            nz = cnt > 0
+            push[nz] = 0.5 * push[nz] + 0.5 * (acc[nz] / cnt[nz, None])
+        out += push
+        # strict second pass after feathering
+        for i in range(n):
+            pl = binv @ Vector(out[i])
+            okc, loc, nrm, _ = body.closest_point_on_mesh(pl)
+            if okc:
+                lw = bmw @ loc
+                sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
+                if sgn * (Vector(out[i]) - lw).length < floor * 0.6:
+                    nw = (bmw.to_3x3() @ nrm).normalized()
+                    out[i] = np.array((lw + nw * floor)[:])
+
+    # write to the SRF_Fit shape key (same reversible slot as Let's Fit)
+    from .garment import SK_FIT, K_KEYS
+    if me.shape_keys is None:
+        g_ob.shape_key_add(name="Basis", from_mix=False)
+        g_ob[K_KEYS] = True
+    sk = me.shape_keys.key_blocks.get(SK_FIT)
+    if sk is None:
+        sk = g_ob.shape_key_add(name=SK_FIT, from_mix=False)
+    sk.slider_min = 0.0
+    sk.value = 1.0
+    inv = mw.inverted()
+    for i in range(n):
+        sk.data[i].co = inv @ Vector(out[i])
+    return True
+
+
+def mathutils_matrix_to_np(M):
+    return np.array([[M[0][0], M[0][1], M[0][2]],
+                     [M[1][0], M[1][1], M[1][2]],
+                     [M[2][0], M[2][1], M[2][2]]])
+
+
+class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
+    """THE MATCH: extract the garment's implied skeleton, detect the
+    character's joints (any pose), and warp the garment bone-by-bone onto the
+    character. Kandura/dresses/skirts stay knee-safe (spine-bound)"""
+    bl_idname = "smartrig.mannequin_match"
+    bl_label = "Match to Character"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        g_ob = props.garment_object
+        body = props.fit_body_object
+        if g_ob is None or body is None:
+            self.report({'ERROR'}, "Pick the garment and the body first.")
+            return {'CANCELLED'}
+        jt = garment_skeleton(g_ob)
+        if jt is None:
+            self.report({'ERROR'}, "Could not read the garment's structure.")
+            return {'CANCELLED'}
+        dst = character_joints(body)
+        if dst is None:
+            self.report({'ERROR'},
+                        "Character joints not detected (onnxruntime/model?).")
+            return {'CANCELLED'}
+        # register the standard fit keys so Drape / Remove / sliders work
+        from .garment import K_ORIG, K_BASE, K_BODY, K_BODYH
+        from . import utils as _u
+        bco = _u.read_rest_coords(body)
+        if K_ORIG not in g_ob:
+            g_ob[K_ORIG] = [v for row in g_ob.matrix_world for v in row]
+        g_ob[K_BASE] = [v for row in g_ob.matrix_world for v in row]
+        g_ob[K_BODY] = body.name
+        g_ob[K_BODYH] = float(bco[:, 2].max() - bco[:, 2].min())
+        # torso anchors the garment even when it has no legs/arms of its own
+        loose = jt.get("lower_mode") == 'LOOSE'
+        ok = warp_garment(g_ob, jt, dst, loose=loose, body=body)
+        if not ok:
+            self.report({'ERROR'}, "No matching skeleton segments.")
+            return {'CANCELLED'}
+        g_ob["srf_info"] = "%s matched to %s (%d joints)" % (
+            jt.get("label", "garment"), body.name, len(dst))
+        self.report({'INFO'}, g_ob["srf_info"])
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_garment_mannequin(bpy.types.Operator):
     """Phase 1 of Mannequin Retargeting: extract the garment's implied
     skeleton and build a procedural mannequin WEARING the garment"""
@@ -289,7 +572,7 @@ class SMARTRIG_OT_garment_mannequin(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_classes = (SMARTRIG_OT_garment_mannequin,)
+_classes = (SMARTRIG_OT_garment_mannequin, SMARTRIG_OT_mannequin_match)
 
 
 def register():
