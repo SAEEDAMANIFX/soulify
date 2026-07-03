@@ -853,6 +853,11 @@ def character_joints(body):
         return rj
     try:
         from . import detect
+        if not detect.has_model():
+            return None
+        if not detect.has_runtime():
+            # ONE CLICK, ANY CHARACTER (v1.35.0): install on demand
+            detect.ensure_runtime()
         if not detect.available():
             return None
         hidden = []
@@ -1285,9 +1290,9 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                                 ("chest_w_l", "waist_w_l",
                                  "chest_d_f", "waist_d_f")):
         try:
-            bl_ = utils.read_rest_coords(body)
-            R3b = np.array(body.matrix_world.to_3x3())
-            bw_ = bl_ @ R3b.T + np.array(body.matrix_world.translation[:])
+            # read_rest_coords is already WORLD - the old extra
+            # matrix multiply broke the band fallback on rotated bodies
+            bw_ = utils.read_rest_coords(body)
             bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
 
             # ARMS EXCLUSION (the old A-pose lesson): at waist height the
@@ -1307,9 +1312,14 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
                 if w_g < 1e-6:
                     return None
                 # MORPH TARGETS: marker span (where the user says the
-                # fabric must sit) / the garment's design span
-                auto = _mcol.get("srf_span_" + spankey) \
-                    if (_mcol is not None and spankey) else None
+                # fabric must sit) / the garment's design span.
+                # ONE-CLICK AUTO (v1.35.0): headless spans travel inside
+                # jt_src["spans"] and WIN over a possibly stale marker
+                # collection from an older wizard run.
+                auto = (jt_src.get("spans") or {}).get(spankey) \
+                    if spankey else None
+                if not auto and _mcol is not None and spankey:
+                    auto = _mcol.get("srf_span_" + spankey)
                 if auto:
                     return float(np.clip(w_g / float(auto), 0.6, 1.6))
                 j = jt_dst[zkey]
@@ -1579,6 +1589,179 @@ def mathutils_matrix_to_np(M):
                      [M[2][0], M[2][1], M[2][2]]])
 
 
+# ---------------------------------------------------------------------------
+#  ONE-CLICK AUTO MODE (v1.35.0) - "Fit to Character" with zero setup.
+#  The Fit Wizard's pre-fill intelligence (size morph targets, part
+#  registration) runs HEADLESSLY when the user never opened the wizard,
+#  and empty pickers are filled automatically. Manual picks and wizard
+#  markers always win over the automation.
+# ---------------------------------------------------------------------------
+
+def auto_pick(props, context):
+    """Fill empty Garment/Body pickers automatically. Body = the rig-tab
+    target mesh, else the biggest rig-skinned mesh, else the biggest visible
+    mesh. Garment = the user's selected/active mesh that is not the body,
+    else the unskinned mesh whose bounding box overlaps the body the most
+    (tiny meshes like eyes/teeth are filtered by height)."""
+    g = props.garment_object
+    b = props.fit_body_object
+    if g is not None and b is not None:
+        return g, b
+    meshes = [o for o in context.scene.objects
+              if o.type == 'MESH' and o.visible_get()]
+
+    def _vol(o):
+        d = o.dimensions
+        return float(d.x * d.y * d.z)
+
+    def _skinned(o):
+        for m in o.modifiers:
+            if m.type == 'ARMATURE' and m.object is not None:
+                return True
+        return o.parent is not None and o.parent.type == 'ARMATURE'
+
+    if b is None:
+        tm = props.target_mesh
+        if tm is not None and tm is not g and tm.type == 'MESH':
+            b = tm
+        else:
+            pool = [o for o in meshes if o is not g and _skinned(o)] \
+                or [o for o in meshes if o is not g]
+            b = max(pool, key=_vol) if pool else None
+    if g is None and b is not None:
+        bb = [b.matrix_world @ Vector(c) for c in b.bound_box]
+        b0 = Vector((min(p.x for p in bb), min(p.y for p in bb),
+                     min(p.z for p in bb)))
+        b1 = Vector((max(p.x for p in bb), max(p.y for p in bb),
+                     max(p.z for p in bb)))
+        min_h = 0.08 * max(b1.z - b0.z, 1e-6)
+
+        def _overlap(o):
+            cc = [o.matrix_world @ Vector(c) for c in o.bound_box]
+            o0 = [min(p[i] for p in cc) for i in range(3)]
+            o1 = [max(p[i] for p in cc) for i in range(3)]
+            v = 1.0
+            for i, (lo, hi) in enumerate(((b0.x, b1.x), (b0.y, b1.y),
+                                          (b0.z, b1.z))):
+                v *= max(min(hi, o1[i]) - max(lo, o0[i]), 0.0)
+            return v
+
+        def _world_h(o):
+            cc = [o.matrix_world @ Vector(c) for c in o.bound_box]
+            return max(p.z for p in cc) - min(p.z for p in cc)
+
+        cands = [o for o in meshes
+                 if o is not b and not _skinned(o)
+                 and _world_h(o) >= min_h]
+        act = context.view_layer.objects.active
+        sel = [o for o in cands if o.select_get()]
+        if act is not None and act in sel:
+            g = act                     # explicit user intent first
+        elif len(sel) == 1:
+            g = sel[0]
+        else:
+            pool = sel or cands
+            scored = [(o, _overlap(o)) for o in pool]
+            inside = [x for x in scored if x[1] > 0.0]
+            scored = inside or scored
+            g = max(scored, key=lambda x: x[1])[0] if scored else None
+    return g, b
+
+
+def auto_size_targets(jt, dst, body):
+    """The wizard's chest/waist width+depth MORPH TARGETS, headless.
+    Design span = the analyzed garment girth (2 x ring radius); target
+    span = the CHARACTER's own band width/depth at the dst joint height
+    plus wearing ease (the wizard's snap-to-body step). warp_garment then
+    scales each torso band by target/design, clamped 0.6-1.6. Existing
+    keys (wizard markers) are never overwritten."""
+    radii = jt.get("radii") or {}
+    r_ch = radii.get("chest") or radii.get("torso")
+    r_wa = radii.get("torso") or r_ch
+    if not r_ch and not r_wa:
+        return
+    # read_rest_coords already returns WORLD coords - transforming again
+    # garbled the space on rotated bodies (bands came back empty)
+    bw_ = utils.read_rest_coords(body)
+    bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
+    sw_ = (dst["shoulder_l"] - dst["shoulder_r"]).length \
+        if ("shoulder_l" in dst and "shoulder_r" in dst) else 0.25 * bh_
+    ease = 0.03 * bh_                    # wizard snap: half += 0.015*bh
+
+    def _target(zkey, axis):
+        j = dst.get(zkey)
+        if j is None:
+            return None
+        # ARMS EXCLUSION (v1.31.2 lesson): keep the torso column only
+        band = (np.abs(bw_[:, 2] - j.z) < 0.02 * bh_) \
+            & (np.abs(bw_[:, 0] - j.x) < 0.55 * sw_) \
+            & (np.abs(bw_[:, 1] - j.y) < 0.55 * sw_)
+        if band.sum() < 8:
+            return None
+        return float(bw_[band, axis].max() - bw_[band, axis].min()) + ease
+
+    spans = jt.setdefault("spans", {})
+    for span_key, zkey, jkey, r, kl, kr, axis, d in (
+            ("chest_w", "chest", "chest", r_ch,
+             "chest_w_l", "chest_w_r", 0, Vector((1.0, 0.0, 0.0))),
+            ("chest_d", "chest", "chest", r_ch,
+             "chest_d_f", "chest_d_b", 1, Vector((0.0, 1.0, 0.0))),
+            ("waist_w", "pelvis", "pelvis", r_wa,
+             "waist_w_l", "waist_w_r", 0, Vector((1.0, 0.0, 0.0))),
+            ("waist_d", "pelvis", "pelvis", r_wa,
+             "waist_d_f", "waist_d_b", 1, Vector((0.0, 1.0, 0.0)))):
+        if not r or jkey not in jt or kl in jt or kr in jt:
+            continue
+        t = _target(zkey, axis)
+        if t is None:
+            continue
+        c = jt[jkey]
+        jt[kl] = c - d * (0.5 * t)
+        jt[kr] = c + d * (0.5 * t)
+        spans[span_key] = 2.0 * float(r)
+
+
+def auto_part_groups(g_ob, jt):
+    """The wizard's part pre-fill (Sleeve/Collar/Lower), headless.
+    Sleeve = fabric outside the torso column above the pelvis, Collar =
+    above the neck joint, Lower = below the pelvis (LOOSE columns only -
+    a pants' legs must keep following the leg bones). Groups the user or
+    wizard already registered are NEVER touched."""
+    pel, nk = jt.get("pelvis"), jt.get("neck")
+    if pel is None or nk is None:
+        return
+    me = g_ob.data
+    nv = len(me.vertices)
+    if nv == 0:
+        return
+    co = np.empty(nv * 3)
+    me.vertices.foreach_get("co", co)
+    R3 = np.array(g_ob.matrix_world.to_3x3())
+    w = co.reshape(-1, 3) @ R3.T + np.array(g_ob.matrix_world.translation[:])
+    p = np.array(pel[:])
+    nkv = np.array(nk[:])
+    ax = nkv - p
+    L2 = float(ax @ ax) + 1e-12
+    tt = np.clip(((w - p) @ ax) / L2, 0.0, 1.0)
+    rho = np.linalg.norm(w - (p + tt[:, None] * ax), axis=1)
+    radii = jt.get("radii") or {}
+    t_r = float(radii.get("torso") or radii.get("chest")
+                or 0.22 * math.sqrt(L2))
+    fills = {
+        "SRF_Sleeve": (rho > 1.45 * t_r) & (w[:, 2] > p[2]),
+        "SRF_Collar": w[:, 2] > nkv[2],
+        "SRF_Lower": (w[:, 2] < p[2])
+        if jt.get("lower_mode") == 'LOOSE' else None,
+    }
+    for nm, m in fills.items():
+        if m is None or g_ob.vertex_groups.get(nm) is not None:
+            continue                     # user/wizard already decided
+        if not m.any():
+            continue
+        vg = g_ob.vertex_groups.new(name=nm)
+        vg.add([int(i) for i in np.nonzero(m)[0]], 1.0, 'REPLACE')
+
+
 class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
     """THE MATCH: extract the garment's implied skeleton, detect the
     character's joints (any pose), and warp the garment bone-by-bone onto the
@@ -1589,29 +1772,49 @@ class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.smartrig
-        g_ob = props.garment_object
-        body = props.fit_body_object
+        # ONE CLICK, ZERO SETUP (v1.35.0): empty pickers fill themselves
+        g_ob, body = auto_pick(props, context)
         if g_ob is None or body is None:
-            self.report({'ERROR'}, "Pick the garment and the body first.")
+            self.report({'ERROR'},
+                        "No garment/character found - select the garment "
+                        "or pick both with the eyedroppers.")
             return {'CANCELLED'}
+        # write the auto choice back so the UI shows what was matched
+        if props.garment_object is not g_ob:
+            props.garment_object = g_ob
+        if props.fit_body_object is not body:
+            props.fit_body_object = body
         jt = garment_skeleton(g_ob)
         if jt is None:
             self.report({'ERROR'}, "Could not read the garment's structure.")
             return {'CANCELLED'}
         # FIT WIZARD OVERRIDE: user-corrected marker empties beat the
         # automatic analysis (same philosophy as the rig marker wizard)
+        auto = True
         try:
             from . import fit_wizard as _fw
             mj = _fw.marker_joints()
             if mj:
                 jt.update(mj)
+                auto = False
         except Exception as e:
             print("Soulify fit wizard markers:", e)
         dst = character_joints(body)
         if dst is None:
             self.report({'ERROR'},
-                        "Character joints not detected (onnxruntime/model?).")
+                        "Character joints not detected - rig the character "
+                        "(Rig tab) or check the console (onnxruntime).")
             return {'CANCELLED'}
+        if auto:
+            # ONE-CLICK AUTO: the wizard's pre-fill intelligence, headless
+            try:
+                auto_size_targets(jt, dst, body)
+            except Exception as e:
+                print("Soulify auto size:", e)
+            try:
+                auto_part_groups(g_ob, jt)
+            except Exception as e:
+                print("Soulify auto parts:", e)
         # register the standard fit keys so Drape / Remove / sliders work
         from .garment import K_ORIG, K_BASE, K_BODY, K_BODYH
         from . import utils as _u

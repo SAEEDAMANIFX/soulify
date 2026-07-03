@@ -87,6 +87,36 @@ def available():
     return has_model() and has_runtime()
 
 
+def ensure_runtime(timeout=240):
+    """ONE-CLICK AUTO-INSTALL (v1.35.0): pip-install onnxruntime into
+    Blender's own Python when it is missing, so 'Fit to Character' works on
+    UNRIGGED characters with zero setup. Installs --user (a Program-Files
+    Blender cannot write its own site-packages; has_runtime() already
+    appends the user site to sys.path). Returns True when importable."""
+    if has_runtime():
+        return True
+    import subprocess
+    import sys
+    exe = getattr(sys, "executable", None)
+    if not exe:
+        return False
+    print("Soulify detect: installing onnxruntime into", exe)
+    for args in ((exe, "-m", "ensurepip", "--user"),
+                 (exe, "-m", "pip", "install", "--user", "onnxruntime")):
+        try:
+            r = subprocess.run(list(args), capture_output=True, text=True,
+                               timeout=timeout)
+            if r.returncode != 0:
+                print("Soulify detect:", " ".join(args[1:]), "->",
+                      (r.stderr or r.stdout or "").strip()[-400:])
+        except Exception as e:
+            print("Soulify detect: pip failed:", e)
+    ok = has_runtime()
+    print("Soulify detect: onnxruntime",
+          "installed" if ok else "NOT available")
+    return ok
+
+
 def _session():
     global _SESSION
     if _SESSION is None:

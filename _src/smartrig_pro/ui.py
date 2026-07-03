@@ -939,7 +939,15 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         col.prop(props, "fit_body_object", text="Body")
         g_ob = props.garment_object
         if g_ob is None:
-            box.label(text="Pick the clothing mesh first", icon='INFO')
+            # ONE CLICK, ZERO SETUP (v1.35.0): empty pickers = auto-detect.
+            # Select the garment in the viewport (or select nothing) and hit
+            # the big button - garment + body are found automatically.
+            box.label(text="Empty = auto-detect (or select the garment)",
+                      icon='INFO')
+            big = box.row()
+            big.scale_y = 1.7
+            big.operator("smartrig.mannequin_match",
+                         text="Fit to Character", icon='ARMATURE_DATA')
             return
         # the recommended flow reminder
         has_rig = (bpy.data.objects.get("SR_Metarig") is not None)

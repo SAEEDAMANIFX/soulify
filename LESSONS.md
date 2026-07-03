@@ -382,3 +382,34 @@ behind the isolated shirt, opacity slider live at 0.85.
   Body, so the character's own gender/proportions are the reference.
 Verified: 13 markers with chains + width spans over the measured backdrop;
 opacity slider live.
+
+## v1.35.0 - ONE-CLICK AUTO FIT (any garment, any character) - VERIFIED
+'Fit to Character' now needs ZERO setup: empty pickers fill themselves and
+the Fit Wizard's pre-fill intelligence runs headlessly when no markers exist.
+- mannequin.auto_pick: Body = rig-tab target mesh > biggest rig-skinned
+  mesh > biggest visible mesh. Garment = selected/active mesh, else the
+  unskinned mesh with the biggest world-bbox overlap with the body (tiny
+  meshes filtered by WORLD height - dimensions.z lies on rotated objects).
+  Verified: picked Mens_Shirt_4 + body among 100+ WGT widget meshes.
+- mannequin.auto_size_targets: chest/waist width+depth morph targets from
+  the body's own band extents at the dst joint heights (+0.03h ease);
+  design spans = 2x analyzed ring radius, travel in jt["spans"] (beats a
+  stale SRF_FitMarkers collection in _band_scale).
+- mannequin.auto_part_groups: wizard part pre-fill headless (Sleeve/
+  Collar; Lower only for LOOSE - pants legs must keep following legs).
+  Existing groups are never touched (wizard/user stays the boss).
+- detect.ensure_runtime(): pip install onnxruntime --user on demand so
+  unrigged characters work with one click (rig-first still preferred).
+- UI: big button visible + working with an empty garment picker.
+THE BUG THAT MATTERED: utils.read_rest_coords ALREADY RETURNS WORLD
+coords - warp_garment's band fallback, fit_wizard's snap-to-body, and the
+new helper all multiplied matrix_world AGAIN. Silent on identity bodies;
+on this scene (body rotated X+90) every band came back EMPTY (bh=0.29
+instead of 1.85), so size morphs no-opped. Fixed in all three sites.
+NUMBERS (Mens_Shirt_4 -> rigged body, empty pickers, nothing selected):
+  auto-pick correct, 15 joints, 6.4s, scales chest 1.6/1.46 waist 1.6/1.26,
+  design damage 13.97% (was 15.23% before the space fix; wizard-corrected
+  flow remains the precision path at ~10.6%).
+DEBUG LESSON: verify A/B reruns start from a TRUE design state - removing
+shape keys in list order bakes the fit into the base mesh (Basis removed
+first promotes SRF_Fit). Use shape_key_clear() then foreach_set(snapshot).

@@ -471,9 +471,9 @@ class SMARTRIG_OT_fitwiz_markers(bpy.types.Operator):
             try:
                 import numpy as np
                 from . import utils as _u
-                bl_ = _u.read_rest_coords(body)
-                Rb = np.array(body.matrix_world.to_3x3())
-                bw_ = bl_ @ Rb.T + np.array(body.matrix_world.translation[:])
+                # read_rest_coords is already WORLD coords (double
+                # transform garbled rotated bodies)
+                bw_ = _u.read_rest_coords(body)
                 bh_ = float(bw_[:, 2].max() - bw_[:, 2].min())
                 for key, kl, kr, ax in (("chest_w", "chest_w_l",
                                          "chest_w_r", 0),
