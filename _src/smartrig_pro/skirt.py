@@ -4050,6 +4050,16 @@ def bind_mesh(props, context):
     if (bool(getattr(props, "skin_fine_hands", False))
             or bool(getattr(props, "skin_fine_feet", False))):
         try:
+            try:
+                if bool(getattr(props, "skin_fine_hands", False)):
+                    _st = ensure_fine_regions(rig, mesh, "hand")
+                    if _st == 'rebuilt':
+                        print("SmartRig: finger regions were missing/broken -"
+                              " rebuilt automatically from the bones")
+                if bool(getattr(props, "skin_fine_feet", False)):
+                    ensure_fine_regions(rig, mesh, "foot")
+            except Exception as _e:
+                print("SmartRig ensure_fine_regions:", _e)
             _nfine = fine_skin_apply(props, context, rig, mesh)
             bpy.ops.object.select_all(action='DESELECT')
             mesh.select_set(True); context.view_layer.objects.active = mesh
@@ -4407,6 +4417,68 @@ class SMARTRIG_OT_fine_register(bpy.types.Operator):
         self.report({'INFO'}, "Registered %s (%d L, %d R)."
                     % (self.finger, len(left), len(right)))
         return {'FINISHED'}
+
+
+def _auto_split_digits(rig, mesh, kind):
+    """Assign every hand/foot vert to its NEAREST digit (bone-segment
+    distance) - fills all the SR_Fin_* slots automatically. Returns #verts."""
+    import numpy as np
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    mw = mesh.matrix_world
+    co = np.array([mw @ v.co for v in mesh.data.vertices])
+    tot = 0
+    for side in (".L", ".R"):
+        digs = _digit_names_present(rig, side, kind)
+        if not digs:
+            continue
+        seglists = {f: _digit_bone_segs(rig, side, f) for f in digs}
+        allpts = np.array([[q.x, q.y, q.z] for f in digs
+                           for _bn, a, b in seglists[f] for q in (a, b)])
+        span = float(np.linalg.norm(allpts.max(0) - allpts.min(0)))
+        r = max(0.05 * span, 0.03)
+        lo = allpts.min(0) - r
+        hi = allpts.max(0) + r
+        box = np.all((co >= lo) & (co <= hi), axis=1)
+        slots = {f: [] for f in digs}
+        for vi in np.where(box)[0]:
+            pw = mw @ mesh.data.vertices[int(vi)].co
+            best = None
+            bf = None
+            for f in digs:
+                dmin = min(_seg_d(pw, a, b) for _bn, a, b in seglists[f])
+                if best is None or dmin < best:
+                    best = dmin
+                    bf = f
+            if best is not None and best < r:
+                slots[bf].append(int(vi))
+        for f in digs:
+            nm = _fine_group_name(f, side)
+            vg = mesh.vertex_groups.get(nm) or mesh.vertex_groups.new(name=nm)
+            vg.remove([v.index for v in mesh.data.vertices])
+            if slots[f]:
+                vg.add(slots[f], 1.0, 'REPLACE')
+                tot += len(slots[f])
+    return tot
+
+
+def ensure_fine_regions(rig, mesh, kind="hand"):
+    """SMART default: rebuild the per-digit regions automatically when they
+    are missing or clearly broken (an empty digit, or one digit 3x the median
+    = the user grabbed half the palm). Returns 'kept' / 'rebuilt' / None."""
+    sizes = []
+    for side in (".L", ".R"):
+        for f in _digit_names_present(rig, side, kind):
+            sizes.append(len(_fine_region(mesh, f, side)))
+    if not sizes:
+        return None
+    vals = sorted(sizes)
+    med = vals[len(vals) // 2]
+    broken = (med == 0 or 0 in vals or max(vals) > 3 * max(1, med))
+    if not broken:
+        return 'kept'
+    _auto_split_digits(rig, mesh, kind)
+    return 'rebuilt'
 
 
 class SMARTRIG_OT_fine_autodetect(bpy.types.Operator):

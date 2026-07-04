@@ -593,15 +593,25 @@ class SMARTRIG_OT_build_metarig(bpy.types.Operator):
             bpy.ops.object.mode_set(mode='EDIT')
         except Exception:
             pass
-        # ARP-AI-style pass: snap finger joints to the mesh knuckles
+        # SMART fingers: real AI placement first (joints + palm + ROLLS),
+        # geometric knuckle detector as fallback
         try:
-            from . import skirt as _sk
+            from . import skirt as _sk, arp_ai as _ai
             meta_ob = bpy.data.objects.get(META_NAME)
             mesh_ob = context.scene.smartrig.target_mesh
             if meta_ob is not None and mesh_ob is not None:
-                _ref = _sk.refine_finger_joints_meta(meta_ob, mesh_ob)
-                if _ref:
-                    print("SmartRig refined finger joints:", _ref)
+                _n = 0
+                try:
+                    _n = _ai.auto_place(meta_ob, mesh_ob)
+                except Exception as _e:
+                    print("SmartRig AI place failed:", _e)
+                if _n:
+                    print("SmartRig AI placed %d finger chains (joints+rolls)"
+                          % _n)
+                else:
+                    _ref = _sk.refine_finger_joints_meta(meta_ob, mesh_ob)
+                    if _ref:
+                        print("SmartRig refined finger joints:", _ref)
         except Exception as _e:
             print("SmartRig finger refine skipped:", _e)
         self.report({'INFO'}, "Metarig built (Edit Mode). Tweak bones, add samples, then Generate.")

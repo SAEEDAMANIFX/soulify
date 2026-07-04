@@ -379,8 +379,53 @@ def detect_fingers(mesh, wrist, tip, side_tag,
     return out
 
 
-def apply_to_metarig(meta, res, side):
-    """Write AI joint chains into the metarig fingers + palm tails."""
+def auto_place(meta, mesh, samples=8, thresh=0.5):
+    """FULL smart hand placement: AI keypoints -> joints + palm tails + BONE
+    ROLLS from the palm normal. Returns #chains fitted (0 = AI unavailable
+    or failed; caller should fall back to the geometric detector)."""
+    if not fingers_available():
+        return 0
+    mm = meta.matrix_world
+    done = 0
+    for side, tag in ((".L", "_l"), (".R", "_r")):
+        hb = meta.data.bones.get("hand" + side)
+        tb = meta.data.bones.get("f_middle.03" + side)
+        if hb is None or tb is None:
+            continue
+        wrist = mm @ hb.head_local
+        tip = mm @ tb.tail_local
+        # characters differ: count the digit chains that actually exist
+        nf = 0
+        for f in FIN:
+            pre = "thumb.01" if f == "thumb" else "f_%s.01" % f
+            if meta.data.bones.get(pre + side):
+                nf += 1
+        try:
+            res = detect_fingers(mesh, wrist, tip, tag,
+                                 samples=samples, thresh=thresh,
+                                 nfingers=max(1, nf))
+        except Exception as e:
+            print("Soulify AI fingers failed:", e)
+            return done
+        if not res:
+            continue
+        # dorsal = back of the hand: palm normal signed AWAY from the thumb
+        pn = _palm_normal(mesh, wrist, tip)
+        hand_mid = (wrist + tip) * 0.5
+        if "thumb" in res:
+            t_tip = Vector(res["thumb"][3])
+            palmward = pn if (t_tip - hand_mid).dot(pn) > 0 else -pn
+        else:
+            palmward = pn
+        dorsal = -palmward
+        done += apply_to_metarig(meta, res, side, dorsal=dorsal)
+    return done
+
+
+def apply_to_metarig(meta, res, side, dorsal=None):
+    """Write AI joint chains into the metarig fingers + palm tails. If
+    `dorsal` is given, ALSO set every finger bone's roll so local Z faces the
+    back of the hand (Rigify X-axis curl convention)."""
     inv = meta.matrix_world.inverted()
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
@@ -392,8 +437,33 @@ def apply_to_metarig(meta, res, side):
     eb = meta.data.edit_bones
     mirr = meta.data.use_mirror_x
     meta.data.use_mirror_x = False
+    # which digits exist on the metarig?
+    have = []
+    for f in FIN:
+        pre = "thumb." if f == "thumb" else "f_%s." % f
+        if eb.get(pre + "01" + side):
+            have.append(f)
+    pairs = {}
+    if set(res) <= set(have):
+        pairs = dict(res)
+    else:
+        # stylized hands (4/3 fingers): match AI chains to existing chains by
+        # LATERAL ORDER along the knuckle line, names may not line up
+        roots = {f: Vector(c[0]) for f, c in res.items()}
+        if len(roots) > 1:
+            ks = list(roots.values())
+            ax = max(((p - q) for p in ks for q in ks),
+                     key=lambda v: v.length).normalized()
+            ai_sorted = sorted(res, key=lambda f: roots[f].dot(ax))
+            hv_sorted = sorted(
+                have, key=lambda f: (mm @ eb[("thumb." if f == "thumb"
+                                     else "f_%s." % f) + "01" + side].head).dot(ax))
+            for fa, fh in zip(ai_sorted, hv_sorted):
+                pairs[fh] = res[fa]
+        else:
+            pairs = {have[0]: list(res.values())[0]} if have and res else {}
     n = 0
-    for f, chain in res.items():
+    for f, chain in pairs.items():
         pre = "thumb." if f == "thumb" else "f_%s." % f
         b1 = eb.get(pre + "01" + side)
         b2 = eb.get(pre + "02" + side)
@@ -408,6 +478,19 @@ def apply_to_metarig(meta, res, side):
         b2.tail = inv @ J2
         b3.head = inv @ J2
         b3.tail = inv @ tip
+        if dorsal is not None:
+            # Z faces the PALM so +X rotation CURLS the finger (verified
+            # empirically: Z=dorsal made +X extend backwards)
+            dz = -dorsal
+            if f == "thumb":
+                # the thumb's palm-face is halfway between hand-palm and ulnar
+                rad = (J0 - Vector(pairs.get("pinky", pairs[f])[0])).normalized()
+                dz = -(dorsal + rad).normalized()
+            for b in (b1, b2, b3):
+                try:
+                    b.align_roll(inv.to_3x3() @ dz)
+                except Exception:
+                    pass
         pi = {"index": "01", "middle": "02", "ring": "03",
               "pinky": "04"}.get(f)
         if pi:
