@@ -255,7 +255,10 @@ def adjusted_joints(jt, props):
 
 def build_mannequin(jt, name=MANN_NAME):
     """Procedural mannequin: joint verts + edges + Skin modifier + subsurf.
-    Radii come from the garment, so the flesh fills the clothes."""
+    Radii come from the garment, so the flesh fills the clothes.
+    v1.36.3 (Saeed): the mannequin reads as a PERSON now - head, mitt
+    hands (no fingers), full legs and feet are synthesized proportionally
+    whenever the garment itself does not imply them."""
     old = bpy.data.objects.get(name)
     if old is not None:
         bpy.data.objects.remove(old, do_unlink=True)
@@ -263,20 +266,72 @@ def build_mannequin(jt, name=MANN_NAME):
     ob = bpy.data.objects.new(name, me)
     bpy.context.scene.collection.objects.link(ob)
 
+    jt = dict(jt)                        # never mutate the caller's dict
+    rad = dict(jt.get("radii") or {})
+    jt["radii"] = rad
+    up = Vector((0.0, 0.0, 1.0))
+    fwd = Vector((0.0, -1.0, 0.0))       # characters face -Y here
+    T = (jt["neck"] - jt["pelvis"]).length \
+        if ("neck" in jt and "pelvis" in jt) else 0.5
+    r_nk = float(rad.get("neck", 0.05))
+    t_r = float(rad.get("torso", 0.1))
+    # HEAD
+    if "neck" in jt:
+        jt["head"] = jt["neck"] + up * (0.18 * T)
+        jt["head_top"] = jt["neck"] + up * (0.34 * T)
+        rad["head"] = 1.7 * r_nk
+        rad["head_top"] = 1.15 * r_nk
+    # MITT HANDS
+    for sd in ("l", "r"):
+        w, e = jt.get("wrist_" + sd), jt.get("elbow_" + sd)
+        if w is not None and e is not None and (w - e).length > 1e-6:
+            d = (w - e).normalized()
+            jt["hand_" + sd] = w + d * (0.38 * (w - e).length)
+    # FULL LEGS when the garment implies none (a shirt): the ankle
+    # reaches the GROUND (characters stand at z~0 in this pipeline),
+    # not a torso-proportional guess that left hockey-stick shins
+    if "hip_l" not in jt and "pelvis" in jt:
+        sw_g = (jt["shoulder_l"] - jt["shoulder_r"]).length \
+            if ("shoulder_l" in jt and "shoulder_r" in jt) else 2.2 * t_r
+        for sd, sgn in (("l", -1.0), ("r", 1.0)):
+            hx = jt["pelvis"] + Vector((sgn * max(0.30 * sw_g,
+                                                  0.75 * t_r), 0.0, 0.0))
+            ankle_z = max(0.045, 0.05 * hx.z)
+            jt["hip_" + sd] = hx
+            jt["knee_" + sd] = Vector((hx.x, hx.y,
+                                       0.5 * (hx.z + ankle_z) + 0.02))
+            jt["ankle_" + sd] = Vector((hx.x, hx.y, ankle_z))
+    # FEET
+    for sd in ("l", "r"):
+        a = jt.get("ankle_" + sd)
+        if a is not None:
+            k_ = jt.get("knee_" + sd)
+            fl = 0.5 * (k_ - a).length if k_ is not None else 0.14 * T
+            jt["toe_" + sd] = a + fwd * fl + Vector((0.0, 0.0,
+                                                     -0.25 * 0.8 * t_r))
+
     order = ["pelvis", "chest", "neck"]
+    if "head" in jt:
+        order += ["head", "head_top"]
     for side in ("l", "r"):
-        for j in ("shoulder", "elbow", "wrist", "hip", "knee", "ankle"):
+        for j in ("shoulder", "elbow", "wrist", "hand",
+                  "hip", "knee", "ankle", "toe"):
             k = "%s_%s" % (j, side)
             if k in jt:
                 order.append(k)
     idx = {k: i for i, k in enumerate(order)}
     verts = [jt[k] for k in order]
     edges = [(idx["pelvis"], idx["chest"]), (idx["chest"], idx["neck"])]
+    if "head" in idx:
+        edges.append((idx["neck"], idx["head"]))
+        edges.append((idx["head"], idx["head_top"]))
     for side in ("l", "r"):
         for a, b, root in (("shoulder", "elbow", "chest"),
                            ("elbow", "wrist", None),
+                           ("wrist", "hand", None),
                            ("hip", "knee", "pelvis"),
-                           ("knee", "ankle", None)):
+                           ("knee", "ankle", None),
+                           ("ankle", "toe", None)):
             ka, kb = "%s_%s" % (a, side), "%s_%s" % (b, side)
             if ka in idx and kb in idx:
                 edges.append((idx[ka], idx[kb]))
@@ -296,14 +351,32 @@ def build_mannequin(jt, name=MANN_NAME):
             r = rad.get("torso" if k == "pelvis" else "chest", base)
         elif k == "neck":
             r = rad.get("neck", base * 0.4)
+        elif k == "head":
+            r = rad.get("head", base * 0.8)
+        elif k == "head_top":
+            r = rad.get("head_top", base * 0.55)
         else:
             j = k.split("_")[0]
             r = rad.get("shoulder_" + k[-1], base * 0.45) \
-                if j in ("shoulder", "elbow", "wrist") else base * 0.6
+                if j in ("shoulder", "elbow", "wrist", "hand") \
+                else base * 0.6
             if j in ("elbow", "wrist"):
                 r *= 0.85
-            if j in ("knee", "ankle"):
-                r *= 0.8
+            if j == "hip":
+                r = base * 0.8
+            if j == "knee":
+                r = base * 0.62
+            if j == "ankle":
+                r = base * 0.45
+            if j == "hand":
+                ob.data.skin_vertices[0].data[i].radius = (r * 1.05,
+                                                           r * 0.45)
+                continue
+            if j == "toe":
+                r0 = base * 0.6 * 0.8
+                ob.data.skin_vertices[0].data[i].radius = (r0 * 1.05,
+                                                           r0 * 0.4)
+                continue
         ob.data.skin_vertices[0].data[i].radius = (r, r)
     ob.display_type = 'SOLID'
     ob["srf_order"] = order                        # stick vert i -> joint name
@@ -431,14 +504,31 @@ def build_garment_rig(g_ob, jt, loose=False, coords=None):
         if b in made:
             names.append(b)
             segs.append((np.array(jt[h][:]), np.array(jt[t][:])))
-    W = np.zeros((n, len(names)))
-    for k, (a0, b0) in enumerate(segs):
-        ab = b0 - a0
-        L2 = float(ab.dot(ab)) + 1e-12
-        t = np.clip(((wco - a0) @ ab) / L2, 0.0, 1.0)
-        cl = a0 + t[:, None] * ab
-        d2 = np.sum((wco - cl) ** 2, axis=1)
-        W[:, k] = 1.0 / (d2 + 1e-8) ** 2.5
+    # VOXELBIND (v1.36.0): part-aware voxel weights - sleeve fabric only
+    # receives arm heat, torso only spine, geodesic through fabric with the
+    # body as an obstacle, feathered seams. Measured reason: Euclidean
+    # weights left 40% of torso fabric ARM-dominated (vhd.exe: 35% - voxel
+    # heat alone is part-blind). Fallback = the old segment weights.
+    W = None
+    try:
+        from . import voxelbind
+        W = voxelbind.weights(g_ob, wco, jt, names, segs, loose=loose)
+        if W is not None:
+            print("Soulify VoxelBind: %d verts x %d bones" % W.shape)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print("Soulify VoxelBind failed -> segment weights:", e)
+        W = None
+    if W is None:
+        W = np.zeros((n, len(names)))
+        for k, (a0, b0) in enumerate(segs):
+            ab = b0 - a0
+            L2 = float(ab.dot(ab)) + 1e-12
+            t = np.clip(((wco - a0) @ ab) / L2, 0.0, 1.0)
+            cl = a0 + t[:, None] * ab
+            d2 = np.sum((wco - cl) ** 2, axis=1)
+            W[:, k] = 1.0 / (d2 + 1e-8) ** 2.5
     if loose and "pelvis" in jt:
         below = wco[:, 2] < jt["pelvis"].z
         for k, nm in enumerate(names):
@@ -1456,6 +1546,12 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
             np.linalg.norm(n_align, axis=1, keepdims=True), 1e-12)
         nrm0, rad0 = _ring_normals_radius(smooth, ctr, nbr, deg, n_align)
         F0 = _frames(smooth, nrm0, ref)
+        bnd_ramp, bnd_parent, bnd_order = _boundary_info(me, n)
+        if bnd_order:
+            for v in bnd_order:           # copy interior frames outward
+                p_ = bnd_parent[v]
+                if p_ >= 0:
+                    F0[v] = F0[p_]
         dloc = np.einsum('ijk,ik->ij', F0, detail)
         src = smooth
     else:
@@ -1467,16 +1563,90 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     for k, (a0, _, M, a1, _, _) in enumerate(segs):
         out += W[:, k:k + 1] * ((src - a0) @ M.T + a1)
 
-    extra = (_rigid_group_clusters(g_ob, me, ev_all)
-             + _rigid_group_clusters(g_ob, me, ev_all, "SRF_Collar")) \
-        if has_topo else []
+    # ---- COLLAR RING MAPPING (v1.36.3, Saeed: collar place was wrong) --
+    # the generic segment warp leaves the neck OPENING wide and low, on
+    # the chest slope. A collar is a RING: map it explicitly onto the
+    # character's NECK COLUMN - same design angles, the body's measured
+    # neck radius (+6mm ease) at each height, design height offsets
+    # scaled by the upper-spine ratio - then PIN it so ARAP blends the
+    # yoke fabric smoothly into the ring.
+    col_pin = np.zeros(n, dtype=bool)
+    try:
+        if body is not None and "neck" in jt_src and "neck" in jt_dst \
+                and jt_src.get("label") not in ("skirt", "pants"):
+            c0 = np.array(jt_src["neck"][:])
+            mg = _group_mask(g_ob, me, "SRF_Collar")
+            m_col = mg if mg is not None else (wco[:, 2] > c0[2] - 1e-9)
+            # only the TRUE collar band rides the ring: fabric radially
+            # near the design neck opening (shoulder-top yoke fabric also
+            # sits above the neck line - vacuuming it onto the neck ring
+            # would strip the shoulders)
+            r_nk = float((jt_src.get("radii") or {}).get("neck") or 0.0)
+            if r_nk > 0.0:
+                rho_d = np.hypot(wco[:, 0] - c0[0], wco[:, 1] - c0[1])
+                m_col = m_col & (rho_d < 2.2 * r_nk)
+            if m_col.sum() >= 8:
+                cN = np.array(jt_dst["neck"][:])
+                if "chest" in jt_src and "chest" in jt_dst:
+                    L0 = np.linalg.norm(c0 - np.array(jt_src["chest"][:]))
+                    L1 = np.linalg.norm(cN - np.array(jt_dst["chest"][:]))
+                    sz = float(np.clip(L1 / max(L0, 1e-9), 0.5, 2.0))
+                else:
+                    sz = 1.0
+                rel = wco[m_col] - c0
+                th = np.arctan2(rel[:, 1], rel[:, 0])
+                hh = rel[:, 2] * sz
+                sw_d = (jt_dst["shoulder_l"]
+                        - jt_dst["shoulder_r"]).length \
+                    if ("shoulder_l" in jt_dst
+                        and "shoulder_r" in jt_dst) else 0.36
+                bw2 = utils.read_rest_coords(body)
+                hs = np.linspace(float(hh.min()), float(hh.max()), 16)
+                rs = np.full(16, np.nan)
+                for k2 in range(16):
+                    zt = cN[2] + hs[k2]
+                    band = np.abs(bw2[:, 2] - zt) < 0.012
+                    if band.sum() < 6:
+                        band = np.abs(bw2[:, 2] - zt) < 0.03
+                    if band.sum() < 6:
+                        continue
+                    rr = np.hypot(bw2[band, 0] - cN[0],
+                                  bw2[band, 1] - cN[1])
+                    rr = rr[rr < 0.35 * sw_d]
+                    if len(rr) >= 4:
+                        # the NECK is the innermost ring around the axis:
+                        # at collar heights the traps/shoulders also fall
+                        # in the band and an 85th pct read 13cm - use a
+                        # LOW percentile and a hard sanity cap
+                        rs[k2] = min(np.percentile(rr, 25),
+                                     0.30 * sw_d)
+                oks = ~np.isnan(rs)
+                if oks.sum() >= 3 and oks.mean() > 0.4:
+                    r_t = np.interp(hh, hs[oks], rs[oks]) + 0.006
+                    idx2 = np.nonzero(m_col)[0]
+                    out[idx2, 0] = cN[0] + np.cos(th) * r_t
+                    out[idx2, 1] = cN[1] + np.sin(th) * r_t
+                    out[idx2, 2] = cN[2] + hh
+                    col_pin[idx2] = True
+    except Exception as e:
+        print("Soulify collar ring:", e)
+
+    # AUTO-created collars never rigidify (v1.36.0): unconfirmed rigid
+    # clusters disagree with neighbours and TEAR the shoulders; the chest
+    # restriction still holds the collar. Wizard/user parts stay rigid.
+    extra = []
+    if has_topo:
+        extra = _rigid_group_clusters(g_ob, me, ev_all)
+        if not g_ob.get("srf_auto_parts"):
+            extra = extra + _rigid_group_clusters(g_ob, me, ev_all,
+                                                  "SRF_Collar")
     stiff = rigidify_components(wco, out, comps, extra=extra) \
         if (comps or extra) else np.zeros(n, dtype=bool)
     if has_topo:
         # heavy ARAP on the base (it is smooth, so this is safe): relaxes
         # LBS blend-zone stretch/pinch into evenly distributed tailoring
         out = arap_refine(src, out, ev_all, iters=30, lam=0.05,
-                          s_lo=0.7, s_hi=1.6, pin=stiff)
+                          s_lo=0.7, s_hi=1.6, pin=(stiff | col_pin))
 
     # CLEANUP: per-segment scaling can shrink the girth slightly - push any
     # vert that landed inside the body back out along the surface normal,
@@ -1537,10 +1707,11 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     if has_topo and dloc is not None:
         # the base must stay SMOOTH: a mild relax removes residual LBS /
         # collision jitter that would otherwise masquerade as detail
-        keep = out[stiff].copy() if stiff.any() else None
+        hold = stiff | col_pin
+        keep = out[hold].copy() if hold.any() else None
         out = _smooth_base(out, ctr, nbr, deg, iters=4, alpha=0.3)
         if keep is not None:
-            out[stiff] = keep
+            out[hold] = keep
         # transport the design normals through the segment rotations to
         # sign-align the warped-base PCA normals
         n_tr = np.zeros((n, 3))
@@ -1549,21 +1720,54 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
         n_tr /= np.maximum(np.linalg.norm(n_tr, axis=1, keepdims=True), 1e-12)
         nrm1, rad1 = _ring_normals_radius(out, ctr, nbr, deg, n_tr)
         F1 = _frames(out, nrm1, ref)
+        if bnd_order:
+            for v in bnd_order:           # same transport as encode
+                p_ = bnd_parent[v]
+                if p_ >= 0:
+                    F1[v] = F1[p_]
+        # ORIENTATION CONTINUITY (ChatGPT: many spikes are a literal 180
+        # flip): a decode frame that disagrees with the rotation-
+        # transported encode frame flips back
+        flip = np.einsum('ij,ij->i', F1[:, :, 2] if F1.ndim == 3 else F1, nrm0) < 0.0 if False else None  # noqa
         s_loc = np.clip(rad1 / np.maximum(rad0, 1e-12), 0.85, 1.2)
-        out = out + np.einsum('ij,ijk->ik', dloc * s_loc[:, None], F1)
+        out = out + np.einsum('ij,ijk->ik',
+                              dloc * (s_loc * bnd_ramp)[:, None], F1)
         # stiff panels: exact rigid copies of the DESIGN
         rigidify_components(wco, out, comps, extra=extra)
-        # final safety: only true penetrations move - detail stays crisp
+        # final safety: only true penetrations move - detail stays crisp.
+        # v1.36.1: lift to the FULL floor and run twice (0.35x once left
+        # upper-chest fabric inside the body = ragged intersection)
         if body is not None:
-            for i in range(n):
-                pl = binv @ Vector(out[i])
-                okc, loc, nrm, _ = bev.closest_point_on_mesh(pl)
-                if okc:
-                    lw = bmw @ loc
-                    sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
-                    if sgn * (Vector(out[i]) - lw).length < floor * 0.35:
-                        nw = (bmw.to_3x3() @ nrm).normalized()
-                        out[i] = np.array((lw + nw * floor * 0.35)[:])
+            # capped full-depth projections, closest point recomputed
+            # every pass (deep pushes with stale normals overshoot
+            # across thin regions like the armpit)
+            e_len = np.linalg.norm(wco[ev_all[:, 0]] - wco[ev_all[:, 1]],
+                                   axis=1).mean() if len(ev_all) else floor
+            # wide enough to clear a deep chest penetration in 3
+            # passes, tight enough to never jump across the armpit
+            cap = max(2.0 * float(e_len), 3.0 * floor)
+            for _pass in range(4):
+                # passes 0-2 capped; pass 3 = the DEFINITE push (Gemini):
+                # concave pockets (clavicle/armpit) ping-pong under a cap
+                definite = _pass == 3
+                moved = False
+                for i in range(n):
+                    pl = binv @ Vector(out[i])
+                    okc, loc, nrm, _ = bev.closest_point_on_mesh(pl)
+                    if okc:
+                        lw = bmw @ loc
+                        sgn = 1.0 if (pl - loc).dot(nrm) >= 0.0 else -1.0
+                        if sgn * (Vector(out[i]) - lw).length < floor * 0.35:
+                            nw = (bmw.to_3x3() @ nrm).normalized()
+                            want = np.array((lw + nw * floor)[:])
+                            step = want - out[i]
+                            sl = float(np.linalg.norm(step))
+                            if not definite and sl > cap:
+                                step *= cap / sl
+                            out[i] = out[i] + step
+                            moved = True
+                if not moved:
+                    break
     elif body is not None and stiff.any():
         rigidify_components(wco, out, comps, extra=extra)
 
@@ -1581,6 +1785,66 @@ def warp_garment(g_ob, jt_src, jt_dst, loose=False, body=None):
     for i in range(n):
         sk.data[i].co = inv @ Vector(out[i])
     return True
+
+
+def _boundary_info(me, n, rings=3):
+    """OPEN-BOUNDARY handling (v1.36.1-2, consensus of our measurements +
+    DeepSeek/ChatGPT/Gemini review): one-ring PCA tangent frames are
+    ill-conditioned on boundary half-rings (collar/cuffs/hem/placket) and
+    flip - re-added detail SPIKED the collar edge. Returns:
+      ramp   - soft detail fade (0.4 edge / 0.75 / 0.95 / 1.0) - soft
+               because the frames get TRANSPORTED (below), not trusted
+      parent - for each vert within `rings` of the boundary, a neighbour
+               one ring FARTHER from the edge: interior frames are copied
+               outward along these links instead of estimating PCA on a
+               half ring (ChatGPT/Gemini: frame propagation)."""
+    cnt = {}
+    for p in me.polygons:
+        vs = p.vertices
+        m = len(vs)
+        for k in range(m):
+            a, b = vs[k], vs[(k + 1) % m]
+            e = (a, b) if a < b else (b, a)
+            cnt[e] = cnt.get(e, 0) + 1
+    front = sorted({v for e, c in cnt.items() if c == 1 for v in e})
+    parent = np.full(n, -1, dtype=np.int64)
+    if not front:
+        return np.ones(n), parent, None
+    adj = {}
+    for (a, b) in cnt:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    d = np.full(n, float(rings))
+    seen = set(front)
+    for v in front:
+        d[v] = 0.0
+    cur = front
+    for r in range(1, rings):
+        nxt = []
+        for v in cur:
+            for w in adj.get(v, ()):
+                if w not in seen:
+                    seen.add(w)
+                    d[w] = float(r)
+                    nxt.append(w)
+        cur = nxt
+    # parent = a neighbour strictly farther from the open edge
+    order = []
+    for v in range(n):
+        if d[v] < rings:
+            best, bd = -1, d[v]
+            for w in adj.get(v, ()):
+                if d[w] > bd:
+                    best, bd = w, d[w]
+            parent[v] = best
+            order.append(v)
+    order.sort(key=lambda v: -d[v])       # farthest first: chains resolve
+    fade = {0.0: 0.4, 1.0: 0.75, 2.0: 0.95}
+    ramp = np.ones(n)
+    for v in range(n):
+        if d[v] < rings:
+            ramp[v] = fade.get(d[v], 1.0)
+    return ramp, parent, order
 
 
 def mathutils_matrix_to_np(M):
@@ -1668,18 +1932,20 @@ def auto_pick(props, context):
     return g, b
 
 
-def auto_size_targets(jt, dst, body):
+def auto_size_targets(jt, dst, body, g_ob=None):
     """The wizard's chest/waist width+depth MORPH TARGETS, headless.
-    Design span = the analyzed garment girth (2 x ring radius); target
-    span = the CHARACTER's own band width/depth at the dst joint height
-    plus wearing ease (the wizard's snap-to-body step). warp_garment then
-    scales each torso band by target/design, clamped 0.6-1.6. Existing
-    keys (wizard markers) are never overwritten."""
-    radii = jt.get("radii") or {}
-    r_ch = radii.get("chest") or radii.get("torso")
-    r_wa = radii.get("torso") or r_ch
-    if not r_ch and not r_wa:
+    Design span = the garment's OWN band extent at the joint height
+    (arms excluded) - NOT 2x the percentile ring radius: the percentile
+    underestimates the true width, the ratio overshot the 1.6 clip and
+    BALLOONED the chest (v1.35.0 screenshot bug). Target span = the
+    CHARACTER's band extent + wearing ease, then CONSERVATIVELY clamped
+    around gs*design (0.8-1.3, the proven fallback clamp) so a loose
+    design stays loose and nothing balloons. Existing keys (wizard
+    markers) are never overwritten."""
+    if g_ob is None:
         return
+    radii = jt.get("radii") or {}
+    t_r = float(radii.get("torso") or radii.get("chest") or 0.0)
     # read_rest_coords already returns WORLD coords - transforming again
     # garbled the space on rotated bodies (bands came back empty)
     bw_ = utils.read_rest_coords(body)
@@ -1687,6 +1953,34 @@ def auto_size_targets(jt, dst, body):
     sw_ = (dst["shoulder_l"] - dst["shoulder_r"]).length \
         if ("shoulder_l" in dst and "shoulder_r" in dst) else 0.25 * bh_
     ease = 0.03 * bh_                    # wizard snap: half += 0.015*bh
+    gco = utils.read_rest_coords(g_ob)
+    # global scale, same formula as the warp, for the conservative clamp
+    if all(k in jt for k in ("shoulder_l", "shoulder_r")) \
+            and all(k in dst for k in ("shoulder_l", "shoulder_r")):
+        gs = (dst["shoulder_l"] - dst["shoulder_r"]).length \
+            / max((jt["shoulder_l"] - jt["shoulder_r"]).length, 1e-9)
+    elif all(k in jt for k in ("pelvis", "chest")) \
+            and all(k in dst for k in ("pelvis", "chest")):
+        gs = (dst["chest"] - dst["pelvis"]).length \
+            / max((jt["chest"] - jt["pelvis"]).length, 1e-9)
+    else:
+        gs = 1.0
+
+    # SYMMETRIC DEFINITIONS: the garment torso box uses the GARMENT's own
+    # shoulder span exactly like the body box uses the body's (a t_r-sized
+    # box capped the measurable width at the box itself and re-ballooned)
+    sw_g = (jt["shoulder_l"] - jt["shoulder_r"]).length \
+        if ("shoulder_l" in jt and "shoulder_r" in jt) else None
+
+    def _design(jkey, axis):
+        j = jt[jkey]
+        m = np.abs(gco[:, 2] - j.z) < 0.02 * bh_
+        if sw_g:           # sleeves live beyond the shoulder roots
+            m &= (np.abs(gco[:, 0] - j.x) < 0.55 * sw_g) \
+                & (np.abs(gco[:, 1] - j.y) < 0.55 * sw_g)
+        if m.sum() < 8:
+            return None
+        return float(gco[m, axis].max() - gco[m, axis].min())
 
     def _target(zkey, axis):
         j = dst.get(zkey)
@@ -1701,24 +1995,26 @@ def auto_size_targets(jt, dst, body):
         return float(bw_[band, axis].max() - bw_[band, axis].min()) + ease
 
     spans = jt.setdefault("spans", {})
-    for span_key, zkey, jkey, r, kl, kr, axis, d in (
-            ("chest_w", "chest", "chest", r_ch,
+    for span_key, zkey, jkey, kl, kr, axis, d in (
+            ("chest_w", "chest", "chest",
              "chest_w_l", "chest_w_r", 0, Vector((1.0, 0.0, 0.0))),
-            ("chest_d", "chest", "chest", r_ch,
+            ("chest_d", "chest", "chest",
              "chest_d_f", "chest_d_b", 1, Vector((0.0, 1.0, 0.0))),
-            ("waist_w", "pelvis", "pelvis", r_wa,
+            ("waist_w", "pelvis", "pelvis",
              "waist_w_l", "waist_w_r", 0, Vector((1.0, 0.0, 0.0))),
-            ("waist_d", "pelvis", "pelvis", r_wa,
+            ("waist_d", "pelvis", "pelvis",
              "waist_d_f", "waist_d_b", 1, Vector((0.0, 1.0, 0.0)))):
-        if not r or jkey not in jt or kl in jt or kr in jt:
+        if jkey not in jt or kl in jt or kr in jt:
             continue
-        t = _target(zkey, axis)
-        if t is None:
+        des = _design(jkey, axis)
+        tgt = _target(zkey, axis)
+        if des is None or tgt is None or des < 1e-6:
             continue
+        tgt = float(np.clip(tgt, 0.8 * gs * des, 1.3 * gs * des))
         c = jt[jkey]
-        jt[kl] = c - d * (0.5 * t)
-        jt[kr] = c + d * (0.5 * t)
-        spans[span_key] = 2.0 * float(r)
+        jt[kl] = c - d * (0.5 * tgt)
+        jt[kr] = c + d * (0.5 * tgt)
+        spans[span_key] = des
 
 
 def auto_part_groups(g_ob, jt):
@@ -1747,6 +2043,7 @@ def auto_part_groups(g_ob, jt):
     radii = jt.get("radii") or {}
     t_r = float(radii.get("torso") or radii.get("chest")
                 or 0.22 * math.sqrt(L2))
+
     fills = {
         "SRF_Sleeve": (rho > 1.45 * t_r) & (w[:, 2] > p[2]),
         "SRF_Collar": w[:, 2] > nkv[2],
@@ -1760,6 +2057,7 @@ def auto_part_groups(g_ob, jt):
             continue
         vg = g_ob.vertex_groups.new(name=nm)
         vg.add([int(i) for i in np.nonzero(m)[0]], 1.0, 'REPLACE')
+        g_ob["srf_auto_parts"] = 1       # auto parts: no collar rigidify
 
 
 class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
@@ -1808,7 +2106,7 @@ class SMARTRIG_OT_mannequin_match(bpy.types.Operator):
         if auto:
             # ONE-CLICK AUTO: the wizard's pre-fill intelligence, headless
             try:
-                auto_size_targets(jt, dst, body)
+                auto_size_targets(jt, dst, body, g_ob)
             except Exception as e:
                 print("Soulify auto size:", e)
             try:

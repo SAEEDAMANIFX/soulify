@@ -111,3 +111,81 @@ medium - no joint detection, no invented binding. Map to Soulify:
 
 Next session order: (A) Data-Transfer binding + armature hookup,
 (B) ARAP + stiff panels, (C) regression matrix with the distortion metric.
+
+============================================================================
+# V2 - THE GARMENT-FIT MANNEQUIN PIPELINE (Saeed's full spec, 2026-07-03)
+============================================================================
+
+Saeed's words (translated): the addon must know the INNER LAYER of any
+garment; compute the VOLUME of its tubes; from that build a mannequin
+that FITS the garment; rig it and BIND the garment to it; then MATCH the
+mannequin's bones to the character's bones; weights get compared and the
+best result wins; in PRO the user gets a step list - see the mannequin,
+see the bones, see the weights, edit anything, then Fit; layers can be
+REGISTERED manually; buttons/Solidify/true multi-layer garments handled.
+
+## 1. Inner-layer detection (the foundation)
+A garment surface has an INSIDE (faces the body) and an OUTSIDE.
+- Solidify modifier: evaluate the modifier - the inner shell is the
+  offset surface whose normals point INTO the tube volume. Trivial case.
+- True multi-shell meshes (jacket + lining, collar band, plackets):
+  connected components (we have `_loose_components`) + NESTING test:
+  voxelize (VoxelBind machinery), component A is INSIDE component B when
+  rays from A's cells hit B in most directions (parity/winding). Order
+  components by nesting depth = LAYER INDEX (0 = innermost = lining).
+- Single-shell cloth: every face is both sides; "inner" = the surface
+  hit first when marching from the tube AXIS outward.
+- MANUAL OVERRIDE (Saeed): 'Register Selected as Layer 0/1/2' exactly
+  like the v1.32 part registration - SRF_Layer0/1/2 vertex groups, the
+  user's word is final. Buttons/hardware stay SRF_Rigid.
+
+## 2. Tube volume -> the FIT mannequin
+Per part domain (sleeve L/R, torso, legs - worn-state domains proven in
+v1.36.0): march the tube axis (`_trace_tube` exists), at each station
+measure the INNER-layer cross-section ring (median radius + center =
+`_ring_stats`). That radius sequence IS the mannequin's flesh:
+- mannequin joints = tube stations (shoulder/elbow/wrist... from the
+  traced centerline, not guesses)
+- Skin-modifier radii = inner radius - wearing ease (fabric never
+  intersects its mannequin by construction)
+- complete the human silhouette (head/hands/feet/legs, v1.36.3) for
+  parts the garment does not cover, proportional or from the character.
+
+## 3. Rig + bind
+- Armature from the mannequin joints (same names as the character map:
+  spine1/2, arm_l, fore_l, leg_l, shin_l...) - `build_garment_rig` DNA.
+- BIND = VoxelBind weights, garment verts -> MANNEQUIN bones. The bones
+  sit INSIDE the tubes the garment defines, so occlusion seeding and
+  geodesic domains are ideal here; LAYERS separate by construction
+  (voxel air gaps + layer index masks: heat never crosses layers).
+
+## 4. Bone match + morph (the placement)
+- mannequin bone -> character bone: 1:1 by name; `snap_rig_to_joints`
+  poses the mannequin rig onto the character joints (posed ORG- bones,
+  v1.28.1 lesson). The garment RIDES its bind. The collar encircles the
+  mannequin neck by construction -> lands on the character neck exactly
+  (kills the v1.36.3 collar failure structurally).
+- per-band girth: mannequin tube radii vs character limb radii give the
+  exact radial scale per station (replaces auto_size_targets bands).
+
+## 5. The weight JUDGE (compare, best result wins)
+Candidates: VoxelBind (default), body-class transfer (experimental),
+segment weights (fallback). Judge = the metrics we built this session:
+- torso/limb bleed (dominant-bone test per domain)
+- design damage (edge_distortion, local-affine)
+- pose probe: rotate arm/leg 40 deg, measure off-part displacement
+Winner per PART, not global - e.g. VoxelBind sleeves + transfer torso.
+All numbers shown in the PRO panel.
+
+## 6. PRO step list (the v1.29 wizard pattern, proven UX)
+Steps: 1 Mannequin (show/adjust radii sliders) -> 2 Bones (show rig,
+drag joints) -> 3 Weights (per-bone weight-paint preview + judge
+numbers) -> 4 Layers/Rigid (register selections) -> 5 FIT. Simple mode
+= one click through the same pipeline with judge defaults.
+
+## Build order (next sessions)
+A. inner layer + nesting (solidify/multi-shell/single) + layer register
+B. tube-volume mannequin (radii from inner layer) + rig + VoxelBind bind
+C. bone match/morph as the DEFAULT one-click path (retire the LBS warp
+   to fallback)
+D. judge + PRO step list.

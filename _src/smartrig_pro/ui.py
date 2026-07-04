@@ -392,23 +392,6 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             br = st.row(); br.scale_y = 1.5
             br.operator("smartrig.back_to_metarig",
                         text="Back to Metarig (edit more)", icon='LOOP_BACK')
-            # ---- Chest Jiggle (breast spring secondary motion) ----
-            has_breast = any(b.name in ("breast.L", "breast.R") for b in rig.data.bones)
-            if has_breast:
-                cj = box.box()
-                cj.label(text="Chest Jiggle", icon='PHYSICS')
-                if not rig.get("sk_chest_jiggle"):
-                    cj.prop(props, "chest_jiggle_segments", text="Segments")
-                    cr = cj.row(); cr.scale_y = 1.3
-                    cr.operator("smartrig.chest_jiggle", text="Jiggle Chest", icon='PHYSICS')
-                    cj.label(text="1 = rigid bounce, 3+ = soft jelly wobble.", icon='INFO')
-                else:
-                    sr = cj.row(align=True)
-                    sr.prop(props, "chest_jiggle_segments", text="Segments")
-                    sr.operator("smartrig.chest_jiggle", text="Rebuild", icon='FILE_REFRESH')
-                    cj.label(text="Live settings: N-panel > Item.", icon='INFO')
-                    op = cj.operator("smartrig.chest_jiggle", text="Remove", icon='X')
-                    op.remove = True
 
         nav = box.row(align=True)
         nav.operator("smartrig.back_to_markers", text="Back to Markers", icon='LOOP_BACK')
@@ -594,82 +577,91 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             if k_ob is None:
                 knb.label(text="Pick / select the kandura mesh first.", icon='INFO')
             else:
-                ad = knb.row(); ad.scale_y = 1.7
-                ad.operator("smartrig.kandura_autodetect",
-                            text="Auto-Detect Regions", icon='SHADERFX')
-                knb.label(text="Uses body bones - no loops needed.", icon='INFO')
-                in_edit = (context.mode == 'EDIT_MESH'
-                           and context.edit_object == k_ob)
-                if not in_edit:
-                    er = knb.row(); er.scale_y = 1.2
-                    er.operator("smartrig.kandura_edit",
-                                text="Manual: Register by Selection",
-                                icon='EDITMODE_HLT')
-                tg = knb.row(align=True)
-                tg.label(text="Has:")
-                tg.prop(props, "kandura_has_neck", toggle=True)
-                tg.prop(props, "kandura_has_placket", toggle=True)
-                tg.prop(props, "kandura_has_buttons", toggle=True)
-                tg.prop(props, "kandura_has_pocket", toggle=True)
-                tg2 = knb.row(align=True)
-                tg2.label(text="")
-                tg2.prop(props, "kandura_has_side_pockets", toggle=True)
-                knb.label(text="Alt+Click a loop, then Register it:", icon='MOUSE_LMB')
-                _hints = {'WAIST': "one loop at the waist",
-                          'SLEEVES': "both cuff loops together",
-                          'NECK': "the neck-opening loop",
-                          'PLACKET': "vertical center line (almarad)",
-                          'BUTTONS': "button verts, or use the object button below",
-                          'POCKET': "the chest-pocket patch (manual select)",
-                          'SIDE_POCKETS': "both hip pocket openings together"}
-                col = knb.column(align=True)
-                for _i, _rg in enumerate(_kn.enabled_regions(props)):
-                    if _rg == 'BUTTONS':
-                        _done = _kn.buttons_registered(k_ob)
-                    else:
-                        _done = _kn.region_registered(k_ob, _rg)
-                    r = col.row(align=True); r.scale_y = 1.3
-                    _nm = _rg.replace("_", " ").title()
-                    op = r.operator("smartrig.kandura_register",
-                                    text="%d) %s%s" % (_i + 1, _nm,
-                                                       "  OK" if _done else ""),
-                                    icon=('CHECKMARK' if _done else 'RESTRICT_SELECT_OFF'),
-                                    depress=_done)
-                    op.region = _rg
-                    if not _done:
-                        col.label(text="      " + _hints[_rg], icon='BLANK1')
-                if props.kandura_has_buttons and not _kn.buttons_registered(k_ob):
-                    bo = knb.row(); bo.scale_y = 1.2
-                    bo.operator("smartrig.kandura_buttons_objects",
-                                text="Register Button Objects (Object Mode)",
-                                icon='MESH_CIRCLE')
-                elif _kn.button_objects():
-                    knb.label(text="%d button objects registered" % len(_kn.button_objects()),
-                              icon='CHECKMARK')
-                if _kn.all_registered(k_ob, props):
-                    dn = knb.row(); dn.scale_y = 1.5
-                    dn.operator("smartrig.kandura_done",
-                                text="Continue - Edit Metarig", icon='OUTLINER_OB_ARMATURE')
+                # ---- Align to Surface + Mirror: on/off systems ----
+                al = knb.row(align=True); al.scale_y = 1.3
+                al.prop(props, "kandura_align_surface",
+                        text=("Align to Surface: ON"
+                              if props.kandura_align_surface
+                              else "Align to Surface: OFF"),
+                        toggle=True,
+                        icon=('SNAP_ON' if props.kandura_align_surface
+                              else 'SNAP_OFF'))
+                mi = knb.row(align=True); mi.scale_y = 1.3
+                mi.prop(props, "kandura_mirror",
+                        text=("Mirror: ON" if props.kandura_mirror
+                              else "Mirror: OFF"),
+                        toggle=True,
+                        icon=('MOD_MIRROR' if props.kandura_mirror
+                              else 'X'))
+                fo = knb.row(align=True); fo.scale_y = 1.3
+                fo.prop(props, "kandura_focus",
+                        text=("Body Bones: HIDDEN" if props.kandura_focus
+                              else "Body Bones: SHOWN"),
+                        toggle=True,
+                        icon=('HIDE_ON' if props.kandura_focus
+                              else 'HIDE_OFF'))
+                if context.mode == 'EDIT_ARMATURE':
+                    an = knb.column(align=True); an.scale_y = 1.2
+                    an.operator("smartrig.kandura_align_now",
+                                text="Align Selected to Surface",
+                                icon='MOD_SHRINKWRAP')
+                    an.operator("smartrig.kandura_mirror_now",
+                                text="Mirror Selected to Other Side",
+                                icon='MOD_MIRROR')
+                knb.separator()
+                # ---- Waist-down ----
                 st = knb.column(align=True)
                 st.label(text="Waist-down:", icon='MOD_CLOTH')
                 sr_ = st.row(align=True)
-                sr_.prop(props, "skirt_columns", text="Columns")
-                sr_.prop(props, "skirt_rows", text="Rows")
+                sr_.prop(props, "kandura_columns", text="Columns")
+                sr_.prop(props, "kandura_rows", text="Rows x2")
+                bw = st.row(align=True); bw.scale_y = 1.5
+                bw.operator("smartrig.kandura_add_waist",
+                            text="Add Waist-Down Bones", icon='ADD')
+                _ow = bw.operator("smartrig.kandura_remove", text="",
+                                  icon='TRASH')
+                _ow.part = 'WAIST'
+                # ---- Sleeves ----
+                st.separator()
                 st.label(text="Sleeves:", icon='BONE_DATA')
                 sl_ = st.row(align=True)
                 sl_.prop(props, "kandura_sleeve_upper", text="Upper Arm")
                 sl_.prop(props, "kandura_sleeve_lower", text="Lower Arm")
-                br = knb.row(); br.scale_y = 1.7
-                br.operator("smartrig.kandura_build",
-                            text="Build Kandura Rig", icon='MOD_CLOTH')
-                _mo = bpy.data.objects.get("SR_Metarig")
-                if _mo is not None and _mo.get("sr_kandura"):
-                    rm = knb.row()
-                    rm.operator("smartrig.kandura_remove",
-                                text="Remove Kandura Rig", icon='TRASH')
-                if any(_kn.region_registered(k_ob, r0) for r0 in ('WAIST', 'SLEEVES', 'NECK')):
-                    knb.operator("smartrig.kandura_clear",
-                                 text="Clear Regions", icon='TRASH')
+                bs = st.row(align=True); bs.scale_y = 1.5
+                bs.operator("smartrig.kandura_add_sleeves",
+                            text="Add Sleeve Bones", icon='ADD')
+                _os = bs.operator("smartrig.kandura_remove", text="",
+                                  icon='TRASH')
+                _os.part = 'SLEEVES'
+                # ---- Collar ----
+                st.separator()
+                st.label(text="Collar:", icon='MESH_CIRCLE')
+                cl_ = st.row(align=True)
+                cl_.prop(props, "kandura_collar_count", text="Bones")
+                bc = st.row(align=True); bc.scale_y = 1.5
+                bc.operator("smartrig.kandura_add_collar",
+                            text="Add Collar Bones", icon='ADD')
+                _oc = bc.operator("smartrig.kandura_remove", text="",
+                                  icon='TRASH')
+                _oc.part = 'COLLAR'
+                # ---- Cuffs ----
+                st.separator()
+                st.label(text="Cuffs (wrist):", icon='MESH_CIRCLE')
+                cf_ = st.row(align=True)
+                cf_.prop(props, "kandura_cuff_count", text="Bones")
+                bf = st.row(align=True); bf.scale_y = 1.5
+                bf.operator("smartrig.kandura_add_cuffs",
+                            text="Add Cuff Bones", icon='ADD')
+                _of = bf.operator("smartrig.kandura_remove", text="",
+                                  icon='TRASH')
+                _of.part = 'CUFF'
+                knb.label(text="Re-Add keeps your manual placement.",
+                          icon='INFO')
+                rm = knb.row(); rm.scale_y = 1.2
+                _oa = rm.operator("smartrig.kandura_remove",
+                                  text="Remove ALL Kandura Bones",
+                                  icon='TRASH')
+                _oa.part = 'ALL'
 
         box.separator()
         gen = box.row(); gen.scale_y = 1.6
@@ -722,7 +714,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         h.label(text="", icon='SNAP_MIDPOINT')
         if not props.show_align:
             return
-        box.label(text="Align selected (markers):", icon='SNAP_MIDPOINT')
+        box.label(text="Align selected (markers or bones):", icon='SNAP_MIDPOINT')
         ao = box.row(align=True)
         ao.label(text="Space:")
         ao.prop(props, "align_orient", expand=True)
@@ -740,18 +732,17 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
 
     def _marker_tools(self, layout, context):
         props = context.scene.smartrig
-        # ---- Lock Mesh Selection: only relevant WHILE placing/editing markers.
-        # Once the rig is generated it auto-unlocks and the box disappears
-        # (still shown if it's somehow left locked, so the user can free it). ----
-        if (not props.rig_generated) or props.guide_active or props.lock_mesh:
-            lb = layout.box()
-            lb.alert = props.lock_mesh
-            lr = lb.row(); lr.scale_y = 1.3
-            lr.prop(props, "lock_mesh", toggle=True,
-                    text=("MESH LOCKED — markers only" if props.lock_mesh else "Lock Mesh Selection"),
-                    icon=('LOCKED' if props.lock_mesh else 'UNLOCKED'))
-            if props.lock_mesh:
-                lb.label(text="Character not selectable — unlock to select it.", icon='INFO')
+        # ---- Lock Mesh Selection: ALWAYS available so you can freely edit the
+        # markers without grabbing the character by mistake, before OR after
+        # generating (Saeed's request). ----
+        lb = layout.box()
+        lb.alert = props.lock_mesh
+        lr = lb.row(); lr.scale_y = 1.3
+        lr.prop(props, "lock_mesh", toggle=True,
+                text=("MESH LOCKED — markers only" if props.lock_mesh else "Lock Mesh Selection"),
+                icon=('LOCKED' if props.lock_mesh else 'UNLOCKED'))
+        if props.lock_mesh:
+            lb.label(text="Character not selectable — unlock to select it.", icon='INFO')
         has_ref = bpy.data.objects.get(utils.REF_NAME) is not None
         tb = layout.box()
         _th = tb.row(align=True)
@@ -770,6 +761,16 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             vis.operator("smartrig.toggle_skeleton",
                          text=("Show Skeleton" if hidden else "Hide Skeleton"),
                          icon=('HIDE_ON' if hidden else 'HIDE_OFF'))
+        _mo = bpy.data.objects.get('SR_Metarig')
+        if _mo is not None:
+            _mh = False
+            try:
+                _mh = _mo.hide_get()
+            except Exception:
+                _mh = _mo.hide_viewport
+            vis.operator("smartrig.toggle_metarig",
+                         text=("Show Metarig" if _mh else "Hide Metarig"),
+                         icon=('HIDE_ON' if _mh else 'HIDE_OFF'))
         er = tb.row(align=True)
         er.operator("smartrig.edit_markers", text="Edit Markers", icon='GREASEPENCIL')
         er.operator("smartrig.reset_markers", text="Reset to Default", icon='LOOP_BACK')
@@ -825,8 +826,16 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         eng = layout.box()
         eng.label(text="Bind Engine", icon='MOD_VERTEX_WEIGHT')
         eng.prop(props, "skin_engine", text="Engine")
+        eng.prop(props, "skin_smart_bones", icon='ARMATURE_DATA')
         eng.prop(props, "skin_split_parts")
-        eng.prop(props, "skin_preserve_volume")
+        eng.prop(props, "skin_optimize_highres")
+        _hr = eng.row()
+        _hr.enabled = props.skin_optimize_highres
+        _hr.prop(props, "skin_polycount_threshold")
+        eng.prop(props, "skin_refine_head")
+        eng.prop(props, "skin_smooth_twist")
+        eng.prop(props, "skin_improve_hips")
+        eng.prop(props, "skin_improve_heels")
         has_skirt_b = any(b.name.startswith("DEF-skirt.") for b in rig.pose.bones)
         if has_skirt_b:
             eng.prop(props, "skin_smart_skirt")
@@ -847,12 +856,198 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                             text="Register Skirt Selection", icon='GROUP_VERTEX')
             ready = knows_skirt
 
+        fb = layout.box()
+        fr = fb.row(align=True)
+        fr.prop(props, "show_skin_facial", text="",
+                icon=('TRIA_DOWN' if props.show_skin_facial else 'TRIA_RIGHT'),
+                emboss=False)
+        fr.label(text="Facial Features")
+        fr.prop(props, "skin_facial", text="")
+        if props.show_skin_facial:
+            fb.operator("smartrig.skin_facial_detect",
+                        text="Auto-Detect (by name)", icon='VIEWZOOM')
+            fb.prop(props, "skin_eye_l")
+            fb.prop(props, "skin_eye_r")
+            fb.prop(props, "skin_teeth_up")
+            fb.prop(props, "skin_teeth_low")
+            fb.prop(props, "skin_tongue")
+            fb.label(text="Eyes/teeth -> head-area bones, rigid.", icon='INFO')
+
+        # ---- Fine Skinning: register each finger BY NAME (no bleed) ----
+        gb = layout.box()
+        gr = gb.row(align=True)
+        gr.prop(props, "show_skin_fine", text="",
+                icon=('TRIA_DOWN' if props.show_skin_fine else 'TRIA_RIGHT'),
+                emboss=False)
+        gr.label(text="Fine Skinning (per finger)", icon='HAND')
+        if props.show_skin_fine:
+            from . import skirt as _skf
+            _mesh = props.target_mesh
+            gb.label(text="Pick each finger's verts, name it, Bind = crisp finger.",
+                     icon='INFO')
+            _inwp = (context.object is _mesh and _mesh is not None
+                     and _mesh.mode == 'WEIGHT_PAINT') if False else False
+            try:
+                _inwp = (context.object is props.target_mesh
+                         and props.target_mesh is not None
+                         and props.target_mesh.mode == 'WEIGHT_PAINT')
+            except Exception:
+                _inwp = False
+            wpr = gb.row(align=True); wpr.scale_y = 1.3
+            wpr.operator("smartrig.weight_paint",
+                         text=("Leave Weight Paint" if _inwp else "View Weights (Weight Paint)"),
+                         icon=('LOOP_BACK' if _inwp else 'WPAINT_HLT'),
+                         depress=_inwp)
+            # ---------- HAND ----------
+            hb = gb.box()
+            hr = hb.row(align=True)
+            hr.prop(props, "skin_fine_hands", text="Fingers", toggle=True)
+            hr.operator("smartrig.fine_autodetect", text="Auto-Split All",
+                        icon='VIEWZOOM').kind = 'hand'
+            hr.operator("smartrig.fine_mirror", text="",
+                        icon='MOD_MIRROR').kind = 'hand'
+            hr.operator("smartrig.refine_fingers", text="", icon='BONE_DATA')
+            from . import arp_ai as _arpai
+            if _arpai.fingers_available():
+                hr.operator("smartrig.ai_fingers", text="", icon='SHADERFX')
+            for f in _skf.FINGER_NAMES:
+                cnt = 0
+                if _mesh is not None:
+                    cnt = len(_skf._fine_region(_mesh, f, ".L")) + \
+                          len(_skf._fine_region(_mesh, f, ".R"))
+                row = hb.row(align=True)
+                row.label(text=f.title(),
+                          icon=('CHECKMARK' if cnt else 'DOT'))
+                op = row.operator("smartrig.fine_register", text="Register")
+                op.finger = f
+                _wp = row.operator("smartrig.weight_paint", text="",
+                                   icon='WPAINT_HLT')
+                _wp.finger = f; _wp.side = ".L"
+                if cnt:
+                    row.operator("smartrig.fine_select", text="",
+                                 icon='RESTRICT_SELECT_OFF').finger = f
+                    row.label(text="%d" % cnt)
+            hb.operator("smartrig.fine_clear", text="Clear Fingers",
+                        icon='X').kind = 'hand'
+            # ---------- FOOT ----------
+            fb2 = gb.box()
+            fr2 = fb2.row(align=True)
+            fr2.prop(props, "skin_fine_feet", text="Toes", toggle=True)
+            fr2.operator("smartrig.fine_autodetect", text="Auto-Split All",
+                         icon='VIEWZOOM').kind = 'foot'
+            fr2.operator("smartrig.fine_mirror", text="",
+                         icon='MOD_MIRROR').kind = 'foot'
+            for f in _skf.TOE_NAMES:
+                cnt = 0
+                if _mesh is not None:
+                    cnt = len(_skf._fine_region(_mesh, f, ".L")) + \
+                          len(_skf._fine_region(_mesh, f, ".R"))
+                row = fb2.row(align=True)
+                row.label(text=f.title(), icon=('CHECKMARK' if cnt else 'DOT'))
+                row.operator("smartrig.fine_register", text="Register").finger = f
+                if cnt:
+                    row.operator("smartrig.fine_select", text="",
+                                 icon='RESTRICT_SELECT_OFF').finger = f
+                    row.label(text="%d" % cnt)
+            fb2.operator("smartrig.fine_clear", text="Clear Toes",
+                         icon='X').kind = 'foot'
+
         bnd = layout.box()
         bnd.label(text="Bind", icon='POSE_HLT')
+        # SMART scene doctor: warn about old-rig clutter BEFORE the user binds
+        try:
+            from . import skirt as _skh
+            _h = _skh.scene_health_scan(context)
+            _nh = _skh.scene_health_total(_h)
+        except Exception:
+            _nh = 0
+        if _nh:
+            hb = bnd.box()
+            hb.alert = True
+            hb.label(text="%d old-rig leftover(s) clutter the scene" % _nh,
+                     icon='GHOST_ENABLED')
+            hb.label(text="They look like a broken rig. Clean up:", icon='INFO')
+            rr = hb.row(align=True)
+            rr.operator("smartrig.scene_fix", text="Hide Them",
+                        icon='HIDE_ON').mode = 'HIDE'
+            rr.operator("smartrig.scene_fix", text="Delete Them",
+                        icon='TRASH').mode = 'DELETE'
+        bnd.prop(props, "skin_selected_bones_only")
+        if props.skin_selected_bones_only:
+            from . import skirt as _skm
+            if bpy.app.version >= (5, 0, 0):
+                _nsel = sum(1 for _pb in rig.pose.bones
+                            if _pb.select and _pb.bone.use_deform)
+            else:
+                _nsel = sum(1 for _pb in rig.pose.bones
+                            if _pb.bone.select and _pb.bone.use_deform)
+            pk = bnd.box()
+            hdr = pk.row(align=True)
+            hdr.prop(props, "show_skin_pick", text="",
+                     icon=('TRIA_DOWN' if props.show_skin_pick
+                           else 'TRIA_RIGHT'), emboss=False)
+            hdr.label(text="Pick Bones  -  %d selected" % _nsel,
+                      icon='RESTRICT_SELECT_OFF')
+            if props.show_skin_pick:
+                r = pk.row(align=True)
+                r.operator("smartrig.selbones_pick", text="All").part = 'ALL'
+                r.operator("smartrig.selbones_pick", text="None").part = 'NONE'
+                r = pk.row(align=True)
+                r.operator("smartrig.selbones_pick", text="Spine").part = 'SPINE'
+                r.operator("smartrig.selbones_pick", text="Arms").part = 'ARMS'
+                r.operator("smartrig.selbones_pick", text="Legs").part = 'LEGS'
+                r = pk.row(align=True)
+                r.operator("smartrig.selbones_pick", text="Feet").part = 'FEET'
+                r.operator("smartrig.selbones_pick", text="Fingers").part = 'FINGERS'
+                _hasb = lambda pfx: any(b.name.startswith(pfx)
+                                        for b in rig.data.bones)
+                r2 = pk.row(align=True)
+                _any2 = False
+                for _pfx, _lbl, _prt in (("DEF-skirt.", "Skirt", 'SKIRT'),
+                                         ("DEF-kan_sleeve.", "Sleeves", 'SLEEVES'),
+                                         ("DEF-kan_collar.", "Collar", 'COLLAR'),
+                                         ("DEF-kan_cuff.", "Cuffs", 'CUFFS')):
+                    if _hasb(_pfx):
+                        r2.operator("smartrig.selbones_pick", text=_lbl).part = _prt
+                        _any2 = True
+                if not _any2:
+                    r2.label(text="")
+                # SMART SCAN: any OTHER deform bones (Rigify samples - tail,
+                # wings, face...) get their own auto-detected buttons.
+                try:
+                    _tops, _rest = _skm.pick_extra_split(rig)
+                except Exception:
+                    _tops, _rest = [], []
+                for _i in range(0, len(_tops), 3):
+                    _rr = pk.row(align=True)
+                    for _root, _names in _tops[_i:_i + 3]:
+                        _o = _rr.operator(
+                            "smartrig.selbones_pick",
+                            text="%s (%d)" % (_root.title(), len(_names)))
+                        _o.part = 'DYN:' + _root
+                if _rest:
+                    pk.operator("smartrig.selbones_pick",
+                                text="Other (%d)" % len(_rest)).part = 'OTHER'
+                pk.label(text="Twist bones follow their limb automatically.",
+                         icon='INFO')
+        bnd.prop(props, "skin_selected_verts_only")
+        bnd.prop(props, "skin_apply_shapekeys")
+        bnd.prop(props, "skin_preserve_volume")
+        bnd.prop(props, "skin_scale_fix")
         row = bnd.row(align=True); row.scale_y = 1.6
         sub = row.row(align=True); sub.enabled = ready
         sub.operator("smartrig.bind", text="Bind", icon='MOD_VERTEX_WEIGHT')
         row.operator("smartrig.unbind", text="Unbind", icon='X')
+        # finger scale-curl repair (only shown when the drivers are missing)
+        try:
+            from . import skirt as _skf
+            if _skf.finger_curl_missing(rig):
+                fx = bnd.box(); fx.alert = True
+                fx.label(text="Fingers won't curl when scaled", icon='ERROR')
+                fx.operator("smartrig.fix_finger_curl",
+                            text="Fix Finger Curl", icon='HAND')
+        except Exception:
+            pass
         if has_skirt and props.skin_split_parts:
             bnd.label(text="Body ignores skirt bones; skirt follows its own.", icon='INFO')
 
@@ -892,16 +1087,6 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                             text=("Baked" if _sbaked else "Bake"),
                             icon=('CHECKMARK' if _sbaked else 'ACTION'),
                             depress=_sbaked).remove = False
-            if krig.get("sk_chest_jiggle"):
-                _any_live = True
-                cr = cb.row(align=True)
-                cr.label(text="Chest Jiggle", icon='PHYSICS')
-                _cbaked = (bool(krig.get("sk_chest_jiggle_baked"))
-                           or _sk.chest_jiggle_has_keys(krig))
-                cr.operator("smartrig.chest_bake",
-                            text=("Baked" if _cbaked else "Bake"),
-                            icon=('CHECKMARK' if _cbaked else 'ACTION'),
-                            depress=_cbaked).remove = False
             if krig.get("sk_follow") or krig.get("sk_antipen"):
                 _any_live = True
                 cb.label(text="Follow Body / Anti-Penetration active",
@@ -1266,7 +1451,7 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
     def poll(cls, context):
         from . import skirt
         rig = skirt.kilt_rig(context)
-        # show only for actual SKIRT features (chest jiggle has its own panel)
+        # show only for actual SKIRT features
         return rig is not None and any(rig.get(k) for k in
                                        ("sk_kilt", "sk_jiggle", "sk_follow", "sk_antipen"))
 
@@ -1349,67 +1534,14 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
             ab.label(text="Anti-Penetration", icon='MOD_SHRINKWRAP')
             ab.prop(context.scene.smartrig, "skirt_antipen_offset", text="Offset", slider=True)
         if (mpb is None or "collide" not in mpb) and "jiggle" not in rig \
-                and "chest_jiggle" not in rig and fmod is None and amod is None:
+                and fmod is None and amod is None:
             layout.label(text="Apply Collision / Jiggle / Follow first.", icon='INFO')
             return
         layout.separator()
         layout.label(text="Keyframe these to animate the cloth.", icon='KEYTYPE_KEYFRAME_VEC')
 
 
-class SMARTRIG_PT_chest_item(bpy.types.Panel):
-    """Chest-jiggle live settings, in its OWN N-panel Item section (separate
-    from the skirt) so the animator can tweak + keyframe the bounce."""
-    bl_label = "Chest Jiggle"
-    bl_idname = "SMARTRIG_PT_chest_item"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Item"
-
-    @classmethod
-    def poll(cls, context):
-        from . import skirt
-        rig = skirt.kilt_rig(context)
-        return rig is not None and bool(rig.get("sk_chest_jiggle"))
-
-    def draw_header(self, context):
-        self.layout.label(text="", icon='PHYSICS')
-
-    def draw(self, context):
-        from . import skirt
-        layout = self.layout
-        rig = skirt.kilt_rig(context)
-        if rig is None or "chest_jiggle" not in rig:
-            return
-        c = layout.column(align=True)
-        c.prop(rig, '["chest_jiggle"]', text="Enable", slider=True)
-        c.prop(rig, '["chest_jiggle_amount"]', text="Strength", slider=True)
-        c.prop(rig, '["chest_jiggle_stiffness"]', text="Stiffness", slider=True)
-        c.prop(rig, '["chest_jiggle_damping"]', text="Damping", slider=True)
-        fb = layout.column(align=True)
-        fb.label(text="Wind & Gravity (chest)", icon='FORCE_WIND')
-        fb.prop(context.scene.smartrig, "chest_gravity", text="Gravity", slider=True)
-        fb.prop(context.scene.smartrig, "chest_wind", text="Wind", slider=True)
-        fb.prop(context.scene.smartrig, "chest_wind_speed", text="Wind Speed", slider=True)
-        wr = fb.row(align=True)
-        wr.prop(context.scene.smartrig, "chest_wind_dir", text="Dir")
-        wr.prop(context.scene.smartrig, "chest_wind_turb", text="Gust")
-        baked = bool(rig.get("sk_chest_jiggle_baked")) or skirt.chest_jiggle_has_keys(rig)
-        if baked:
-            bx = layout.box()
-            bx.label(text="BAKED to keyframes - live solver OFF", icon='CHECKMARK')
-        else:
-            layout.label(text="Live (not baked).", icon='PLAY')
-        br = layout.row(align=True)
-        br.operator("smartrig.chest_bake",
-                    text=("Baked ✓" if baked else "Bake"),
-                    icon=('CHECKMARK' if baked else 'ACTION'),
-                    depress=baked).remove = False
-        br.operator("smartrig.chest_bake", text="Clear Bake", icon='TRASH').remove = True
-        layout.label(text="Play to preview, or Bake for render/export.",
-                     icon='KEYTYPE_KEYFRAME_VEC')
-
-
-classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item, SMARTRIG_PT_chest_item)
+classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item)
 
 
 def register():

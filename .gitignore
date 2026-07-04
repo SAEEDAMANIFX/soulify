@@ -22,3 +22,17 @@ desktop.ini
 *.bundle
 soulify_v*.zip
 smartrig_pro_v*.zip
+
+# --- session 2026-07-04 ---
+# ARP author's AI packages: ~1GB per OS, given to Saeed for HIS use.
+# NEVER commit / redistribute without the ARP author's written permission.
+AI/
+AI_*.zip
+# ARP proprietary source copied for research - never commit
+research/arp_src/
+# debug renders / temp
+_*.png
+_*.jpg
+zin555Ub/
+# random temp junk files
+zi??????

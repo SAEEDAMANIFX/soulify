@@ -127,9 +127,116 @@ def has_manual(part=None, side="L"):
     return len(list_fingers(part, side)) > 0
 
 
+def _smooth_monotonic(pts):
+    """Turn a scattered / out-of-order / outlier-ridden finger marker chain into
+    a CLEAN monotonic finger:
+      1. drop wild outliers (markers far from the finger cluster - e.g. one that
+         slipped onto the chest),
+      2. find the two most-separated points = base & tip,
+      3. SORT every joint by how far it is along base->tip (so joints that were
+         clicked out of order can never make a bone reverse -> no torn fist),
+      4. keep only a light amount of the sideways curve.
+    This is why the user never has to place perfect markers - the addon cleans
+    them."""
+    from mathutils import Vector as _V
+    if len(pts) < 3:
+        return [p.copy() for p in pts]
+    P = [p.copy() for p in pts]
+    # 1) drop outliers: median centre, toss anything absurdly far
+    cx = sum((p.x for p in P)) / len(P)
+    cy = sum((p.y for p in P)) / len(P)
+    cz = sum((p.z for p in P)) / len(P)
+    c = _V((cx, cy, cz))
+    ds = sorted((p - c).length for p in P)
+    med = ds[len(ds) // 2] or 1e-4
+    kept = [p for p in P if (p - c).length < max(6.0 * med, 0.09)]
+    if len(kept) < 2:
+        kept = P
+    # 2) base & tip = the two most separated kept points
+    base, tip, best = kept[0], kept[-1], -1.0
+    for i in range(len(kept)):
+        for j in range(i + 1, len(kept)):
+            d = (kept[i] - kept[j]).length
+            if d > best:
+                best = d; base, tip = kept[i], kept[j]
+    axis = tip - base
+    L = axis.length
+    if L < 1e-5:
+        return [p.copy() for p in pts]
+    axn = axis / L
+    # 3) sort by projection along base->tip
+    kept.sort(key=lambda p: (p - base).dot(axn))
+    n = len(kept) - 1
+    from mathutils import Vector as _V
+    perps = [p - (base + axn * (p - base).dot(axn)) for p in kept]
+    # dominant bend direction = where the finger actually curls (avg interior
+    # perp). We KEEP the full curl along this direction (fingers must be gently
+    # curved, not straight - straight fingers deform badly) but STRIP the
+    # sideways wobble that made bones zig-zag.
+    bend = _V((0.0, 0.0, 0.0))
+    for pp in perps[1:-1]:
+        bend += pp
+    if bend.length > 1e-6:
+        bend.normalize()
+    else:
+        bend = perps[len(perps) // 2].normalized() if perps else _V((0, 0, 1))
+    out = []
+    run = 0.0
+    for i, p in enumerate(kept):
+        along = base + axn * (i / n * L)             # even, monotonic spine
+        pp = perps[i]
+        fwd = pp.dot(bend)                            # curl amount (this joint)
+        run = max(run, fwd) if i else fwd            # MONOTONIC -> never uncurl
+        side = pp - bend * fwd                        # sideways wobble
+        out.append(along + bend * run + side * 0.15)  # full curl, kill wobble
+    out[0] = base; out[-1] = tip
+    return out
+
+
+def _repair_degenerate(chains, part):
+    """A finger whose markers collapsed (clustered / missing tip) gets rebuilt as
+    a straight chain: same base, extended along the OTHER fingers' average
+    direction to the median finger length. So one bad finger can't break the
+    hand - the addon fills it in for the user."""
+    from mathutils import Vector as _V
+    four = [nm for nm in chains if not (part == "hand" and nm == "thumb")]
+    spans = {nm: (chains[nm][-1] - chains[nm][0]).length for nm in four if len(chains[nm]) >= 2}
+    if len(spans) < 2:
+        return chains
+    good = [nm for nm in spans]
+    sv = sorted(spans.values())
+    med = sv[len(sv) // 2]
+    # average unit direction of the healthy fingers
+    avg = _V((0.0, 0.0, 0.0)); nn = 0
+    for nm in good:
+        d = chains[nm][-1] - chains[nm][0]
+        if d.length > 0.4 * med:
+            avg += d.normalized(); nn += 1
+    if nn == 0:
+        return chains
+    avg = (avg / nn).normalized()
+    for nm in four:
+        ch = chains.get(nm)
+        if not ch or len(ch) < 2:
+            continue
+        sp = spans.get(nm, 0.0)
+        if sp < 0.5 * med or sp > 1.8 * med:          # too short OR outlier tip
+            base = ch[0].copy()
+            tip = base + avg * med
+            chains[nm] = [base.lerp(tip, k / 3.0) for k in range(4)]
+    return chains
+
+
 def manual_chains_world(part, side="L"):
-    return {nm: [o.location.copy() for o in chain]
-            for nm, chain in list_fingers(part, side).items() if len(chain) >= 2}
+    chains = {}
+    for nm, chain in list_fingers(part, side).items():
+        if len(chain) < 2:
+            continue
+        pts = [o.location.copy() for o in chain]
+        chains[nm] = _smooth_monotonic(pts) if len(pts) >= 3 else pts
+    if part == "hand" and len(chains) >= 3:
+        chains = _repair_degenerate(chains, part)
+    return chains
 
 
 def straighten(part, side, nm):
@@ -566,29 +673,64 @@ class SMARTRIG_OT_align_selected(bpy.types.Operator):
                ('NORMAL', "Normal", "The finger's own direction (won't distort a tilted finger)"),
                ('BOX', "Box", "The selection's oriented bounding box")])
 
-    def execute(self, context):
+    def _flatten(self, pts):
+        """Return the flattened positions of an (N,3) point cloud along self.axis
+        (GLOBAL world axis, or NORMAL/BOX = the selection's own PCA frame)."""
         import numpy as np
-        from mathutils import Vector as _V
-        sel = [o for o in context.selected_objects if o.type == 'EMPTY']
-        if len(sel) < 2:
-            self.report({'WARNING'}, "Select 2 or more markers first.")
-            return {'CANCELLED'}
-        P = np.array([[o.location.x, o.location.y, o.location.z] for o in sel], dtype=float)
+        P = np.array(pts, dtype=float)
         c = P.mean(0)
         ai = {'X': 0, 'Y': 1, 'Z': 2}[self.axis]
-        if self.orient == 'GLOBAL' or len(sel) < 3:
-            frame = np.eye(3)               # world axes
+        if self.orient == 'GLOBAL' or len(P) < 3:
+            frame = np.eye(3)
         else:
-            cov = np.cov((P - c).T)         # NORMAL/BOX -> local (PCA) frame
+            cov = np.cov((P - c).T)
             w, v = np.linalg.eigh(cov)
-            order = w.argsort()[::-1]       # X=longest (finger length), Y/Z=perp
+            order = w.argsort()[::-1]
             frame = v[:, order].T
-        a = frame[ai]
-        a = a / (np.linalg.norm(a) or 1.0)
+        a = frame[ai]; a = a / (np.linalg.norm(a) or 1.0)
         cproj = float(c.dot(a))
-        for o, p in zip(sel, P):
-            d = float(p.dot(a)) - cproj     # flatten the selection along this axis
-            q = p - d * a
+        out = []
+        for p in P:
+            d = float(p.dot(a)) - cproj
+            out.append(p - d * a)
+        return out
+
+    def execute(self, context):
+        from mathutils import Vector as _V
+        # ----- BONES: Edit Mode on an armature with selected joints -----
+        ob = context.active_object
+        if context.mode == 'EDIT_ARMATURE' and ob is not None and ob.type == 'ARMATURE':
+            eb = ob.data.edit_bones
+            # collect the SELECTED joint points (head and/or tail), de-duplicated
+            joints = []          # (edit_bone, 'head'/'tail')
+            pts = []
+            for b in eb:
+                if b.select_head or b.select:
+                    joints.append((b, 'head')); pts.append(list(b.head))
+                if b.select_tail or b.select:
+                    joints.append((b, 'tail')); pts.append(list(b.tail))
+            if len(pts) < 2:
+                self.report({'WARNING'}, "Select 2+ bone joints (heads/tails) in Edit Mode.")
+                return {'CANCELLED'}
+            newpts = self._flatten(pts)
+            for (b, end), q in zip(joints, newpts):
+                v = _V((float(q[0]), float(q[1]), float(q[2])))
+                if end == 'head':
+                    b.head = v
+                else:
+                    b.tail = v
+            for ar in context.window.screen.areas:
+                ar.tag_redraw()
+            self.report({'INFO'}, "Aligned %d bone joint(s) on %s." % (len(joints), self.axis))
+            return {'FINISHED'}
+        # ----- MARKERS: selected empties -----
+        sel = [o for o in context.selected_objects if o.type == 'EMPTY']
+        if len(sel) < 2:
+            self.report({'WARNING'}, "Select 2+ markers, or 2+ bone joints in Edit Mode.")
+            return {'CANCELLED'}
+        pts = [[o.location.x, o.location.y, o.location.z] for o in sel]
+        newpts = self._flatten(pts)
+        for o, q in zip(sel, newpts):
             o.location = _V((float(q[0]), float(q[1]), float(q[2])))
         for ar in context.window.screen.areas:
             ar.tag_redraw()
@@ -632,6 +774,16 @@ def _clamp_inside(scene, depsgraph):
     if _CLAMPING:
         return
     p = getattr(scene, "smartrig", None)
+    # ONLY clamp while the user is actively PLACING/EDITING finger markers before
+    # the rig exists. After Generate the markers must FREEZE - otherwise every
+    # depsgraph tick (e.g. posing the fingers after binding) drags them onto the
+    # mesh and the finger BONE PLACEMENT silently changes ("bones move by
+    # themselves"). Saeed's exact bug.
+    if p is None:
+        return
+    # FREEZE after Generate - never move finger markers once the rig exists
+    if getattr(p, "rig_generated", False):
+        return
     mesh = p.target_mesh if p else None
     if mesh is None or mesh.type != 'MESH':
         return

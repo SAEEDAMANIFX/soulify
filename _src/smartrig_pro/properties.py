@@ -184,7 +184,84 @@ def _jiggle_force_update(self, context):
         print("SmartRig force tune:", e)
 
 
+def _skin_selbones_update(self, context):
+    """Selected Bones Only: show ONLY deform bones while picking; restore on off."""
+    try:
+        from . import skirt
+        skirt.selected_bones_focus(context, self.skin_selected_bones_only)
+    except Exception as e:
+        print("Soulify selected-bones focus:", e)
+
+
+def _kandura_grid_update(self, context):
+    """REAL-TIME: Columns/Rows change -> rebuild the waist grid immediately,
+    following the placed shape (subdivide-style)."""
+    try:
+        from . import kandura
+        kandura.live_rebuild_waist(context)
+    except Exception as e:
+        print("SmartRig kandura live grid:", e)
+
+
+def _kandura_sleeve_update(self, context):
+    """REAL-TIME: sleeve bone counts -> rebuild the sleeve chains."""
+    try:
+        from . import kandura
+        kandura.live_rebuild_sleeves(context)
+    except Exception as e:
+        print("SmartRig kandura live sleeves:", e)
+
+
+def _kandura_collar_update(self, context):
+    """REAL-TIME: collar count -> rebuild the collar ring."""
+    try:
+        from . import kandura
+        kandura.live_rebuild_collar(context)
+    except Exception as e:
+        print("SmartRig kandura live collar:", e)
+
+
+def _kandura_cuff_update(self, context):
+    """REAL-TIME: cuff count -> rebuild the wrist rings."""
+    try:
+        from . import kandura
+        kandura.live_rebuild_cuffs(context)
+    except Exception as e:
+        print("SmartRig kandura live cuff:", e)
+
+
+def _kandura_focus_update(self, context):
+    """Hide/show the body bones (focus on kandura bone placement)."""
+    try:
+        from . import kandura
+        kandura.focus_apply(context, self.kandura_focus)
+    except Exception as e:
+        print("SmartRig kandura focus:", e)
+
+
+def _kandura_mirror_update(self, context):
+    """Start/stop X-axis mirroring while placing the kandura bones."""
+    try:
+        from . import kandura
+        kandura.mirror_apply(context, self.kandura_mirror)
+    except Exception as e:
+        print("SmartRig kandura mirror:", e)
+
+
+def _kandura_align_update(self, context):
+    """Start/stop the Align-to-Surface system: FACE snapping so dragged bone
+    points stick to the garment surface while placing them manually."""
+    try:
+        from . import kandura
+        kandura.align_snap_apply(context, self.kandura_align_surface)
+    except Exception as e:
+        print("SmartRig kandura align:", e)
+
+
 class SmartRigProps(PropertyGroup):
+    ai_tools_path: StringProperty(
+        name="AI Tools", subtype='DIR_PATH', default="",
+        description="Folder with Auto-Rig Pro's AI files (info.dat + inference/)")
     target_mesh: PointerProperty(
         name="Character Mesh",
         type=bpy.types.Object,
@@ -342,33 +419,10 @@ class SmartRigProps(PropertyGroup):
         description="Blows the skirt UP by rotating each panel outward/up like posing "
         "finger bones. Low = gentle lift; high = full umbrella; very high = flips "
         "inside-out over the top")
-    # ---- CHEST forces: fully SEPARATE from the skirt ----
-    chest_gravity: FloatProperty(name="Gravity", default=0.0, min=0.0, max=3.0,
-        update=_jiggle_force_update,
-        description="Downward pull on the chest jiggle only")
-    chest_wind: FloatProperty(name="Wind", default=0.0, min=0.0, max=3.0,
-        update=_jiggle_force_update,
-        description="Wind force on the chest jiggle only")
-    chest_wind_dir: FloatProperty(name="Wind Dir", default=0.0, min=0.0, max=360.0,
-        subtype='ANGLE', update=_jiggle_force_update,
-        description="Chest wind direction (0 = front)")
-    chest_wind_turb: FloatProperty(name="Gust", default=0.3, min=0.0, max=1.0,
-        update=_jiggle_force_update,
-        description="Chest wind gustiness / turbulence")
-    chest_wind_speed: FloatProperty(name="Wind Speed", default=1.0, min=0.1, max=15.0,
-        update=_jiggle_force_update,
-        description="How fast the chest wind gusts change")
     skirt_jiggle_segments: IntProperty(name="Jiggle Segments", default=3, min=1, max=8,
         description="B-bone segments on the skirt deform bones: higher = smoother, "
         "more professional cloth wave (live; no rebuild). 1 = faceted/off",
         update=_skirt_jiggle_seg_update)
-    chest_jiggle_segments: IntProperty(name="Jiggle Segments", default=3, min=1, max=8,
-        description="B-bone segments on each breast: 1 = rigid bounce, 3+ = soft "
-        "progressive 'jelly' wobble (tip bends more than the base)")
-    chest_jiggle_amount: FloatProperty(name="Chest Jiggle", default=2.0, min=0.0, max=5.0,
-        description="How much the chest bounces (higher = stronger)")
-    chest_jiggle_stiffness: FloatProperty(name="Stiffness", default=0.45, min=0.02, max=1.0)
-    chest_jiggle_damping: FloatProperty(name="Damping", default=0.30, min=0.05, max=0.99)
     skirt_use_masters: BoolProperty(name="Region Masters", default=True,
         description="Build a global + per-region (front/sides/back) master controls "
         "so you can pose whole regions of the skirt at once")
@@ -405,28 +459,58 @@ class SmartRigProps(PropertyGroup):
     kandura_object: PointerProperty(
         name="Kandura", type=bpy.types.Object, poll=_mesh_poll,
         description="The kandura (thobe) mesh")
-    kandura_has_neck: BoolProperty(
-        name="Neck", default=True,
-        description="This kandura has a neck opening / collar to rig")
-    kandura_has_placket: BoolProperty(
-        name="Placket", default=False,
-        description="This kandura has a placket (almarad): the vertical "
-        "button strip down the chest, like Qatari/Saudi kanduras")
-    kandura_has_buttons: BoolProperty(
-        name="Buttons", default=False,
-        description="The placket has buttons the automation should handle")
-    kandura_has_pocket: BoolProperty(
-        name="Pocket", default=False,
-        description="This kandura has a chest pocket to rig along")
-    kandura_has_side_pockets: BoolProperty(
-        name="Side Pockets", default=False,
-        description="This kandura has waist/side pocket openings at hip level")
+    kandura_columns: IntProperty(
+        name="Columns", default=8, min=4, max=32,
+        update=_kandura_grid_update,
+        description="Waist-down bone columns around the kandura tube. "
+        "REAL-TIME: changing it re-divides the bones immediately, keeping "
+        "the shape you placed (subdivide-style)")
+    kandura_rows: IntProperty(
+        name="Rows / Zone", default=1, min=1, max=6,
+        update=_kandura_grid_update,
+        description="Bone rows PER ZONE: 1 = one row for the THIGH (waist "
+        "to knee) + one row for the SHIN (knee to hem); 2 = 2 up + 2 down, "
+        "etc. The knee ring is always a boundary for the leg automation. "
+        "REAL-TIME update, keeps the placed shape")
+    kandura_collar_count: IntProperty(
+        name="Collar Bones", default=6, min=3, max=16,
+        update=_kandura_collar_update,
+        description="Number of collar bones added as a ring around the "
+        "neck. REAL-TIME: rebuilds the ring keeping the placed shape")
+    kandura_cuff_count: IntProperty(
+        name="Cuff Bones", default=6, min=3, max=16,
+        update=_kandura_cuff_update,
+        description="Number of cuff bones added as a ring around each "
+        "sleeve END (wrist opening). REAL-TIME: rebuilds the rings "
+        "keeping the placed shape")
+    kandura_focus: BoolProperty(
+        name="Hide Body Bones", default=False,
+        update=_kandura_focus_update,
+        description="Hide the BODY bones of the metarig so only the "
+        "kandura bones stay visible - focus on garment bone placement. "
+        "Turn OFF to show the body bones again")
+    kandura_mirror: BoolProperty(
+        name="Mirror", default=True,
+        update=_kandura_mirror_update,
+        description="ON: X-axis mirror while placing bones — .L/.R bones "
+        "(sleeves) mirror live while dragging; for the waist grid and "
+        "collar use 'Mirror Selected to Other Side'. OFF: no mirroring")
+    kandura_align_surface: BoolProperty(
+        name="Align to Surface", default=True,
+        update=_kandura_align_update,
+        description="ON: dragged bone heads/tails snap to the garment "
+        "surface (FACE snapping) while you place them manually. "
+        "OFF: free movement")
     kandura_sleeve_upper: IntProperty(
         name="Upper Arm Bones", default=2, min=1, max=6,
-        description="Sleeve chain bones along the UPPER ARM part")
+        update=_kandura_sleeve_update,
+        description="Sleeve chain bones along the UPPER ARM part. "
+        "REAL-TIME: rebuilds the chains keeping the placed shape")
     kandura_sleeve_lower: IntProperty(
         name="Lower Arm Bones", default=2, min=1, max=6,
-        description="Sleeve chain bones along the FOREARM part (down to the cuff)")
+        update=_kandura_sleeve_update,
+        description="Sleeve chain bones along the FOREARM part (down to "
+        "the cuff). REAL-TIME: rebuilds keeping the placed shape")
     show_kandura: BoolProperty(name="Kandura", default=False,
         description="Collapse / expand the Kandura (thobe) section")
     show_skirt: BoolProperty(name="Skirt", default=False,
@@ -461,6 +545,67 @@ class SmartRigProps(PropertyGroup):
     skin_smart_skirt: BoolProperty(name="Smart Skirt Weights", default=True,
         description="Skin the skirt from its known grid (angular column blend x vertical "
                     "row blend) instead of a generic heat map - cleaner, no cross-column bleed")
+    skin_smart_bones: BoolProperty(name="Smart Bone Filter", default=True,
+        description="Recognize which bones the mesh actually covers and bind ONLY those: "
+                    "a shirt gets no finger/head weights, a hat binds only to the head, "
+                    "a full body keeps every bone")
+    skin_selected_bones_only: BoolProperty(name="Selected Bones Only", default=False,
+        update=_skin_selbones_update,
+        description="Re-bind ONLY the bones you select: turning this ON shows "
+                    "JUST the deform bones (everything else hides) and enters "
+                    "Pose Mode - pick the bones, then Bind. Turning it OFF "
+                    "restores the normal bone display (like Auto-Rig Pro)")
+    skin_selected_verts_only: BoolProperty(name="Selected Vertices Only", default=False,
+        description="Recompute weights ONLY for the vertices selected in Edit Mode; "
+                    "the rest of the mesh keeps its existing weights (like Auto-Rig Pro)")
+    skin_optimize_highres: BoolProperty(name="Optimize High Res", default=False,
+        description="Above the polycount threshold, solve the heat weights on a "
+                    "DECIMATED proxy and transfer them to the full mesh - much "
+                    "faster and more robust on very dense meshes")
+    skin_polycount_threshold: IntProperty(name="Polycount Threshold", default=70000,
+        min=1000, max=2000000,
+        description="Vertex count above which the high-res proxy optimization kicks in")
+    skin_refine_head: BoolProperty(name="Refine Head Weights", default=True,
+        description="Post-bind smoothing pass on the head/neck weight groups")
+    skin_smooth_twist: BoolProperty(name="Smooth Twist Weights", default=True,
+        description="Post-bind smoothing pass on the limb twist segments "
+                    "(upper_arm/forearm/thigh/shin) for cleaner twisting")
+    skin_improve_hips: BoolProperty(name="Improve Hips Weights", default=True,
+        description="Post-bind smoothing pass on the pelvis/spine/thigh blend zone")
+    skin_improve_heels: BoolProperty(name="Improve Heels Weights", default=True,
+        description="Post-bind smoothing pass on the foot/toe/heel weight groups")
+    skin_apply_shapekeys: BoolProperty(name="Apply Shape Keys", default=False,
+        description="Bake the CURRENT shape-key mix into the base mesh before "
+                    "binding, so the weights are computed on the real shape")
+    skin_scale_fix: BoolProperty(name="Scale Fix", default=True,
+        description="Apply the mesh object scale before binding - the heat "
+                    "solver misbehaves on scaled objects")
+    skin_facial: BoolProperty(name="Facial Features", default=True,
+        description="Also bind the facial feature meshes (eyes, teeth, tongue) "
+                    "when binding: eyes -> eye/head bone, upper teeth -> head, "
+                    "lower teeth + tongue -> jaw (rigid weights, like Auto-Rig Pro)")
+    show_skin_facial: BoolProperty(name="Facial Features", default=False,
+        description="Collapse / expand the Facial Features slots")
+    skin_fine_hands: BoolProperty(name="Fine Finger Skin", default=True,
+        description="PRO per-finger skinning on the hand region: each finger is "
+                    "weighted to its OWN bones only (no bleed between fingers) - "
+                    "crisp finger deformation. Register or auto-detect the region")
+    skin_fine_feet: BoolProperty(name="Fine Toe Skin", default=False,
+        description="PRO per-toe skinning on the foot region (no bleed between toes)")
+    show_skin_fine: BoolProperty(name="Fine Skinning", default=False,
+        description="Collapse / expand the fine hand/foot skinning tools")
+    show_skin_pick: BoolProperty(name="Pick Bones", default=False,
+        description="Collapse / expand the bone family pick buttons")
+    skin_eye_l: PointerProperty(name="Eye L", type=bpy.types.Object, poll=_mesh_poll,
+        description="LEFT eye mesh (rigid to the left eye bone, else the head)")
+    skin_eye_r: PointerProperty(name="Eye R", type=bpy.types.Object, poll=_mesh_poll,
+        description="RIGHT eye mesh (rigid to the right eye bone, else the head)")
+    skin_teeth_up: PointerProperty(name="Teeth Up", type=bpy.types.Object, poll=_mesh_poll,
+        description="UPPER teeth mesh (rigid to the head bone)")
+    skin_teeth_low: PointerProperty(name="Teeth Low", type=bpy.types.Object, poll=_mesh_poll,
+        description="LOWER teeth mesh (rigid to the jaw bone, else the head)")
+    skin_tongue: PointerProperty(name="Tongue", type=bpy.types.Object, poll=_mesh_poll,
+        description="Tongue mesh (rigid to the jaw bone, else the head)")
     # ---- top-level phases in THE recommended order: Rig -> Fit -> Animate
     # (rig the character first = exact joints, then dress her, then animate)
     ui_tab: EnumProperty(

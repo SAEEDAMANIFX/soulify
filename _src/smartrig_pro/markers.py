@@ -405,6 +405,23 @@ def set_character_selectable(props, selectable):
                 names.add(ch.name)
         except Exception:
             pass
+    # also lock the garment + every mesh bound to our rig, so NONE of the
+    # character can be grabbed by mistake while editing markers.
+    sk = getattr(props, "skirt_object", None) if props else None
+    if sk:
+        names.add(sk.name)
+    ko = getattr(props, "kandura_object", None) if props else None
+    if ko:
+        names.add(ko.name)
+    try:
+        rig = bpy.data.objects.get(utils.RIG_NAME) or bpy.data.objects.get("RIG-SR_Metarig")
+        if rig is not None:
+            for o in bpy.data.objects:
+                if o.type == 'MESH' and any(m.type == 'ARMATURE' and m.object == rig
+                                            for m in o.modifiers):
+                    names.add(o.name)
+    except Exception:
+        pass
     for nm in names:
         o = bpy.data.objects.get(nm)
         if o:

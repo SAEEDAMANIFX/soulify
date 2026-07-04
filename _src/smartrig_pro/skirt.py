@@ -2786,11 +2786,968 @@ def _smart_skirt_weights(obj, rig, vids=None):
     return True
 
 
+def _bind_scale_fix(mesh, context):
+    """ARP 'Scale Fix': apply a non-1 object scale before binding - the heat
+    solver misbehaves on scaled objects. Returns True if a scale was applied."""
+    try:
+        if all(abs(s - 1.0) < 1e-5 for s in mesh.scale):
+            return False
+        bpy.ops.object.select_all(action='DESELECT')
+        mesh.select_set(True)
+        context.view_layer.objects.active = mesh
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        return True
+    except Exception as e:
+        print("Soulify bind scale fix:", e)
+        return False
+
+
+def _bake_shape_keys(mesh):
+    """ARP 'Apply Shape Keys': bake the CURRENT shape-key mix into the base
+    mesh and drop the keys, so weights are computed on the real shape."""
+    try:
+        sk = mesh.data.shape_keys
+        if not sk or not sk.key_blocks:
+            return False
+        mix = mesh.shape_key_add(name="SR_mix", from_mix=True)
+        n = len(mesh.data.vertices)
+        co = [0.0] * (n * 3)
+        mix.data.foreach_get("co", co)
+        for kb in list(sk.key_blocks):
+            if kb != mix:
+                mesh.shape_key_remove(kb)
+        mesh.shape_key_remove(mix)
+        mesh.data.vertices.foreach_set("co", co)
+        mesh.data.update()
+        return True
+    except Exception as e:
+        print("Soulify apply shape keys:", e)
+        return False
+
+
+def _bind_via_proxy(mesh, rig, context, parent_fn, thr):
+    """ARP 'Optimize High Res': heat-solve on a DECIMATED copy, transfer the
+    weights to the full mesh by surface interpolation, then parent it to the
+    rig. Returns True on success (False falls back to the direct solve)."""
+    proxy = None
+    try:
+        n = len(mesh.data.vertices)
+        proxy = mesh.copy()
+        proxy.data = mesh.data.copy()
+        proxy.name = mesh.name + "_SR_bindproxy"
+        context.scene.collection.objects.link(proxy)
+        bpy.ops.object.select_all(action='DESELECT')
+        proxy.select_set(True)
+        context.view_layer.objects.active = proxy
+        try:
+            if proxy.data.shape_keys:
+                bpy.ops.object.shape_key_remove(all=True)
+        except Exception:
+            pass
+        for m in list(proxy.modifiers):
+            proxy.modifiers.remove(m)
+        dec = proxy.modifiers.new("SR_Decimate", 'DECIMATE')
+        dec.ratio = max(0.02, min(1.0, thr / float(n)))
+        bpy.ops.object.modifier_apply(modifier=dec.name)
+        parent_fn(proxy)              # heat solve on the light proxy
+        if not any(vg.name.startswith("DEF-") for vg in proxy.vertex_groups):
+            raise RuntimeError("proxy heat solve produced no weights")
+        # weights proxy -> full mesh (surface interpolated)
+        bpy.ops.object.select_all(action='DESELECT')
+        mesh.select_set(True)
+        proxy.select_set(True)
+        context.view_layer.objects.active = proxy
+        bpy.ops.object.data_transfer(data_type='VGROUP_WEIGHTS',
+                                     use_create=True,
+                                     vert_mapping='POLYINTERP_NEAREST',
+                                     layers_select_src='ALL',
+                                     layers_select_dst='NAME')
+        # the full mesh still needs the parent + armature modifier
+        mesh.parent = rig
+        mesh.matrix_parent_inverse = rig.matrix_world.inverted()
+        if not any(m.type == 'ARMATURE' for m in mesh.modifiers):
+            mesh.modifiers.new("Armature", 'ARMATURE').object = rig
+        for m in mesh.modifiers:
+            if m.type == 'ARMATURE':
+                m.object = rig
+        return True
+    except Exception as e:
+        print("Soulify high-res bind proxy:", e)
+        return False
+    finally:
+        if proxy is not None:
+            try:
+                bpy.data.objects.remove(proxy, do_unlink=True)
+            except Exception:
+                pass
+
+
+def _smooth_groups(mesh, context, names, factor=0.5, repeat=3):
+    """Weight-paint smoothing pass on the given vertex groups (one by one)."""
+    names = [nm for nm in names if mesh.vertex_groups.get(nm) is not None]
+    if not names:
+        return 0
+    done = 0
+    try:
+        bpy.ops.object.select_all(action='DESELECT')
+        mesh.select_set(True)
+        context.view_layer.objects.active = mesh
+        bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+        for nm in names:
+            mesh.vertex_groups.active_index = mesh.vertex_groups[nm].index
+            try:
+                bpy.ops.object.vertex_group_smooth(
+                    group_select_mode='ACTIVE', factor=factor, repeat=repeat)
+                done += 1
+            except Exception:
+                pass
+    except Exception as e:
+        print("Soulify weight smooth:", e)
+    finally:
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            pass
+    return done
+
+
+def _polish_weights(mesh, context, props):
+    """ARP-style post-bind polish: targeted smoothing on the head/neck, limb
+    twist, hips and heel weight groups (each pass toggleable)."""
+    have = {vg.name for vg in mesh.vertex_groups}
+    todo = set()
+    if bool(getattr(props, "skin_refine_head", True)):
+        todo |= {g for g in have if g.startswith(("DEF-spine.004", "DEF-spine.005",
+                                                  "DEF-spine.006", "DEF-neck",
+                                                  "DEF-head"))}
+    if bool(getattr(props, "skin_smooth_twist", True)):
+        todo |= {g for g in have if g.startswith(("DEF-upper_arm", "DEF-forearm",
+                                                  "DEF-thigh", "DEF-shin"))}
+    if bool(getattr(props, "skin_improve_hips", True)):
+        todo |= {g for g in have if g.startswith(("DEF-pelvis", "DEF-thigh"))
+                 or g in ("DEF-spine", "DEF-spine.001", "DEF-spine.002")}
+    if bool(getattr(props, "skin_improve_heels", True)):
+        todo |= {g for g in have if g.startswith(("DEF-foot", "DEF-toe",
+                                                  "DEF-heel"))}
+    if not todo:
+        return 0
+    return _smooth_groups(mesh, context, sorted(todo))
+
+
+def _bones_covering_mesh(rig, mesh, min_frac=0.001, min_count=3):
+    """Smart bind filter: which deform bones does this mesh actually cover?
+
+    Every rest-mesh vertex is assigned to its NEAREST deform-bone segment; a
+    bone participates in the bind when it 'owns' enough vertices OR when some
+    vertex sits within ~0.6 x its length (keeps short finger bones on low-poly
+    hands). So a shirt never gets finger/head weights, a hat binds only to the
+    head, and a full body keeps every bone. Returns a set of bone names, or
+    None when the test is inconclusive (then nothing is filtered)."""
+    import numpy as np
+    try:
+        P = utils.read_rest_coords(mesh)          # (N,3) already WORLD coords
+    except Exception:
+        return None
+    n = len(P)
+    if n < 3:
+        return None
+    if n > 120000:                                # keep the distance matrix sane
+        P = P[np.random.default_rng(0).choice(n, 120000, replace=False)]
+        n = len(P)
+    bones = [b for b in rig.data.bones if b.use_deform]
+    if not bones:
+        return None
+    rw = np.array(rig.matrix_world)
+
+    def _w(v):
+        return (rw @ np.array([v[0], v[1], v[2], 1.0]))[:3]
+
+    D = np.empty((len(bones), n))
+    blen = np.empty(len(bones))
+    for j, b in enumerate(bones):
+        a = _w(b.head_local); t = _w(b.tail_local)
+        ab = t - a
+        L2 = float(ab @ ab)
+        blen[j] = L2 ** 0.5
+        if L2 < 1e-12:
+            D[j] = np.linalg.norm(P - a, axis=1)
+            continue
+        f = np.clip(((P - a) @ ab) / L2, 0.0, 1.0)
+        D[j] = np.linalg.norm(P - (a + f[:, None] * ab), axis=1)
+    owner = np.argmin(D, axis=0)
+    counts = np.bincount(owner, minlength=len(bones))
+    need = max(min_count, int(min_frac * n))
+    dmin = D.min(axis=1)
+    near = {b.name for j, b in enumerate(bones)
+            if counts[j] >= need or dmin[j] <= 0.6 * blen[j]}
+    return near or None
+
+
+def selected_bones_focus(context, enabled):
+    """Selected Bones Only picking mode: show ONLY the deform bones on the
+    generated rig (everything else hides) and jump to Pose Mode so the user
+    picks the bones to skin. Turning it off restores the exact previous
+    visibility (bone collections + per-bone hide)."""
+    import json
+    from .metarig import _generated_rig
+    rig = _generated_rig()
+    if rig is None:
+        return
+    KEY = "sr_selbones_snap"
+    try:
+        allc = list(rig.data.collections_all)
+    except Exception:
+        allc = list(getattr(rig.data, "collections", []))
+    if enabled:
+        if KEY in rig:
+            return                      # already in picking mode
+        rig[KEY] = json.dumps({
+            "colls": {c.name: bool(c.is_visible) for c in allc},
+            "hidden": [b.name for b in rig.data.bones if _bone_hidden(rig, b)],
+            "shapes": bool(getattr(rig.data, "show_bone_custom_shapes", True)),
+            "in_front": bool(rig.show_in_front),
+            "display": str(rig.data.display_type)})
+        for c in allc:
+            try:
+                c.is_visible = True     # DEF collection is hidden by default
+            except Exception:
+                pass
+        # PRIMARY SKELETON ONLY: twist halves and the garment grids stay
+        # hidden in the background - picking a primary bone auto-includes
+        # its twists at bind time, and the garment families have their own
+        # pick buttons. The viewport stays a clean, readable skeleton.
+        _twist = re.compile(r"^DEF-(upper_arm|forearm|thigh|shin)\.(L|R)\.\d+$")
+        _garm = ("DEF-skirt.", "DEF-kan_")
+        for b in rig.data.bones:
+            show = (b.use_deform and not _twist.match(b.name)
+                    and not b.name.startswith(_garm))
+            _set_bone_hide(rig, b.name, not show)
+        # CLEAN PICKING VIEW: many deform bones carry control WIDGETS
+        # (collar rings, breasts, face) - the rings/squiggles still cluttered
+        # the view. Draw plain octahedral bones, in front of the mesh.
+        try:
+            rig.data.show_bone_custom_shapes = False
+        except Exception:
+            pass
+        rig.data.display_type = 'OCTAHEDRAL'
+        rig.show_in_front = True
+        try:
+            rig.hide_set(False)
+            context.view_layer.objects.active = rig
+            if context.object is rig and rig.mode != 'POSE':
+                bpy.ops.object.mode_set(mode='POSE')
+        except Exception:
+            pass
+    else:
+        snap = None
+        if KEY in rig:
+            try:
+                snap = json.loads(rig[KEY])
+            except Exception:
+                snap = None
+            del rig[KEY]
+        for b in rig.data.bones:
+            _set_bone_hide(rig, b.name, False)
+        if snap:
+            hs = set(snap.get("hidden", []))
+            for b in rig.data.bones:
+                _set_bone_hide(rig, b.name, b.name in hs)
+            colls = snap.get("colls", {})
+            # a POISONED snapshot (recorded while everything was already
+            # forced visible) would un-hide MCH/DEF/Tweak on the user -
+            # Rigify never ships like that. Fall back to clean defaults.
+            poisoned = bool(colls) and all(colls.get(c.name, True)
+                                           for c in allc)
+            _HIDE_DEF = ("Tweak", "(Detail)", "(FK)", "ORG", "MCH", "DEF",
+                         "(Primary)", "(Secondary)")
+            for c in allc:
+                if poisoned:
+                    v = not any(k in c.name for k in _HIDE_DEF)
+                else:
+                    v = colls.get(c.name)
+                    if v is None:
+                        continue
+                try:
+                    c.is_visible = bool(v)
+                except Exception:
+                    pass
+            try:
+                rig.data.show_bone_custom_shapes = bool(snap.get("shapes", True))
+            except Exception:
+                pass
+            rig.show_in_front = bool(snap.get("in_front", False))
+            try:
+                rig.data.display_type = snap.get("display", 'OCTAHEDRAL')
+            except Exception:
+                pass
+
+
+def _expand_selection(rig, allowed):
+    """Selected-bones expansion: a picked PRIMARY bone drags its HIDDEN
+    dependents (twist halves etc. - hidden by the focus view) into the bind.
+    Only hidden bones expand, so picking DEF-spine never swallows the
+    visible DEF-spine.001 chain link."""
+    ext = set()
+    for b in rig.data.bones:
+        if b.use_deform and _bone_hidden(rig, b) and b.name not in allowed:
+            for a in allowed:
+                if b.name.startswith(a + "."):
+                    ext.add(b.name)
+                    break
+    return allowed | ext
+
+
+def _set_bone_hide(rig, name, state):
+    """Version-proof bone hiding: Blender 5.x draws Pose Mode from the NEW
+    PoseBone.hide, 4.x from Bone.hide - set both (same migration as select)."""
+    b = rig.data.bones.get(name)
+    if b is not None:
+        b.hide = state
+    if bpy.app.version >= (5, 0, 0):
+        pb = rig.pose.bones.get(name)
+        if pb is not None:
+            pb.hide = state
+
+
+def _bone_hidden(rig, b):
+    if bpy.app.version >= (5, 0, 0):
+        pb = rig.pose.bones.get(b.name)
+        if pb is not None and pb.hide:
+            return True
+    return bool(b.hide)
+
+
+def _pb_selected(pb):
+    """Blender 5.x moved bone selection to PoseBone.select (Bone.select was
+    removed); 4.x keeps it on Bone.select. Same pattern Auto-Rig Pro uses."""
+    if bpy.app.version >= (5, 0, 0):
+        return pb.select
+    return pb.bone.select
+
+
+def _pb_select(pb, state=True):
+    if bpy.app.version >= (5, 0, 0):
+        pb.select = state
+    else:
+        pb.bone.select = state
+
+
+_PICK_FAMS = {
+    'SPINE': ("DEF-spine", "DEF-pelvis", "DEF-breast", "DEF-neck", "DEF-head"),
+    'ARMS': ("DEF-shoulder", "DEF-upper_arm", "DEF-forearm", "DEF-hand"),
+    'FINGERS': ("DEF-f_", "DEF-thumb", "DEF-palm"),
+    'LEGS': ("DEF-thigh", "DEF-shin"),
+    'FEET': ("DEF-foot", "DEF-toe", "DEF-heel"),
+    'SKIRT': ("DEF-skirt.",),
+    'SLEEVES': ("DEF-kan_sleeve.",),
+    'COLLAR': ("DEF-kan_collar.",),
+    'CUFFS': ("DEF-kan_cuff.",),
+}
+
+
+def _pick_family(bones, part):
+    """The deform bones of one NAMED family."""
+    return [b for b in bones
+            if b.use_deform and b.name.startswith(_PICK_FAMS.get(part, ()))]
+
+
+def _fam_root(name):
+    """Family root of a deform bone name: 'DEF-tail.001.L' -> 'tail'."""
+    n = name[4:] if name.startswith("DEF-") else name
+    for _ in range(2):
+        n = re.sub(r"\.(L|R)$", "", n)
+        n = re.sub(r"(\.\d+)+$", "", n)
+    n = re.sub(r"[._-]\d+$", "", n)
+    return n or name
+
+
+def pick_extra_families(rig):
+    """SMART SCAN: every deform bone NOT covered by the named families
+    (Rigify samples - tail, wings, tentacles, face parts...) grouped by its
+    name root. {root: [bone names]}."""
+    allp = tuple(p for fam in _PICK_FAMS.values() for p in fam)
+    roots = {}
+    for b in rig.data.bones:
+        if b.use_deform and not b.name.startswith(allp):
+            roots.setdefault(_fam_root(b.name), []).append(b.name)
+    return roots
+
+
+def pick_extra_split(rig, top=6):
+    """(top families as sorted (root, names) list, leftover bone names).
+    Deterministic sort so the UI and the operator always agree."""
+    roots = sorted(pick_extra_families(rig).items(),
+                   key=lambda kv: (-len(kv[1]), kv[0]))
+    return roots[:top], [n for _r, ns in roots[top:] for n in ns]
+
+
+class SMARTRIG_OT_selbones_pick(bpy.types.Operator):
+    bl_idname = "smartrig.selbones_pick"
+    bl_label = "Pick Deform Bones"
+    bl_description = ("One-click family selection for 'Selected Bones Only': "
+                      "click selects the whole family, click again deselects it")
+    bl_options = {'REGISTER', 'UNDO'}
+    part: bpy.props.StringProperty(default='ALL')
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first")
+            return {'CANCELLED'}
+        pbs = rig.pose.bones
+        if self.part == 'NONE':
+            for pb in pbs:
+                _pb_select(pb, False)
+            return {'FINISHED'}
+        if self.part == 'ALL':
+            for pb in pbs:
+                if pb.bone.use_deform and not pb.bone.hide:
+                    _pb_select(pb, True)
+            return {'FINISHED'}
+        if self.part.startswith('DYN:') or self.part == 'OTHER':
+            tops, rest = pick_extra_split(rig)
+            names = rest if self.part == 'OTHER' else dict(tops).get(self.part[4:], [])
+            fam = [pbs[n] for n in names if n in pbs]
+        else:
+            fam = [pbs[b.name] for b in _pick_family(rig.data.bones, self.part)
+                   if b.name in pbs]
+        if not fam:
+            self.report({'WARNING'}, "No %s deform bones" % self.part.title())
+            return {'CANCELLED'}
+        allsel = all(_pb_selected(pb) for pb in fam)
+        for pb in fam:
+            _pb_select(pb, not allsel)
+        return {'FINISHED'}
+
+
+def _facial_autodetect(props, context):
+    """Fill the facial slots from the scene meshes by NAME (eye/teeth/tongue).
+    Never overwrites a slot the user already set. Returns #found."""
+    mesh = props.target_mesh
+    taken = {mesh, getattr(props, "skirt_object", None)}
+    found = 0
+
+    def free(slot):
+        return getattr(props, slot) is None
+
+    def side_of(ob):
+        try:
+            return sum((ob.matrix_world @ Vector(c)).x
+                       for c in ob.bound_box) / 8.0
+        except Exception:
+            return 0.0
+
+    eyes = []
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH' or ob in taken:
+            continue
+        nm = ob.name.lower()
+        if "eyebrow" in nm or "eyelash" in nm or "eyelid" in nm:
+            continue
+        if "eye" in nm:
+            eyes.append(ob)
+        elif ("teeth" in nm or "tooth" in nm) and                 ("low" in nm or "down" in nm or "bottom" in nm):
+            if free("skin_teeth_low"):
+                props.skin_teeth_low = ob; found += 1
+        elif "teeth" in nm or "tooth" in nm:
+            if free("skin_teeth_up"):
+                props.skin_teeth_up = ob; found += 1
+        elif "tongue" in nm or "toung" in nm:
+            if free("skin_tongue"):
+                props.skin_tongue = ob; found += 1
+    for ob in eyes:
+        nm = ob.name.lower()
+        if any(t in nm for t in (".l", "_l", "-l", "left")) and free("skin_eye_l"):
+            props.skin_eye_l = ob; found += 1
+        elif any(t in nm for t in (".r", "_r", "-r", "right")) and free("skin_eye_r"):
+            props.skin_eye_r = ob; found += 1
+    # side-less leftovers: decide by world X (+x = character LEFT)
+    for ob in eyes:
+        if ob in (props.skin_eye_l, props.skin_eye_r):
+            continue
+        if side_of(ob) >= 0.0 and free("skin_eye_l"):
+            props.skin_eye_l = ob; found += 1
+        elif free("skin_eye_r"):
+            props.skin_eye_r = ob; found += 1
+    return found
+
+
+def _facial_bone(rig, kind, ob):
+    """Best deform bone for a facial feature on this rig (Rigify or SR)."""
+    def first(*cands):
+        for c in cands:
+            b = rig.data.bones.get(c)
+            if b is not None and b.use_deform:
+                return c
+        return None
+    head = first("DEF-head", "DEF-spine.006", "DEF-spine.005",
+                 "DEF-spine.004", "head")
+    if kind == "eye":
+        x = 0.0
+        try:
+            x = sum((ob.matrix_world @ Vector(c)).x for c in ob.bound_box) / 8.0
+        except Exception:
+            pass
+        side = ".L" if x >= 0.0 else ".R"
+        return first("DEF-eye" + side, "DEF-eye_master" + side,
+                     "eye" + side) or head
+    if kind in ("teeth_low", "tongue"):
+        return first("DEF-jaw", "DEF-jaw_master", "jaw_master", "jaw") or head
+    return head
+
+
+def bind_facial_features(props, context, rig):
+    """Rigid-bind the facial feature meshes (eyes / teeth / tongue) to their
+    bones: ONE vertex group at weight 1.0 + an armature modifier. Like ARP's
+    Facial Features binding. Returns #objects bound."""
+    slots = (("skin_eye_l", "eye"), ("skin_eye_r", "eye"),
+             ("skin_teeth_up", "teeth_up"), ("skin_teeth_low", "teeth_low"),
+             ("skin_tongue", "tongue"))
+    n = 0
+    for slot, kind in slots:
+        ob = getattr(props, slot, None)
+        if ob is None or ob.type != 'MESH' or ob is props.target_mesh:
+            continue
+        bone = _facial_bone(rig, kind, ob)
+        if bone is None:
+            continue
+        for m in list(ob.modifiers):
+            if m.type == 'ARMATURE':
+                ob.modifiers.remove(m)
+        for vg in list(ob.vertex_groups):
+            if vg.name.startswith("DEF-"):
+                ob.vertex_groups.remove(vg)
+        vg = ob.vertex_groups.new(name=bone)
+        vg.add(list(range(len(ob.data.vertices))), 1.0, 'REPLACE')
+        if ob.parent != rig:
+            mw = ob.matrix_world.copy()
+            ob.parent = rig
+            ob.matrix_world = mw
+        mod = ob.modifiers.new("Armature", 'ARMATURE')
+        mod.object = rig
+        mod.use_deform_preserve_volume = bool(props.skin_preserve_volume)
+        n += 1
+    return n
+
+
+# ---------------------------------------------------------------- FINE SKIN
+# Per-FINGER / per-TOE registration: the user picks each digit's vertices by
+# NAME, and the bind weights those verts to ONLY that digit's bones (+ the hand
+# base at the knuckle). Zero bleed between fingers = crisp deformation.
+
+FINGER_NAMES = ["thumb", "index", "middle", "ring", "pinky"]
+TOE_NAMES = ["toe"]
+
+
+def _digit_prefix(finger):
+    return "DEF-thumb." if finger == "thumb" else (
+        "DEF-toe." if finger == "toe" else "DEF-f_%s." % finger)
+
+
+def _digit_bone_segs(rig, side, finger):
+    """[(bone, head_world, tail_world), ...] for one finger/toe on one side."""
+    rw = rig.matrix_world
+    pre = _digit_prefix(finger)
+    out = []
+    for b in rig.data.bones:
+        if b.name.startswith(pre) and b.name.endswith(side) and b.use_deform:
+            out.append((b.name, rw @ b.head_local, rw @ b.tail_local))
+    return out
+
+
+def _base_bone(rig, side, kind):
+    nm = ("DEF-hand" if kind == "hand" else "DEF-foot") + side
+    b = rig.data.bones.get(nm)
+    if b is None:
+        return None
+    rw = rig.matrix_world
+    return (nm, rw @ b.head_local, rw @ b.tail_local)
+
+
+def _seg_d(p, a, b):
+    ab = b - a
+    L2 = ab.dot(ab)
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L2))
+    return (p - (a + ab * t)).length
+
+
+def _fine_ss(x):
+    """Smoothstep 0..1."""
+    x = 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _fine_chain(rig, side, finger):
+    """Chain data for one digit: joint points, per-bone lengths, cum arc."""
+    segs = _digit_bone_segs(rig, side, finger)
+    if not segs:
+        return None
+    segs.sort()
+    pts = [segs[0][1]] + [s[2] for s in segs]
+    L = [(pts[i + 1] - pts[i]).length for i in range(len(segs))]
+    cum = [0.0]
+    for l in L:
+        cum.append(cum[-1] + l)
+    return {"names": [s[0] for s in segs], "pts": pts, "L": L, "cum": cum}
+
+
+def _fine_chain_param(ch, p):
+    """(arc-length along the digit chain, radial distance). Points behind the
+    knuckle get a NEGATIVE arc (signed extension of the first phalanx)."""
+    best = (1e18, 0, 0.0)
+    for i in range(len(ch["L"])):
+        a = ch["pts"][i]
+        b = ch["pts"][i + 1]
+        ab = b - a
+        L2 = ab.length_squared
+        t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L2))
+        d = (p - (a + ab * t)).length
+        if d < best[0]:
+            best = (d, i, t)
+    d, i, t = best
+    arc = ch["cum"][i] + t * ch["L"][i]
+    if i == 0 and t <= 1e-9:
+        dir1 = (ch["pts"][1] - ch["pts"][0]).normalized()
+        arc = (p - ch["pts"][0]).dot(dir1)
+    return arc, d
+
+
+def _fine_chain_weights(ch, base_name, p, c0=0.0):
+    """Smooth ARP-style weight profile along the digit: graded smoothstep
+    blends across every joint and into the hand/foot at the knuckle.
+    Continuous weights = no candy-wrapper pinching, and Rigify\'s bendy-bone
+    Curvature / Rubber sliders read properly (DEF fingers are 10-segment
+    B-bones). Returns ({bone: weight}, radial_distance)."""
+    arc, d = _fine_chain_param(ch, p)
+    nm = ch["names"]
+    L = ch["L"]
+    cum = ch["cum"]
+    # c0 = arc of the knuckle FOLD line. Default 0 (= bone head), but callers
+    # pass the 5th-percentile arc of the registered verts: the user picked the
+    # finger from the knuckle, so the registration boundary IS the fold line -
+    # robust even when the .01 bone head sits deep inside the palm.
+    hb0 = 0.15 * L[0]
+    if arc <= c0 - hb0:
+        return {base_name: 1.0}, d
+    if arc < c0 + hb0:
+        u = _fine_ss((arc - c0 + hb0) / (2.0 * hb0))
+        return {base_name: 1.0 - u, nm[0]: u}, d
+    for i in range(1, len(nm)):
+        h = 0.25 * min(L[i - 1], L[i])
+        if arc < cum[i] - h:
+            return {nm[i - 1]: 1.0}, d
+        if arc < cum[i] + h:
+            u = _fine_ss((arc - cum[i] + h) / (2.0 * h))
+            return {nm[i - 1]: 1.0 - u, nm[i]: u}, d
+    return {nm[-1]: 1.0}, d
+
+
+def _fine_write_weights(mesh, vi, w, own=None, scale=1.0):
+    """Strip DEF- groups from vert `vi` (every one, or only the `own` set),
+    then write `w` normalised to `scale`. own+scale let palm verts keep their
+    forearm share at the wrist - only the hand-family weights are replaced."""
+    v = mesh.data.vertices[vi]
+    for ge in list(v.groups):
+        gnm = mesh.vertex_groups[ge.group].name
+        if gnm.startswith("DEF-") and (own is None or gnm in own):
+            try:
+                mesh.vertex_groups[gnm].remove([vi])
+            except Exception:
+                pass
+    tot = sum(w.values()) or 1.0
+    for bn, ww in w.items():
+        vg = mesh.vertex_groups.get(bn) or mesh.vertex_groups.new(name=bn)
+        vg.add([vi], scale * ww / tot, 'REPLACE')
+
+
+def _fine_palm_map(rig, side, chains):
+    """finger -> (DEF-palm bone, its world head): the metacarpal COLUMN that
+    carries this finger. Mapped by palm-tail / knuckle proximity."""
+    rw = rig.matrix_world
+    palms = [b for b in rig.data.bones
+             if b.name.startswith("DEF-palm.") and b.name.endswith(side)
+             and b.use_deform]
+    # greedy UNIQUE nearest matching: plain nearest collapses to one finger
+    # when several palm tails sit close together
+    pairs = []
+    for b in palms:
+        t = rw @ b.tail_local
+        for f in chains:
+            pairs.append(((chains[f]["pts"][0] - t).length, b.name, f,
+                          rw @ b.head_local))
+    pairs.sort(key=lambda x: x[0])
+    usedb = set()
+    out = {}
+    for d, bn, f, h in pairs:
+        if bn in usedb or f in out:
+            continue
+        if d > 2.5 * chains[f]["L"][0]:
+            continue
+        out[f] = (bn, h)
+        usedb.add(bn)
+    return out
+
+
+def fine_finger_weights(mesh, rig, side, finger, vids, kind="hand"):
+    """Weight `vids` to this digit with the smooth chain profile (+ hand/foot
+    base at the knuckle). Every other deform group is stripped -> no bleed."""
+    ch = _fine_chain(rig, side, finger)
+    if ch is None:
+        return 0
+    base = _base_bone(rig, side, kind)
+    base_name = base[0] if base else ("DEF-hand" + side)
+    if kind == "hand":
+        pm = _fine_palm_map(rig, side, {finger: ch})
+        if finger in pm:
+            base_name = pm[finger][0]
+    mw = mesh.matrix_world
+    c0 = _fine_fold_center(ch, [mw @ mesh.data.vertices[vi].co
+                                for vi in vids])
+    for vi in vids:
+        w, _d = _fine_chain_weights(ch, base_name,
+                                    mw @ mesh.data.vertices[vi].co, c0)
+        _fine_write_weights(mesh, vi, w)
+    return len(vids)
+
+
+def _fine_fold_center(ch, pts):
+    """Fold-line arc = 5th percentile of the registered verts' arcs, nudged
+    slightly distal. Clamped to a sane range around the knuckle."""
+    if not pts:
+        return 0.0
+    arcs = sorted(_fine_chain_param(ch, p)[0] for p in pts)
+    c0 = arcs[max(0, int(0.05 * len(arcs)) - 1)] + 0.03 * ch["L"][0]
+    lo = -0.30 * ch["L"][0]
+    hi = 0.45 * ch["L"][0]
+    return lo if c0 < lo else (hi if c0 > hi else c0)
+
+
+def _fine_group_name(finger, side):
+    return "SR_Fin_%s%s" % (finger, side)
+
+
+def _fine_region(mesh, finger, side):
+    vg = mesh.vertex_groups.get(_fine_group_name(finger, side))
+    if vg is None:
+        return []
+    idx = vg.index
+    out = []
+    for v in mesh.data.vertices:
+        for ge in v.groups:
+            if ge.group == idx and ge.weight > 0.0:
+                out.append(v.index); break
+    return out
+
+
+def _digit_names_present(rig, side, kind):
+    names = FINGER_NAMES if kind == "hand" else TOE_NAMES
+    return [f for f in names if _digit_bone_segs(rig, side, f)]
+
+
+def fine_skin_apply(props, context, rig, mesh):
+    """v2 fine skinning (ARP-grade). Per side/kind:
+    1. Registered verts get the smooth chain profile of their digit; verts
+       registered to TWO digits (the web skin between fingers) get a radial
+       inverse-square mix of both digits.
+    2. KNUCKLE EXPANSION: unregistered verts just behind each knuckle get a
+       graded digit weight so the knuckles bulge when a fist closes.
+    3. Two Laplacian smoothing passes over every touched vert kill seams.
+    Returns (n_hand_verts, n_foot_verts)."""
+    nh = nf = 0
+    do_h = bool(getattr(props, "skin_fine_hands", False))
+    do_f = bool(getattr(props, "skin_fine_feet", False))
+    if not (do_h or do_f):
+        return 0, 0
+    mw = mesh.matrix_world
+    P = [mw @ v.co for v in mesh.data.vertices]
+    gnames = {vg.index: vg.name for vg in mesh.vertex_groups}
+    smooth_verts = set()
+    for side, sgn in ((".L", 1.0), (".R", -1.0)):
+        for kind, on in (("hand", do_h), ("foot", do_f)):
+            if not on:
+                continue
+            digs = _digit_names_present(rig, side, kind)
+            chains = {f: _fine_chain(rig, side, f) for f in digs}
+            chains = {f: c for f, c in chains.items() if c}
+            if not chains:
+                continue
+            base = _base_bone(rig, side, kind)
+            base_name = base[0] if base else ("DEF-hand" + side)
+            pmap = _fine_palm_map(rig, side, chains) if kind == "hand" else {}
+
+            def _pb(f):
+                return pmap[f][0] if f in pmap else base_name
+
+            regions = {f: set(_fine_region(mesh, f, side)) for f in chains}
+            allreg = set().union(*regions.values())
+            seen = {}
+            for f in chains:
+                for vi in regions[f]:
+                    seen.setdefault(vi, []).append(f)
+            c0s = {f: _fine_fold_center(chains[f],
+                                        [P[vi] for vi in regions[f]])
+                   for f in chains}
+            W = {}
+            for vi, fs in seen.items():
+                if len(fs) == 1:
+                    W[vi] = _fine_chain_weights(chains[fs[0]], _pb(fs[0]),
+                                                P[vi], c0s[fs[0]])[0]
+                else:
+                    acc = {}
+                    tot = 0.0
+                    for f in fs:
+                        w, d = _fine_chain_weights(chains[f], _pb(f),
+                                                   P[vi], c0s[f])
+                        k = 1.0 / (d * d + 1e-6)
+                        for bn, ww in w.items():
+                            acc[bn] = acc.get(bn, 0.0) + k * ww
+                        tot += k
+                    W[vi] = {bn: ww / tot for bn, ww in acc.items()}
+            kn = {f: chains[f]["pts"][0] for f in chains}
+            for vi, p in enumerate(P):
+                if vi in W or vi in allreg:
+                    continue
+                if (p.x >= 0.0) != (sgn > 0.0):
+                    continue
+                bf = None
+                bd = None
+                for f in chains:
+                    d = (p - kn[f]).length
+                    if bd is None or d < bd:
+                        bd = d
+                        bf = f
+                ch = chains[bf]
+                L0 = ch["L"][0]
+                reach = 0.50 * L0
+                if bd > 0.85 * L0:
+                    continue
+                dir1 = (ch["pts"][1] - ch["pts"][0]).normalized()
+                proj = (p - kn[bf]).dot(dir1) - c0s[bf]
+                if proj < -reach or proj > 0.05 * L0:
+                    continue
+                # Knuckle BUMPS must stay mostly with the hand: the metacarpal
+                # head is a STATIC bone in a fist - the bump reads because the
+                # skin around it folds while the crest holds. Only a light
+                # graded skin-slide follows the finger; the fold itself happens
+                # in the TIGHT hb0 zone of _fine_chain_weights. Wide soft
+                # blends here flatten the knuckles into a dome.
+                u = _fine_ss((proj + reach) / reach)
+                fall = _fine_ss((0.85 * L0 - bd) / (0.40 * L0))
+                wf = min(0.35, 0.35 * u * fall)
+                if wf < 0.02:
+                    continue
+                W[vi] = {ch["names"][0]: wf, _pb(bf): 1.0 - wf}
+            # ---- PALM recognition: weight the metacarpal COLUMNS ---------
+            # Every unregistered vert whose current bind already belongs to
+            # the hand family is re-weighted: 2 nearest columns blended
+            # laterally (inverse-square), each column ramping hand -> palm
+            # from wrist to knuckle. The forearm share at the wrist is KEPT.
+            palm_scale = {}
+            if pmap:
+                own_names = {base_name} | {pm[0] for pm in pmap.values()}
+                for f in chains:
+                    own_names |= set(chains[f]["names"])
+                gidx = {vg.index: vg.name for vg in mesh.vertex_groups
+                        if vg.name in own_names}
+                cols = []
+                for f, (pn, phead) in pmap.items():
+                    ch = chains[f]
+                    dir1 = (ch["pts"][1] - ch["pts"][0]).normalized()
+                    cols.append((pn, phead, ch["pts"][0] + dir1 * c0s[f]))
+                for v in mesh.data.vertices:
+                    vi = v.index
+                    if vi in W or vi in allreg:
+                        continue
+                    share = sum(ge.weight for ge in v.groups
+                                if ge.group in gidx)
+                    if share < 0.25:
+                        continue
+                    p = P[vi]
+                    ds = []
+                    for pn, a, b in cols:
+                        ab = b - a
+                        L2 = ab.length_squared
+                        t = (0.0 if L2 < 1e-12
+                             else max(0.0, min(1.0, (p - a).dot(ab) / L2)))
+                        d = (p - (a + ab * t)).length
+                        ds.append((d, t, pn))
+                    ds.sort()
+                    acc = {}
+                    tot = 0.0
+                    for d, t, pn in ds[:2]:
+                        u = _fine_ss((t - 0.15) / 0.45)
+                        k = 1.0 / (d * d + 1e-6)
+                        acc[pn] = acc.get(pn, 0.0) + k * u
+                        acc[base_name] = acc.get(base_name, 0.0) + k * (1.0 - u)
+                        tot += k
+                    W[vi] = {bn: ww / tot for bn, ww in acc.items()}
+                    palm_scale[vi] = (min(1.0, share), own_names)
+            if not W:
+                continue
+            for vi, w in W.items():
+                if vi in palm_scale:
+                    sc, ownn = palm_scale[vi]
+                    _fine_write_weights(mesh, vi, w, own=ownn, scale=sc)
+                    if sc >= 0.95:
+                        smooth_verts.add(vi)
+                else:
+                    _fine_write_weights(mesh, vi, w)
+                    smooth_verts.add(vi)
+            if kind == "hand":
+                nh += len(W)
+            else:
+                nf += len(W)
+    _fine_smooth_verts(mesh, smooth_verts)
+    return nh, nf
+
+
+def _fine_smooth_verts(mesh, vids, factor=0.5, repeat=2):
+    """ARP-style weight polish (same calls ARP makes after binding): masked
+    built-in vertex_group_smooth (C-fast, all deform groups together) followed
+    by vertex_group_clean. Wrist-border verts are excluded by the caller so
+    the preserved forearm share is never touched."""
+    if not vids:
+        return
+    ctx = bpy.context
+    try:
+        if ctx.object and ctx.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            mesh.hide_set(False)
+        except Exception:
+            pass
+        bpy.ops.object.select_all(action='DESELECT')
+        mesh.select_set(True)
+        ctx.view_layer.objects.active = mesh
+        for v in mesh.data.vertices:
+            v.select = v.index in vids
+        bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+        mesh.data.use_paint_mask_vertex = True
+        bpy.ops.object.vertex_group_smooth(group_select_mode='BONE_DEFORM',
+                                           factor=factor, repeat=repeat,
+                                           expand=0.0)
+        bpy.ops.object.vertex_group_clean(group_select_mode='BONE_DEFORM',
+                                          limit=0.01)
+        mesh.data.use_paint_mask_vertex = False
+        bpy.ops.object.mode_set(mode='OBJECT')
+    except Exception as e:
+        print("SmartRig fine smooth:", e)
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            pass
+
+
 def bind_mesh(props, context):
     """Bind the body to the rig. Skirt bones are EXCLUDED from the body solve so
     the body never gets skirt weights; the skirt is weighted only to its own
     bones. Existing armature modifiers / deform groups are removed first to avoid
-    a double bind (which corrupts the body shape)."""
+    a double bind (which corrupts the body shape).
+
+    ARP-style filters: Smart Bone Filter binds only the bones the mesh covers;
+    Selected Bones Only re-binds just the picked bones; Selected Vertices Only
+    recomputes weights only on the Edit-Mode vertex selection."""
     from .metarig import _generated_rig
     rig = _generated_rig()
     if rig is None:
@@ -2814,6 +3771,64 @@ def bind_mesh(props, context):
     if context.object and context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     ptype = 'ARMATURE_ENVELOPE' if props.skin_engine == 'ENVELOPE' else 'ARMATURE_AUTO'
+
+    if bool(getattr(props, "skin_scale_fix", True)):
+        _bind_scale_fix(mesh, context)
+    if bool(getattr(props, "skin_apply_shapekeys", False)):
+        _bake_shape_keys(mesh)
+
+    # ---- ARP-style bind filters ------------------------------------------
+    sel_bones_only = bool(getattr(props, "skin_selected_bones_only", False))
+    sel_verts_only = bool(getattr(props, "skin_selected_verts_only", False))
+    smart_bones = bool(getattr(props, "skin_smart_bones", True))
+    allowed = None                    # None = every deform bone participates
+    if sel_bones_only:
+        allowed = {pb.name for pb in rig.pose.bones
+                   if _pb_selected(pb) and pb.bone.use_deform}
+        allowed = _expand_selection(rig, allowed)
+        if not allowed:
+            return None, ("Selected Bones Only: select the deform bones on the "
+                          "rig (Pose or Edit Mode) before binding.")
+        # ALL deform bones selected = the user wants a FULL bind (not a partial
+        # touch-up). Drop into the complete pipeline so the garment split, the
+        # facial features and the polish passes all run - otherwise picking
+        # 'All' silently skipped them and looked like "bind did nothing".
+        _all_def = {b.name for b in rig.data.bones if b.use_deform}
+        if allowed >= _all_def:
+            sel_bones_only = False
+            allowed = None
+
+    partial = sel_bones_only or sel_verts_only
+
+    n_smart_off = 0
+    if smart_bones:
+        near = _bones_covering_mesh(rig, mesh)
+        if near:
+            base = allowed if allowed is not None else \
+                {b.name for b in rig.data.bones if b.use_deform}
+            keep = base & near
+            if keep:              # never let the filter empty a user selection
+                n_smart_off = len(base) - len(keep)
+                allowed = keep
+
+    sel_vids = None
+    prev_wts = None
+    if sel_verts_only:
+        sel_vids = {v.index for v in mesh.data.vertices if v.select}
+        if not sel_vids:
+            return None, ("Selected Vertices Only: select vertices in Edit Mode "
+                          "first (the rest keep their current weights).")
+        # snapshot the current DEF- weights of the NON-selected verts
+        gnames = {vg.index: vg.name for vg in mesh.vertex_groups
+                  if vg.name.startswith("DEF-")}
+        prev_wts = {nm: {} for nm in gnames.values()}
+        for v in mesh.data.vertices:
+            if v.index in sel_vids:
+                continue
+            for ge in v.groups:
+                nm = gnames.get(ge.group)
+                if nm is not None and ge.weight > 0.0:
+                    prev_wts[nm][v.index] = ge.weight
 
     def _clean(ob):
         for m in list(ob.modifiers):
@@ -2864,15 +3879,44 @@ def bind_mesh(props, context):
             except Exception:
                 pass
 
-    _clean(mesh)
+    if sel_bones_only:
+        # partial re-bind: keep the other bones' weights, refresh the chosen ones
+        for m in list(mesh.modifiers):
+            if m.type == 'ARMATURE':
+                mesh.modifiers.remove(m)
+        if mesh.parent is not None and mesh.parent.type == 'ARMATURE':
+            mw2 = mesh.matrix_world.copy(); mesh.parent = None; mesh.matrix_world = mw2
+        for vg in list(mesh.vertex_groups):
+            if vg.name.startswith("DEF-") and vg.name in allowed:
+                mesh.vertex_groups.remove(vg)
+    else:
+        _clean(mesh)
     saved = {}
+    # GARMENT bones (skirt grid + kandura sleeve/collar/cuff) must NEVER weight
+    # the BODY - otherwise a sleeve bone drags the wrist and it pinches/collapses
+    # (Saeed's "wrist broken"). Disable them for the body's heat solve always.
+    _garment_pfx = ("DEF-" + PREFIX + ".", "DEF-kan_")
+    for b in rig.data.bones:
+        if b.use_deform and b.name.startswith(_garment_pfx):
+            saved[b.name] = b.use_deform; b.use_deform = False
     if split:
-        _skirtish = ("DEF-" + PREFIX + ".", PREFIX + "_master", PREFIX + ".",
+        _skirtish = (PREFIX + "_master", PREFIX + ".",
                      "tweak_" + PREFIX + ".", "SKC_")
         for b in rig.data.bones:
-            if b.use_deform and b.name.startswith(_skirtish):
+            if (b.use_deform and b.name.startswith(_skirtish)
+                    and b.name not in saved):
                 saved[b.name] = b.use_deform; b.use_deform = False
-    _parent_auto(mesh)
+    if allowed is not None:
+        for b in rig.data.bones:
+            if b.use_deform and b.name not in allowed and b.name not in saved:
+                saved[b.name] = b.use_deform; b.use_deform = False
+    hires_done = False
+    if not partial and bool(getattr(props, "skin_optimize_highres", False)):
+        _thr = int(getattr(props, "skin_polycount_threshold", 70000))
+        if len(mesh.data.vertices) > _thr:
+            hires_done = _bind_via_proxy(mesh, rig, context, _parent_auto, _thr)
+    if not hires_done:
+        _parent_auto(mesh)
     for n, v in saved.items():
         bd = rig.data.bones.get(n)
         if bd is not None:
@@ -2881,7 +3925,7 @@ def bind_mesh(props, context):
         if m.type == 'ARMATURE':
             m.use_deform_preserve_volume = bool(props.skin_preserve_volume)
 
-    if split:
+    if split and not partial:
         body_groups = [vg for vg in mesh.vertex_groups if vg.name.startswith("DEF-")]
         smart = bool(getattr(props, "skin_smart_skirt", True))
         if sep is None:
@@ -2895,8 +3939,43 @@ def bind_mesh(props, context):
                 _weight_to_skirt(mesh, segs, skirt_vids)
         else:
             _clean(sep)
-            done = False
-            if smart:
+            # KANDURA (full thobe) garment: body bones ABOVE the waist, skirt
+            # grid BELOW. The old path skirt-weighted the WHOLE garment, so the
+            # chest/sleeves were dragged by the waist columns and the thobe
+            # shredded as soon as a leg moved.
+            kan_ob = getattr(props, "kandura_object", None)
+            is_kandura = (kan_ob is not None and sep is kan_ob)
+            if is_kandura:
+                # 1) heat-bind the whole garment to the BODY (+ kan_*) bones
+                _savedK = {}
+                _skirtishK = ("DEF-" + PREFIX + ".", PREFIX + "_master",
+                              PREFIX + ".", "tweak_" + PREFIX + ".", "SKC_")
+                for b in rig.data.bones:
+                    if b.use_deform and b.name.startswith(_skirtishK):
+                        _savedK[b.name] = b.use_deform; b.use_deform = False
+                _parent_auto(sep)
+                for nK, vK in _savedK.items():
+                    bd = rig.data.bones.get(nK)
+                    if bd is not None:
+                        bd.use_deform = vK
+                # 2) below the skirt-grid top: swap body weights for the grid
+                top_z = max(h.z for _n, h, _t in segs) if segs else None
+                if top_z is not None:
+                    smw = sep.matrix_world
+                    vidsK = set(v.index for v in sep.data.vertices
+                                if (smw @ v.co).z < top_z)
+                    if vidsK:
+                        lstK = list(vidsK)
+                        for vg in list(sep.vertex_groups):
+                            if vg.name.startswith("DEF-") and                                     not vg.name.startswith("DEF-" + PREFIX + "."):
+                                try:
+                                    vg.remove(lstK)
+                                except Exception:
+                                    pass
+                        if not (smart and _smart_skirt_weights(sep, rig, vidsK)):
+                            _weight_to_skirt(sep, segs, vidsK)
+            done = bool(is_kandura)
+            if not done and smart:
                 done = _smart_skirt_weights(sep, rig, None)
             if not done:
                 # heat-bind to ONLY the skirt bones (disable non-skirt deform bones)
@@ -2921,6 +4000,23 @@ def bind_mesh(props, context):
                 if m.type == 'ARMATURE':
                     m.use_deform_preserve_volume = bool(props.skin_preserve_volume)
 
+    n_polish = 0
+    if not partial:
+        n_polish = _polish_weights(mesh, context, props)
+
+    if sel_verts_only and prev_wts is not None:
+        # the NON-selected verts get their old weights back exactly
+        unsel = [v.index for v in mesh.data.vertices if v.index not in sel_vids]
+        for vg in mesh.vertex_groups:
+            if not vg.name.startswith("DEF-"):
+                continue
+            try:
+                vg.remove(unsel)
+            except Exception:
+                pass
+            for vi, w in prev_wts.get(vg.name, {}).items():
+                vg.add([vi], w, 'REPLACE')
+
     try:
         bpy.ops.object.select_all(action='DESELECT')
         mesh.select_set(True); context.view_layer.objects.active = mesh
@@ -2928,16 +4024,89 @@ def bind_mesh(props, context):
     except Exception:
         pass
 
-    if split:
+    # MODIFIER ORDER: any CorrectiveSmooth (or other deform-relaxers the mesh
+    # already carried) MUST sit AFTER the Armature, else it operates on the rest
+    # mesh and mangles the deformation - it was quietly tearing the curled
+    # fingers (Saeed: "the default skinning looks better"). Push them below the
+    # Armature so the bind matches a clean Blender auto-weight result.
+    try:
+        arm_i = next((i for i, m in enumerate(mesh.modifiers)
+                      if m.type == 'ARMATURE'), None)
+        if arm_i is not None:
+            for m in list(mesh.modifiers):
+                if m.type in ('CORRECTIVE_SMOOTH', 'SMOOTH') and \
+                        list(mesh.modifiers).index(m) < arm_i:
+                    context.view_layer.objects.active = mesh
+                    bpy.ops.object.modifier_move_to_index(
+                        modifier=m.name, index=len(mesh.modifiers) - 1)
+    except Exception as _e:
+        print("Soulify modifier reorder:", _e)
+
+    _nfine = (0, 0)
+    # Fine per-finger skin runs whenever fingers are REGISTERED - even during a
+    # partial (Selected Verts/Bones Only) bind - so it is never silently skipped
+    # (Saeed: "middle finger distorted despite Register" = it was skipped because
+    # Selected Vertices Only was left on).
+    if (bool(getattr(props, "skin_fine_hands", False))
+            or bool(getattr(props, "skin_fine_feet", False))):
+        try:
+            _nfine = fine_skin_apply(props, context, rig, mesh)
+            bpy.ops.object.select_all(action='DESELECT')
+            mesh.select_set(True); context.view_layer.objects.active = mesh
+            bpy.ops.object.vertex_group_normalize_all(
+                group_select_mode='BONE_DEFORM', lock_active=False)
+        except Exception as _e:
+            print("Soulify fine skin:", _e)
+
+    if bool(getattr(props, "skin_facial", True)) and not partial:
+        try:
+            if not any(getattr(props, s, None) is not None
+                       for s in ("skin_eye_l", "skin_eye_r", "skin_teeth_up",
+                                 "skin_teeth_low", "skin_tongue")):
+                _facial_autodetect(props, context)
+            _nf = bind_facial_features(props, context, rig)
+        except Exception as e:
+            print("Soulify facial bind:", e)
+            _nf = 0
+    else:
+        _nf = 0
+
+    extra = ""
+    try:
+        if _nfine[0]:
+            extra += " Fine hand skin: %d vert(s)." % _nfine[0]
+        if _nfine[1]:
+            extra += " Fine foot skin: %d vert(s)." % _nfine[1]
+    except Exception:
+        pass
+    if _nf:
+        extra += " %d facial feature(s) bound." % _nf
+    if hires_done:
+        extra += " High-res: solved on a decimated proxy."
+    if n_polish:
+        extra += " Polished %d weight group(s)." % n_polish
+    if n_smart_off:
+        extra += " Smart filter skipped %d uncovered bone(s)." % n_smart_off
+    if sel_bones_only:
+        extra += " Re-bound %d selected bone(s) only." % len(allowed)
+    if sel_verts_only:
+        extra += " New weights on %d selected vert(s) only." % len(sel_vids)
+
+    if split and not partial:
         _sk = "smart-grid skirt weights" if bool(getattr(props, "skin_smart_skirt", True)) else props.skin_engine.title()
-        return ("Bound. Body=%s; skirt=%s (own bones only)."
-                % (props.skin_engine.title(), _sk)), None
-    return "Bound the body to the rig (%s)." % props.skin_engine.title(), None
+        return ("Bound. Body=%s; skirt=%s (own bones only).%s"
+                % (props.skin_engine.title(), _sk, extra)), None
+    return "Bound the body to the rig (%s).%s" % (props.skin_engine.title(), extra), None
 
 
 def unbind_mesh(props, context):
     mesh = props.target_mesh
     objs = [o for o in (mesh, (props.skirt_object if props.skirt_source == 'SEPARATE' else None)) if o]
+    for slot in ("skin_eye_l", "skin_eye_r", "skin_teeth_up",
+                 "skin_teeth_low", "skin_tongue"):
+        ob = getattr(props, slot, None)
+        if ob is not None and ob not in objs:
+            objs.append(ob)
     if not objs:
         return None, "Select the character mesh first."
     if context.object and context.object.mode != 'OBJECT':
@@ -2955,6 +4124,661 @@ def unbind_mesh(props, context):
     return "Unbound (removed %d armature modifier(s) + deform groups)." % n, None
 
 
+_STALE_HINTS = ("twist", "stretch", "_ik", "_fk", "bend", "root", "pelvis",
+                "spine", "arm", "hand", "leg", "thigh", "foot", "shoulder",
+                "neck", "head", "clavicle", "calf", "shin", "toe", "finger",
+                "thumb", "index", "middle", "ring", "pinky", "breast", "hips")
+
+
+def stale_weight_groups(ob, rig):
+    """SMART CLEAN-UP scan: vertex groups that look like RIG WEIGHTS but
+    belong to no bone of the CURRENT rig - leftovers of older binds (ARP,
+    Mixamo, earlier generates). Whitelists the addon's own masks (SR_*) and
+    anything that matches a current-rig bone. Returns group names."""
+    if ob is None or ob.type != 'MESH':
+        return []
+    cur = {b.name for b in rig.data.bones} if rig else set()
+    other = set()
+    for o in bpy.data.objects:
+        if o.type == 'ARMATURE' and (rig is None or o.data is not rig.data):
+            other.update(b.name for b in o.data.bones)
+    out = []
+    for vg in ob.vertex_groups:
+        n = vg.name
+        if n in cur or n.startswith("SR_"):
+            continue
+        low = n.lower()
+        rig_like = (n.startswith("DEF-") or n in other
+                    or ((low.endswith((".l", ".r")) or "." in n or "_" in n)
+                        and any(h in low for h in _STALE_HINTS)))
+        if rig_like:
+            out.append(n)
+    return out
+
+
+def _bind_objects(props):
+    objs = [props.target_mesh]
+    if props.skirt_source == 'SEPARATE' and props.skirt_object is not None:
+        objs.append(props.skirt_object)
+    return [o for o in objs if o is not None]
+
+
+class SMARTRIG_OT_facial_detect(bpy.types.Operator):
+    bl_idname = "smartrig.skin_facial_detect"
+    bl_label = "Auto-Detect Facial Meshes"
+    bl_description = ("Fill the facial slots from the scene mesh names "
+                      "(eye / teeth / tongue). Your manual picks are kept")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        n = _facial_autodetect(context.scene.smartrig, context)
+        if not n:
+            self.report({'WARNING'}, "No new facial meshes found by name")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Facial slots filled: %d" % n)
+        return {'FINISHED'}
+
+
+def ensure_finger_curl(rig):
+    """SMART finger scale-curl repair. Rigify's super_finger should add a
+    driver to each finger bend bone MCH-f_*.0N_drv (N>=2) so scaling the finger
+    master on Y curls the finger - but generates often ship them missing OR the
+    'automatic' primary axis rolls each finger differently so a fixed +X curl
+    sends some fingers sideways (Saeed's recurring 'finger orientation wrong').
+
+    This detects, PER finger bend bone, which local axis + sign rotates the tip
+    TOWARD the palm (a real curl) and drives THAT axis with (1-master.scale.y)*pi
+    - so every finger curls into the palm no matter how its roll came out.
+    Returns the number of curl drivers (re)created."""
+    import re as _re
+    from mathutils import Vector as _V
+    added = 0
+    for side in (".L", ".R"):
+        masters = [pb for pb in rig.pose.bones
+                   if pb.name.endswith("_master" + side)
+                   and pb.name.startswith(("f_", "thumb"))]
+        if not masters:
+            continue
+        heads = [rig.matrix_world @ pb.bone.head_local for pb in masters]
+        palm = sum(heads, _V()) / len(heads)
+        for mpb in masters:
+            mm0 = _re.match(r"^(.*)\.(\d+)_master", mpb.name)
+            if not mm0:
+                continue
+            base = mm0.group(1)
+            segs = []
+            for pb in rig.pose.bones:
+                mm = _re.match(r"^MCH-" + _re.escape(base) + r"\.(\d+)_drv"
+                               + _re.escape(side) + r"$", pb.name)
+                if mm:
+                    segs.append((int(mm.group(1)), pb.name))
+            segs.sort()
+            # Detect the curl axis+sign ONCE for the WHOLE finger (from its first
+            # movable bend bone) and apply the SAME axis+sign to every segment.
+            # Per-bone detection could pick X for one segment and Z for the next
+            # -> the two halves fight and the finger breaks. One axis per finger
+            # keeps it consistent (matches Rigify's own drivers).
+            axis = 0; sign = 1; have = False
+            for idx, (_num, bn) in enumerate(segs):
+                if idx == 0:                # first bend bone = COPY_ROTATION
+                    continue
+                pb = rig.pose.bones[bn]
+                bm = rig.matrix_world @ pb.bone.matrix_local
+                ydir = bm.to_3x3().col[1].normalized()      # bone direction
+                if not have:                # decide axis+sign from THIS (first) bone
+                    tail = bm.translation + ydir * pb.bone.length
+                    want = (palm - tail)
+                    want = want - ydir * want.dot(ydir)
+                    if want.length < 1e-6:
+                        want = _V((0, 0, -1))
+                    want.normalize()
+                    best = None
+                    for _ax in (0, 2):                       # X or Z (not bone dir)
+                        rot = bm.to_3x3().col[_ax].normalized()
+                        move = rot.cross(ydir)
+                        d = move.dot(want)
+                        for _sg in (1, -1):
+                            sc = d * _sg
+                            if best is None or sc > best[0]:
+                                best = (sc, _ax, _sg)
+                    _, axis, sign = best
+                    have = True
+                pb.rotation_mode = 'YZX'
+                try:
+                    pb.driver_remove("rotation_euler")
+                except Exception:
+                    pass
+                drv = pb.driver_add("rotation_euler", axis).driver
+                drv.type = 'SCRIPTED'
+                drv.expression = '(1-sy)*pi' if sign > 0 else '-((1-sy)*pi)'
+                v = drv.variables.new(); v.name = 'sy'; v.type = 'TRANSFORMS'
+                t = v.targets[0]; t.id = rig; t.bone_target = mpb.name
+                t.transform_type = 'SCALE_Y'; t.transform_space = 'LOCAL_SPACE'
+                added += 1
+    return added
+
+
+def finger_curl_missing(rig):
+    """True if any finger bend bone lacks its scale-curl driver."""
+    import re as _re
+    if rig is None:
+        return False
+    have = set()
+    ad = rig.animation_data
+    for fc in (ad.drivers if ad else []):
+        mm = _re.search(r'"(MCH-(?:f_|thumb)[^"]*_drv\.[LR])"', fc.data_path)
+        if mm and "rotation_euler" in fc.data_path:
+            have.add(mm.group(1))
+    for pb in rig.pose.bones:
+        mm = _re.match(r"^MCH-(f_|thumb).*\.(\d+)_drv\.[LR]$", pb.name)
+        if mm and int(mm.group(2)) >= 2 and pb.name not in have:
+            return True
+    return False
+
+
+class SMARTRIG_OT_fix_finger_curl(bpy.types.Operator):
+    bl_idname = "smartrig.fix_finger_curl"
+    bl_label = "Fix Finger Curl"
+    bl_description = ("Rebuild the finger scale-curl drivers so scaling a "
+                      "finger master control curls the whole finger (Rigify "
+                      "super_finger). Use if fingers don't move when scaled")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first"); return {'CANCELLED'}
+        n = ensure_finger_curl(rig)
+        self.report({'INFO'}, "Finger curl rebuilt (%d drivers)." % n)
+        return {'FINISHED'}
+
+
+def scene_health_scan(context):
+    """SMART scene doctor. Finds the clutter that makes a good bind LOOK
+    broken and the user blame the rig:
+      - dead_arm : meshes with an Armature modifier whose target is gone
+                   (old bind - they never move, look 'frozen/torn')
+      - dup_body : an unrigged twin of the character mesh (same vert count,
+                   no armature) sitting on top of the real one
+      - old_rig  : deforming meshes bound to a DIFFERENT armature than ours
+                   (a previous generate still driving them)
+    Returns a dict of lists of object names."""
+    from .metarig import _generated_rig
+    rig = _generated_rig()
+    props = context.scene.smartrig
+    ours = {rig} if rig else set()
+    keep = set(o for o in _bind_objects(props))
+    dead_arm, dup_body, old_rig = [], [], []
+    target = props.target_mesh
+    tvc = len(target.data.vertices) if target else -1
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH':
+            continue
+        arms = [m for m in ob.modifiers if m.type == 'ARMATURE']
+        if arms and all(m.object is None for m in arms):
+            dead_arm.append(ob.name)
+            continue
+        drivers = [m.object for m in arms if m.object is not None]
+        if drivers and rig is not None and all(d is not rig for d in drivers):
+            old_rig.append(ob.name)
+            continue
+        if (ob not in keep and not arms and target is not None
+                and ob is not target and len(ob.data.vertices) == tvc
+                and ob.visible_get()):
+            dup_body.append(ob.name)
+    return {"dead_arm": dead_arm, "dup_body": dup_body, "old_rig": old_rig}
+
+
+def scene_health_total(h):
+    return len(h["dead_arm"]) + len(h["dup_body"]) + len(h["old_rig"])
+
+
+class SMARTRIG_OT_scene_fix(bpy.types.Operator):
+    bl_idname = "smartrig.scene_fix"
+    bl_label = "Fix Scene Clutter"
+    bl_description = ("Deal with old-rig leftovers that make a good bind look "
+                      "broken: hide them, or delete them")
+    bl_options = {'REGISTER', 'UNDO'}
+    mode: bpy.props.EnumProperty(
+        items=[('HIDE', "Hide", "Hide them from the viewport (reversible)"),
+               ('DELETE', "Delete", "Delete them from the file")],
+        default='HIDE')
+
+    def execute(self, context):
+        h = scene_health_scan(context)
+        names = h["dead_arm"] + h["dup_body"] + h["old_rig"]
+        objs = [bpy.data.objects.get(n) for n in names]
+        objs = [o for o in objs if o is not None]
+        if not objs:
+            self.report({'INFO'}, "Scene is clean - nothing to fix.")
+            return {'FINISHED'}
+        if self.mode == 'DELETE':
+            for o in objs:
+                bpy.data.objects.remove(o, do_unlink=True)
+            self.report({'INFO'}, "Deleted %d clutter object(s)." % len(objs))
+        else:
+            for o in objs:
+                try:
+                    o.hide_set(True)
+                except Exception:
+                    o.hide_viewport = True
+            self.report({'INFO'}, "Hid %d clutter object(s)." % len(objs))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fine_register(bpy.types.Operator):
+    bl_idname = "smartrig.fine_register"
+    bl_label = "Register Finger"
+    bl_description = ("Store the SELECTED vertices (Edit Mode) as ONE named finger/"
+                      "toe. Bind then weights them to that digit's bones only - no "
+                      "bleed. Left/right auto-split by side")
+    bl_options = {'REGISTER', 'UNDO'}
+    finger: bpy.props.StringProperty(default="index")
+
+    def execute(self, context):
+        mesh = context.scene.smartrig.target_mesh or context.active_object
+        if mesh is None or mesh.type != 'MESH':
+            self.report({'ERROR'}, "Select the character mesh first.")
+            return {'CANCELLED'}
+        if context.object is not mesh or mesh.mode != 'EDIT':
+            self.report({'ERROR'}, "Edit Mode: select the %s vertices first."
+                        % self.finger)
+            return {'CANCELLED'}
+        bpy.ops.object.mode_set(mode='OBJECT')
+        sel = [v.index for v in mesh.data.vertices if v.select]
+        mw = mesh.matrix_world
+        left = [vi for vi in sel if (mw @ mesh.data.vertices[vi].co).x >= 0.0]
+        rset = set(sel) - set(left)
+        right = [vi for vi in sel if vi in rset]
+        # Only touch the side(s) actually present in the selection: registering
+        # ONE hand must NOT wipe the other hand's earlier registration.
+        for side, vids in ((".L", left), (".R", right)):
+            if not vids:
+                continue
+            nm = _fine_group_name(self.finger, side)
+            vg = mesh.vertex_groups.get(nm) or mesh.vertex_groups.new(name=nm)
+            vg.remove([v.index for v in mesh.data.vertices])
+            vg.add(vids, 1.0, 'REPLACE')
+        bpy.ops.object.mode_set(mode='EDIT')
+        if not sel:
+            self.report({'WARNING'}, "No vertices selected.")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Registered %s (%d L, %d R)."
+                    % (self.finger, len(left), len(right)))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fine_autodetect(bpy.types.Operator):
+    bl_idname = "smartrig.fine_autodetect"
+    bl_label = "Auto-Split All Fingers"
+    bl_description = ("Auto-assign every hand/foot vertex to its NEAREST finger/"
+                      "toe - fills all the named slots at once, no manual picking")
+    bl_options = {'REGISTER', 'UNDO'}
+    kind: bpy.props.StringProperty(default="hand")
+
+    def execute(self, context):
+        import numpy as np
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        mesh = context.scene.smartrig.target_mesh
+        if rig is None or mesh is None:
+            self.report({'ERROR'}, "Generate the rig and pick the mesh first.")
+            return {'CANCELLED'}
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        mw = mesh.matrix_world
+        co = np.array([mw @ v.co for v in mesh.data.vertices])
+        tot = 0
+        for side in (".L", ".R"):
+            digs = _digit_names_present(rig, side, self.kind)
+            if not digs:
+                continue
+            # bone-cloud of every digit on this side + a radius from the base
+            seglists = {f: _digit_bone_segs(rig, side, f) for f in digs}
+            allpts = np.array([[q.x, q.y, q.z] for f in digs
+                               for _bn, a, b in seglists[f] for q in (a, b)])
+            span = float(np.linalg.norm(allpts.max(0) - allpts.min(0)))
+            r = max(0.05 * span, 0.03)
+            lo = allpts.min(0) - r; hi = allpts.max(0) + r
+            box = np.all((co >= lo) & (co <= hi), axis=1)
+            slots = {f: [] for f in digs}
+            for vi in np.where(box)[0]:
+                p = mesh.data.vertices[int(vi)].co
+                pw = mw @ p
+                best = None; bf = None
+                for f in digs:
+                    dmin = min(_seg_d(pw, a, b) for _bn, a, b in seglists[f])
+                    if best is None or dmin < best:
+                        best = dmin; bf = f
+                if best is not None and best < r:
+                    slots[bf].append(int(vi))
+            for f in digs:
+                nm = _fine_group_name(f, side)
+                vg = mesh.vertex_groups.get(nm) or mesh.vertex_groups.new(name=nm)
+                vg.remove([v.index for v in mesh.data.vertices])
+                if slots[f]:
+                    vg.add(slots[f], 1.0, 'REPLACE'); tot += len(slots[f])
+        if not tot:
+            self.report({'WARNING'}, "Nothing detected.")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Auto-split %s into fingers: %d vert(s)."
+                    % (self.kind, tot))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fine_select(bpy.types.Operator):
+    bl_idname = "smartrig.fine_select"
+    bl_label = "Show"
+    bl_description = "Select this finger's registered vertices (Edit Mode) to check/edit"
+    bl_options = {'REGISTER', 'UNDO'}
+    finger: bpy.props.StringProperty(default="index")
+
+    def execute(self, context):
+        mesh = context.scene.smartrig.target_mesh
+        if mesh is None:
+            return {'CANCELLED'}
+        if context.object is not mesh:
+            for o in context.selected_objects: o.select_set(False)
+            context.view_layer.objects.active = mesh; mesh.select_set(True)
+        if mesh.mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.object.mode_set(mode='OBJECT')
+        got = set()
+        for side in (".L", ".R"):
+            got.update(_fine_region(mesh, self.finger, side))
+        for v in mesh.data.vertices:
+            v.select = v.index in got
+        bpy.ops.object.mode_set(mode='EDIT')
+        self.report({'INFO'}, "%s: %d vert(s) selected." % (self.finger, len(got)))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fine_clear(bpy.types.Operator):
+    bl_idname = "smartrig.fine_clear"
+    bl_label = "Clear"
+    bl_description = "Forget all registered fingers/toes for this part"
+    bl_options = {'REGISTER', 'UNDO'}
+    kind: bpy.props.StringProperty(default="hand")
+
+    def execute(self, context):
+        mesh = context.scene.smartrig.target_mesh
+        if mesh is None:
+            return {'CANCELLED'}
+        names = FINGER_NAMES if self.kind == "hand" else TOE_NAMES
+        for f in names:
+            for side in (".L", ".R"):
+                vg = mesh.vertex_groups.get(_fine_group_name(f, side))
+                if vg:
+                    mesh.vertex_groups.remove(vg)
+        self.report({'INFO'}, "Cleared %s fingers." % self.kind)
+        return {'FINISHED'}
+
+
+def refine_finger_joints_meta(meta, mesh, fingers=("index", "middle",
+                                                   "ring", "pinky")):
+    """ARP-AI-style joint refinement, pure geometry (their AI predicts the MCP
+    keypoint from renders; we detect it from the mesh): walk each finger's axis
+    from the tip toward the palm - the KNUCKLE is where the lateral extent
+    jumps as the finger tube meets the palm mass. Joints then go at anatomical
+    fractions (phalanx1 40%, phalanx2 32%, phalanx3 28%) between the fold and
+    the fingertip. Works after ANY placement engine (AI, voxel, manual).
+    Returns {bone: mm moved}."""
+    import bpy as _bpy
+    mw = mesh.matrix_world
+    P = [mw @ v.co for v in mesh.data.vertices]
+    inv = meta.matrix_world.inverted()
+    mm = meta.matrix_world
+    if _bpy.context.object and _bpy.context.object.mode != 'OBJECT':
+        _bpy.ops.object.mode_set(mode='OBJECT')
+    meta.hide_set(False)
+    _bpy.ops.object.select_all(action='DESELECT')
+    meta.select_set(True)
+    _bpy.context.view_layer.objects.active = meta
+    _bpy.ops.object.mode_set(mode='EDIT')
+    eb = meta.data.edit_bones
+    mirr = meta.data.use_mirror_x
+    meta.data.use_mirror_x = False       # we edit BOTH sides explicitly
+    out = {}
+    ALLF = ("thumb", "index", "middle", "ring", "pinky")
+    for side in (".L", ".R"):
+        # axes of every digit on this side -> Voronoi OWNERSHIP filter:
+        # a vert only counts for the finger whose axis it is closest to,
+        # so touching neighbour fingers can no longer pollute the profile
+        axes = {}
+        for f in ALLF:
+            b1 = eb.get(("thumb.01" if f == "thumb" else "f_%s.01" % f) + side)
+            b3 = eb.get(("thumb.03" if f == "thumb" else "f_%s.03" % f) + side)
+            if b1 is None or b3 is None:
+                continue
+            hw = mm @ b1.head
+            tw = mm @ b3.tail
+            ax = tw - hw
+            if ax.length > 1e-5:
+                axes[f] = (hw, ax.normalized(), ax.length)
+        if not axes:
+            continue
+        owned = {f: [] for f in axes}
+        for p in P:
+            best = None
+            for f, (hw, d, L) in axes.items():
+                t = (p - hw).dot(d)
+                if t < -0.45 * L or t > 1.25 * L:
+                    continue
+                tc = max(0.0, min(L, t))
+                r = (p - (hw + d * tc)).length
+                if r > 0.5 * L:
+                    continue
+                if best is None or r < best[0]:
+                    best = (r, f, t)
+            if best is not None:
+                owned[best[1]].append((best[2], best[0]))
+        for f in fingers:
+            if f not in axes:
+                continue
+            b1 = eb.get("f_%s.01%s" % (f, side))
+            b2 = eb.get("f_%s.02%s" % (f, side))
+            b3 = eb.get("f_%s.03%s" % (f, side))
+            if not (b1 and b2 and b3):
+                continue
+            hw, d, L = axes[f]
+            near = owned[f]
+            if len(near) < 20:
+                continue
+            distal = sorted(r for t, r in near if 0.55 * L < t < 0.95 * L)
+            if len(distal) < 5:
+                continue
+            r_est = distal[len(distal) // 2]
+            t_tip = max(t for t, _r in near)
+            # scan a SAFETY WINDOW of +/-25% around the current head: the
+            # detector is a local corrector, never a wild re-placement
+            step = max(0.002, 0.02 * L)
+            t_fold = None
+            t_cur = 0.25 * L
+            while t_cur > -0.25 * L:
+                slab = sorted(r for t, r in near
+                              if abs(t - t_cur) < 2.5 * step)
+                ext = slab[int(0.85 * len(slab))] if len(slab) >= 6 else 0.0
+                # calibrated on real hands: the WEB TOP only reaches ~1.6x the
+                # finger radius and sits ~15% of L DISTAL of the true knuckle
+                # (stopping there was the old bias). The PALM MASS proper
+                # crosses ~2.1x right around the knuckle; small proximal inset
+                if ext > 2.1 * r_est:
+                    t_fold = t_cur - 0.05 * L
+                    break
+                t_cur -= step
+            if t_fold is None:
+                continue
+            J0 = hw + d * t_fold
+            tip = hw + d * (t_tip - 0.001)
+            Lf = (tip - J0).length
+            if Lf < 4 * r_est:
+                continue
+            J1 = J0 + d * 0.40 * Lf
+            J2 = J0 + d * 0.72 * Lf
+            moved = (mm @ b1.head - J0).length
+            b1.head = inv @ J0
+            b1.tail = inv @ J1
+            b2.head = inv @ J1
+            b2.tail = inv @ J2
+            b3.head = inv @ J2
+            b3.tail = inv @ tip
+            pi = {"index": "01", "middle": "02",
+                  "ring": "03", "pinky": "04"}.get(f)
+            if pi:
+                pb = eb.get("palm.%s%s" % (pi, side))
+                if pb is not None:
+                    pb.tail = inv @ J0
+            out["f_%s%s" % (f, side)] = round(moved * 1000, 1)
+    meta.data.use_mirror_x = mirr
+    _bpy.ops.object.mode_set(mode='OBJECT')
+    return out
+
+
+class SMARTRIG_OT_refine_fingers(bpy.types.Operator):
+    bl_idname = "smartrig.refine_fingers"
+    bl_label = "Refine Finger Joints"
+    bl_description = ("Snap the finger joints to anatomically correct places "
+                      "(knuckle detected from the mesh, phalanges at 40/32/28%). "
+                      "Edits the METARIG - press Generate Rig after")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        meta = bpy.data.objects.get("SR_Metarig")
+        mesh = context.scene.smartrig.target_mesh
+        if meta is None or mesh is None:
+            self.report({'ERROR'}, "Need the metarig and the character mesh.")
+            return {'CANCELLED'}
+        out = refine_finger_joints_meta(meta, mesh)
+        if not out:
+            self.report({'WARNING'}, "No finger joints refined.")
+            return {'CANCELLED'}
+        avg = sum(out.values()) / len(out)
+        self.report({'INFO'}, "Refined %d finger chains (avg correction %.1f mm)."
+                    % (len(out), avg))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_fine_mirror(bpy.types.Operator):
+    bl_idname = "smartrig.fine_mirror"
+    bl_label = "Mirror Fingers"
+    bl_description = ("Copy every registered finger/toe to the OTHER side using "
+                      "mesh symmetry across X. Register one hand, mirror the rest")
+    bl_options = {'REGISTER', 'UNDO'}
+    kind: bpy.props.StringProperty(default="hand")
+
+    def execute(self, context):
+        from mathutils import kdtree
+        mesh = context.scene.smartrig.target_mesh
+        if mesh is None:
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        mw = mesh.matrix_world
+        kd = kdtree.KDTree(len(mesh.data.vertices))
+        for v in mesh.data.vertices:
+            kd.insert(mw @ v.co, v.index)
+        kd.balance()
+        tol = max(1e-4, 0.003 * max(mesh.dimensions))
+        names = FINGER_NAMES if self.kind == "hand" else TOE_NAMES
+        done = 0
+        miss = 0
+        for f in names:
+            regL = _fine_region(mesh, f, ".L")
+            regR = _fine_region(mesh, f, ".R")
+            # mirror FROM the fuller side TO the emptier side
+            src_v, dst = ((regL, ".R") if len(regL) >= len(regR)
+                          else (regR, ".L"))
+            if not src_v:
+                continue
+            out = []
+            for vi in src_v:
+                p = mw @ mesh.data.vertices[vi].co
+                q = p.copy()
+                q.x = -q.x
+                _co, idx, d = kd.find(q)
+                if idx is not None and d <= tol:
+                    out.append(idx)
+                else:
+                    miss += 1
+            if out:
+                nm = _fine_group_name(f, dst)
+                vg = mesh.vertex_groups.get(nm) or mesh.vertex_groups.new(name=nm)
+                vg.remove([v.index for v in mesh.data.vertices])
+                vg.add(out, 1.0, 'REPLACE')
+                done += len(out)
+        if not done:
+            self.report({'WARNING'}, "Nothing to mirror - register one side first.")
+            return {'CANCELLED'}
+        msg = "Mirrored %d vert(s) to the other side." % done
+        if miss:
+            msg += " %d had no symmetric twin." % miss
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_weight_paint(bpy.types.Operator):
+    bl_idname = "smartrig.weight_paint"
+    bl_label = "Weight Paint"
+    bl_description = ("Enter Weight Paint on the character mesh to SEE / edit the "
+                      "weights. Ctrl-click a bone to view its weight; press again "
+                      "to leave. Optionally jumps straight to one finger's weights")
+    bl_options = {'REGISTER', 'UNDO'}
+    finger: bpy.props.StringProperty(default="")   # optional: show this finger
+    side: bpy.props.StringProperty(default=".L")
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        mesh = context.scene.smartrig.target_mesh
+        rig = _generated_rig()
+        if mesh is None:
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        # toggle OFF if already weight painting
+        if context.object is mesh and mesh.mode == 'WEIGHT_PAINT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+            self.report({'INFO'}, "Left Weight Paint.")
+            return {'FINISHED'}
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            mesh.hide_set(False)
+        except Exception:
+            pass
+        bpy.ops.object.select_all(action='DESELECT')
+        # rig selected (not active) so Ctrl-click bones switches the shown weight
+        if rig is not None:
+            try:
+                rig.hide_set(False)
+                rig.select_set(True)
+            except Exception:
+                pass
+        mesh.select_set(True)
+        context.view_layer.objects.active = mesh
+        # jump to a specific finger's weight group if asked
+        if self.finger:
+            want = ("DEF-thumb.01" if self.finger == "thumb"
+                    else "DEF-toe.01" if self.finger == "toe"
+                    else "DEF-f_%s.01" % self.finger) + self.side
+            vg = mesh.vertex_groups.get(want)
+            if vg is not None:
+                mesh.vertex_groups.active_index = vg.index
+        bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+        # show the weights clearly (overlay defaults are on; make sure)
+        try:
+            for a in context.window.screen.areas:
+                if a.type == 'VIEW_3D':
+                    a.spaces.active.overlay.show_wpaint_contours = True
+        except Exception:
+            pass
+        msg = "Weight Paint: Ctrl-click a bone to see its weight."
+        if self.finger:
+            msg = "Showing %s weights. Ctrl-click bones to switch." % self.finger
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_bind(bpy.types.Operator):
     bl_idname = "smartrig.bind"
     bl_label = "Bind"
@@ -2962,10 +4786,97 @@ class SMARTRIG_OT_bind(bpy.types.Operator):
                       "skirt bones and the skirt follows only its own bones.")
     bl_options = {'REGISTER', 'UNDO'}
 
+    clean_stale: bpy.props.BoolProperty(
+        name="Delete the old weights (recommended)", default=True,
+        description="Remove the old rig's weight groups before binding - "
+                    "they are dead data that confuses weight painting")
+    fix_clutter: bpy.props.EnumProperty(
+        name="Scene clutter",
+        items=[('HIDE', "Hide it", "Hide the old-rig leftovers (reversible)"),
+               ('DELETE', "Delete it", "Delete the old-rig leftovers"),
+               ('IGNORE', "Leave it", "Do nothing about them")],
+        default='HIDE')
+    _stale = []
+    _health = {"dead_arm": [], "dup_body": [], "old_rig": []}
+
+    def invoke(self, context, event):
+        """SMART: before binding, scan for (a) weights of OLDER rigs on the
+        mesh and (b) scene clutter that makes a good bind look broken."""
+        from .metarig import _generated_rig
+        props = context.scene.smartrig
+        rig = _generated_rig()
+        found = []
+        for ob in _bind_objects(props):
+            found += [(ob.name, n) for n in stale_weight_groups(ob, rig)]
+        type(self)._stale = found
+        type(self)._health = scene_health_scan(context)
+        if found or scene_health_total(type(self)._health):
+            return context.window_manager.invoke_props_dialog(self, width=430)
+        return self.execute(context)
+
+    def draw(self, context):
+        col = self.layout.column()
+        h = type(self)._health
+        if scene_health_total(h):
+            col.label(text="Scene doctor - old-rig leftovers found:",
+                      icon='GHOST_ENABLED')
+            box = col.box()
+            for n in h["dead_arm"]:
+                box.label(text="%s - dead armature (no target)" % n,
+                          icon='UNLINKED')
+            for n in h["old_rig"]:
+                box.label(text="%s - bound to a DIFFERENT rig" % n,
+                          icon='CON_ARMATURE')
+            for n in h["dup_body"]:
+                box.label(text="%s - duplicate un-rigged body" % n,
+                          icon='MOD_MIRROR')
+            box.label(text="These frozen/torn meshes overlap the real one "
+                           "and look like a broken rig.", icon='INFO')
+            col.prop(self, "fix_clutter", expand=True)
+            col.separator()
+        if type(self)._stale:
+            col.label(text="Old rig weight groups on the mesh:", icon='ERROR')
+            for obn, n in type(self)._stale[:6]:
+                col.label(text="    %s :  %s" % (obn, n))
+            extra = len(type(self)._stale) - 6
+            if extra > 0:
+                col.label(text="    ... +%d more" % extra)
+            col.prop(self, "clean_stale")
+        col.label(text="OK binds now with the choices above.")
+
     def execute(self, context):
-        msg, err = bind_mesh(context.scene.smartrig, context)
+        props = context.scene.smartrig
+        # 1) scene clutter
+        if self.fix_clutter != 'IGNORE':
+            h = scene_health_scan(context)
+            names = h["dead_arm"] + h["dup_body"] + h["old_rig"]
+            for n in names:
+                o = bpy.data.objects.get(n)
+                if o is None:
+                    continue
+                if self.fix_clutter == 'DELETE':
+                    bpy.data.objects.remove(o, do_unlink=True)
+                else:
+                    try:
+                        o.hide_set(True)
+                    except Exception:
+                        o.hide_viewport = True
+        # 2) stale weight groups
+        n_cleaned = 0
+        if self.clean_stale:
+            from .metarig import _generated_rig
+            rig = _generated_rig()
+            for ob in _bind_objects(props):
+                for n in stale_weight_groups(ob, rig):
+                    vg = ob.vertex_groups.get(n)
+                    if vg is not None:
+                        ob.vertex_groups.remove(vg)
+                        n_cleaned += 1
+        msg, err = bind_mesh(props, context)
         if err:
             self.report({'ERROR'}, err); return {'CANCELLED'}
+        if n_cleaned:
+            msg += " Cleaned %d old weight group(s)." % n_cleaned
         self.report({'INFO'}, msg); return {'FINISHED'}
 
 
@@ -3129,64 +5040,6 @@ def skirt_jiggle_has_keys(rig):
     return _jig_has_keys(rig, False)
 
 
-class SMARTRIG_OT_chest_bake(bpy.types.Operator):
-    bl_idname = "smartrig.chest_bake"
-    bl_label = "Bake Chest Jiggle"
-    bl_description = ("Bake the live chest jiggle of the frame range onto keyframes "
-                      "(the live solver then stops). Use Clear Bake to go live again.")
-    bl_options = {'REGISTER', 'UNDO'}
-    remove: bpy.props.BoolProperty(default=False)
-
-    def execute(self, context):
-        from .metarig import _generated_rig
-        rig = _generated_rig()
-        if rig is None or not rig.get("sk_chest_jiggle"):
-            self.report({'ERROR'}, "Apply chest jiggle first.")
-            return {'CANCELLED'}
-        jigs = [pb for pb in rig.pose.bones if pb.name.startswith("SKC_jigB")]
-        if context.object is not rig or rig.mode != 'POSE':
-            try:
-                context.view_layer.objects.active = rig
-                rig.hide_set(False)
-            except Exception:
-                pass
-            try:
-                bpy.ops.object.mode_set(mode='POSE')
-            except Exception:
-                pass
-        sc = context.scene
-        if self.remove:
-            # remove ALL baked keyframes on the SKC_jigB bones (robust, any range)
-            _remove_jigB_fcurves(rig)
-            for pb in jigs:
-                try:
-                    pb.rotation_mode = 'QUATERNION'
-                    pb.rotation_quaternion = (1, 0, 0, 0)
-                    pb.matrix_basis = pb.matrix_basis.Identity(4)
-                except Exception:
-                    pass
-            for k in ("sk_chest_jiggle_baked", "sk_chest_bake_s", "sk_chest_bake_e"):
-                if k in rig:
-                    del rig[k]
-            _JIG_STATE.clear(); _JIG_LAST_FRAME[0] = None
-            register_jiggle_handler()
-            self.report({'INFO'}, "Chest bake cleared - live jiggle again.")
-            return {'FINISHED'}
-        for pb in jigs:
-            pb.rotation_mode = 'QUATERNION'
-        if "sk_chest_jiggle_baked" in rig:
-            del rig["sk_chest_jiggle_baked"]
-        for f in range(sc.frame_start, sc.frame_end + 1):
-            sc.frame_set(f)              # spring handler poses the SKC_jigB bones
-            for pb in jigs:
-                pb.keyframe_insert("rotation_quaternion", frame=f)
-        rig["sk_chest_jiggle_baked"] = 1   # handler now skips chest; keyframes play it
-        rig["sk_chest_bake_s"] = sc.frame_start
-        rig["sk_chest_bake_e"] = sc.frame_end
-        self.report({'INFO'}, "Baked chest jiggle %d-%d." % (sc.frame_start, sc.frame_end))
-        return {'FINISHED'}
-
-
 class SMARTRIG_OT_skirt_antipen(bpy.types.Operator):
     bl_idname = "smartrig.skirt_antipen"
     bl_label = "Apply Anti-Penetration"
@@ -3265,39 +5118,6 @@ class SMARTRIG_OT_skirt_follow(bpy.types.Operator):
         if not n:
             self.report({'WARNING'}, "Bind failed - is the skirt mesh valid?"); return {'CANCELLED'}
         self.report({'INFO'}, "Body follow applied. Raise 'Follow Body' (it clings when seated).")
-        return {'FINISHED'}
-
-
-class SMARTRIG_OT_chest_jiggle(bpy.types.Operator):
-    bl_idname = "smartrig.chest_jiggle"
-    bl_label = "Jiggle Chest"
-    bl_description = ("Turn the breast bones into live jiggle (spring secondary "
-                      "motion). Toggle and tune its strength below. Needs a "
-                      "generated rig with breast bones.")
-    bl_options = {'REGISTER', 'UNDO'}
-    remove: bpy.props.BoolProperty(default=False)
-
-    def execute(self, context):
-        from .metarig import _generated_rig
-        rig = _generated_rig()
-        if rig is None:
-            self.report({'ERROR'}, "Generate the rig first.")
-            return {'CANCELLED'}
-        if self.remove:
-            r = remove_chest_jiggle(rig)
-            if r < 0:
-                self.report({'ERROR'}, _NO_ACCESS)
-                return {'CANCELLED'}
-            self.report({'INFO'}, "Chest jiggle removed.")
-            return {'FINISHED'}
-        n = add_chest_jiggle(rig, context.scene.smartrig)
-        if n < 0:
-            self.report({'ERROR'}, _NO_ACCESS)
-            return {'CANCELLED'}
-        if not n:
-            self.report({'WARNING'}, "No breast bones found on the rig.")
-            return {'CANCELLED'}
-        self.report({'INFO'}, "Chest jiggle added. Play the timeline to see it.")
         return {'FINISHED'}
 
 
@@ -3383,11 +5203,17 @@ class SMARTRIG_OT_rig_skirt_standalone(bpy.types.Operator):
 
 classes = (SMARTRIG_OT_register_skirt, SMARTRIG_OT_add_skirt,
            SMARTRIG_OT_remove_skirt, SMARTRIG_OT_skirt_masters,
-           SMARTRIG_OT_bind, SMARTRIG_OT_unbind, SMARTRIG_OT_skirt_collision,
+           SMARTRIG_OT_bind, SMARTRIG_OT_unbind, SMARTRIG_OT_facial_detect,
+           SMARTRIG_OT_scene_fix,
+           SMARTRIG_OT_fix_finger_curl,
+           SMARTRIG_OT_fine_register, SMARTRIG_OT_fine_autodetect,
+           SMARTRIG_OT_fine_select, SMARTRIG_OT_fine_clear,
+           SMARTRIG_OT_fine_mirror, SMARTRIG_OT_refine_fingers,
+           SMARTRIG_OT_weight_paint,
+           SMARTRIG_OT_selbones_pick, SMARTRIG_OT_skirt_collision,
            SMARTRIG_OT_skirt_jiggle, SMARTRIG_OT_bake_jiggle,
            SMARTRIG_OT_skirt_follow, SMARTRIG_OT_skirt_antipen,
            SMARTRIG_OT_skirt_smooth, SMARTRIG_OT_skirt_fix_order,
-           SMARTRIG_OT_chest_jiggle, SMARTRIG_OT_chest_bake,
            SMARTRIG_OT_rig_skirt_standalone)
 
 

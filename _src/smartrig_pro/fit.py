@@ -342,16 +342,33 @@ def _finger_trace(P, C, co, h, steps=14):
             cur = 0.5 * cur + 0.5 * co[near].mean(0)
         pts.append(cur.copy())
     pts = np.array(pts)
-    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-    L = float(seg.sum())
-    if L < 1e-5:
+    base = pts[-1].copy()                          # where the trace met the palm
+    axis = base - P
+    axL = float(np.linalg.norm(axis))
+    if axL < 1e-5:
         return [Vector(P)] * 4, 0.0
-    cum = np.concatenate([[0], np.cumsum(seg)])
+    axn = axis / axL
+    # MONOTONIC + SMOOTH: sort every traced point by how far it is ALONG the
+    # tip->base axis, so a finger that curls (or a wobbly medial snap) can never
+    # produce a bone that reverses direction (the old zig-zag that tore fists).
+    proj = (pts - P) @ axn
+    order = np.argsort(proj)
+    spts = pts[order]; sproj = proj[order]
+    # resample 4 joints at even ALONG-AXIS fractions, taking the medial point
+    # nearest each target depth (keeps the gentle real curve, no fold-back).
     js = []
     for fr in (0.0, 1 / 3, 2 / 3, 1.0):
-        idx = min(int(np.searchsorted(cum, fr * L)), len(pts) - 1)
-        js.append(Vector([float(v) for v in pts[idx]]))
-    return js, L          # [tip, j1, j2, base]
+        target = fr * axL
+        k = int(np.searchsorted(sproj, target))
+        k = max(0, min(k, len(spts) - 1))
+        js.append(Vector([float(v) for v in spts[k]]))
+    # gentle smoothing of the two middle joints toward the straight line so a
+    # noisy medial can not kink the chain
+    for i in (1, 2):
+        straight = P + axn * (i / 3.0 * axL)
+        j = np.array(js[i])
+        js[i] = Vector([float(v) for v in (0.6 * j + 0.4 * straight)])
+    return js, axL        # [tip, j1, j2, base]
 
 
 def _voxel_fingers(obj, h, wrist, elbow, n_fingers, thick_mult, precision, side_z):
@@ -799,14 +816,29 @@ def _bend_normal(p0, p1, p2, prefer):
     return n
 
 
-def _orient_fingers_pro(eb, only_selected=False):
-    """Professional finger/thumb bone roll. Each finger's phalanges share ONE roll
-    so the whole finger bends in a single plane (X = the hinge/bend axis), exactly
-    like Rigify/ARP. The bend-plane normal is measured from the finger's OWN joints,
-    so the THUMB - whose plane is rotated ~45 deg from the fingers - gets its correct
-    orientation automatically instead of an incorrect global one. Palm/metacarpal
-    bones roll toward the back of the hand."""
+def _orient_fingers_pro(eb, only_selected=False, arm=None):
+    """PROFESSIONAL finger/thumb bone roll = Rigify's OWN algorithm.
+
+    Uses rigify.utils.bones.align_chain_x_axis, which aligns every bone in a
+    finger chain to the SAME axis (perpendicular to the chain's own bend plane).
+    This is exactly what Rigify does for 'automatic' fingers, so:
+      * within each finger the roll is perfectly consistent (no candy-wrapper /
+        no torn tips even for fingers that are slightly curled at rest), and
+      * Rigify then emits its native scale-curl drivers on generate.
+    The user never has to think about bone roll - it is arranged for them.
+
+    `arm` is the armature OBJECT (needed by the Rigify helper). If not given we
+    fall back to a robust per-chain bend-plane roll (same idea, no Rigify import).
+    Palm/metacarpal bones roll toward the back of the hand."""
     import re
+    if arm is None:
+        arm = getattr(eb, "id_data", None)      # edit_bones -> Armature datablock
+        try:
+            import bpy as _bpy
+            arm = next((o for o in _bpy.data.objects
+                        if o.type == 'ARMATURE' and o.data == arm), None) or arm
+        except Exception:
+            pass
     fingers = {}
     palms = []
     for nm in list(eb.keys()):
@@ -818,25 +850,59 @@ def _orient_fingers_pro(eb, only_selected=False):
             fingers.setdefault((m.group(2), "thumb"), []).append((int(m.group(1)), nm)); continue
         if nm.startswith("palm"):
             palms.append(nm)
-    for (side, fn), lst in fingers.items():
-        lst.sort()
-        bones = [eb[n] for _, n in lst]
-        if only_selected and not any(getattr(b, 'select', False) for b in bones):
-            continue
+
+    _acx = None
+    _abx = None
+    try:
+        from rigify.utils.bones import align_chain_x_axis as _acx
+        from rigify.utils.bones import align_bone_x_axis as _abx
+    except Exception:
+        _acx = None; _abx = None
+
+    def _finger_normal(bones):
+        """Bend-plane normal of one finger chain."""
+        P = [b.head for b in bones] + [bones[-1].tail]
+        for i in range(len(P) - 2):
+            c = (P[i + 1] - P[i]).cross(P[i + 2] - P[i + 1])
+            if c.length > 1e-7:
+                return c.normalized()
+        return None
+
+    # ONE SHARED bend axis for all four long fingers per side = the average of
+    # their bend-plane normals. Every finger bone's X is aligned to it, so all
+    # fingers curl in the SAME plane (consistent - rotating/scaling any finger
+    # behaves identically; no more "index goes sideways"). The clean monotonic
+    # placement makes this tear-free (within-finger stays ~1.0). Thumb keeps its
+    # own plane.
+    _shared = {}
+    for _side in (".L", ".R"):
+        acc = Vector((0.0, 0.0, 0.0)); ref = None; nn = 0
+        for _f in ("index", "middle", "ring", "pinky"):
+            ch = [eb.get("f_%s.%s%s" % (_f, j, _side)) for j in ("01", "02", "03")]
+            ch = [b for b in ch if b]
+            if len(ch) < 2:
+                continue
+            N = _finger_normal(ch)
+            if N is None:
+                continue
+            if ref is None:
+                ref = N
+            if N.dot(ref) < 0:
+                N = -N
+            acc += N; nn += 1
+        _shared[_side] = (acc / nn).normalized() if nn else None
+
+    def _bendplane_roll(bones):
+        """Fallback: one shared bend-plane normal for the whole chain."""
         pts = [bones[0].head] + [b.tail for b in bones]
         N = None
-        for i in range(len(pts) - 2):                       # bend-plane normal
+        for i in range(len(pts) - 2):
             c = (pts[i + 1] - pts[i]).cross(pts[i + 2] - pts[i + 1])
             if c.length > 1e-7:
                 N = c.normalized(); break
         if N is None:
             N = Vector((0.0, 1.0, 0.0))
-        ref = Vector((0.0, 1.0, 0.0))                       # consistent sign
-        if abs(N.dot(ref)) < 0.3:                           # thumb plane ~ lateral
-            ref = Vector((1.0, 0.0, 0.0)) if side == '.L' else Vector((-1.0, 0.0, 0.0))
-        if N.dot(ref) < 0:
-            N = -N
-        for b in bones:                                     # one roll for the whole finger
+        for b in bones:
             d = (b.tail - b.head)
             if d.length > 1e-6:
                 z = N.cross(d.normalized())
@@ -845,6 +911,32 @@ def _orient_fingers_pro(eb, only_selected=False):
                         b.align_roll(z)
                     except Exception:
                         pass
+
+    for (side, fn), lst in fingers.items():
+        lst.sort()
+        bones = [eb[n] for _, n in lst]
+        if only_selected and not any(getattr(b, 'select', False) for b in bones):
+            continue
+        # IDEMPOTENT: align_bone_x_axis ADDS to the current roll, so zero it
+        # first -> identical result on every Back-to-Metarig / Re-generate.
+        for b in bones:
+            b.roll = 0.0
+        SN = _shared.get(side) if fn != "thumb" else None
+        if SN is not None and _abx is not None and arm is not None:
+            try:
+                for b in bones:                      # all fingers -> ONE shared axis
+                    _abx(arm, b.name, SN)
+                continue
+            except Exception:
+                pass
+        if fn == "thumb" and _acx is not None and arm is not None and len(bones) >= 2:
+            try:
+                _acx(arm, [b.name for b in bones])   # thumb keeps its own plane
+                continue
+            except Exception:
+                pass
+        _bendplane_roll(bones)                        # robust fallback
+
     for nm in palms:                                        # metacarpals -> back of hand
         b = eb.get(nm)
         if b is None:

@@ -413,3 +413,211 @@ NUMBERS (Mens_Shirt_4 -> rigged body, empty pickers, nothing selected):
 DEBUG LESSON: verify A/B reruns start from a TRUE design state - removing
 shape keys in list order bakes the fit into the base mesh (Basis removed
 first promotes SRF_Fit). Use shape_key_clear() then foreach_set(snapshot).
+
+## v1.35.1 - auto size BALLOON fix + THE VOXEL VERDICT (vhd.exe measured)
+Saeed's screenshot: auto-fitted shirt = chest balloon + torn collar + tent
+hem. Root causes measured, not guessed:
+- BALLOON: design span was 2x percentile ring radius (underestimates true
+  width) -> ratio hit the 1.6 clip. Fix: design span = the garment's OWN
+  band extent with SYMMETRIC boxes (garment box from the GARMENT's
+  shoulder span, body box from the body's - a t_r-sized box capped the
+  measurement at the box width and re-ballooned); target clamped to
+  0.8-1.3 x gs x design. Scales now 1.21/1.34/1.10/1.01 (were 1.6 capped).
+- TORN COLLAR (auto mode): auto SRF_Collar (all verts above neck z) feeds
+  _rigid_group_clusters -> rigid snaps disagree with neighbours = tears.
+  Wizard mode is safe (user confirms). TODO: no collar rigidify in auto,
+  or feather the rigid boundary.
+VOXEL EXPERIMENT (his installed 'Voxel Heat Diffuse Skinning' 3.5.4,
+mesh-online): protocol = text files + CLOSED vhd.exe binary
+(mesh.txt bone.txt weight.txt res loops samples influence falloff y/n y/n,
+cwd=addon/data). Ran it directly: shirt 48.3k verts + 29 DEF bones of the
+generated rig, res 128 -> ~70s, full coverage.
+MEASURED BLEED (dominant-bone test, SRF_Sleeve as ground truth):
+  sleeve fabric dominated by spine: ours 0% (hard part mask), vhd 1.5%
+  TORSO fabric dominated by ARM bones: ours 40.5%, vhd 35.4%  <- THE issue
+=> voxel heat alone does NOT fix Saeed's complaint (35% vs 40%): it is
+part-blind - heat crosses the armpit seam exactly like Euclidean distance.
+What fixes it is PART-AWARE domains (sleeve fabric may only receive arm
+heat, torso only spine...) - we already auto-detect the parts. DESIGN
+'Soulify VoxelBind': numpy voxel occupancy (96-128^3) + per-DOMAIN BFS
+geodesic distance from bone voxels (deterministic, no iteration tuning) +
+layer separation via voxel connected components (air gap >= 1 voxel splits
+stacked shells - jacket vs shirt vs body) + 2-3 voxel geodesic feather at
+domain seams. No external binary, no GPL entanglement, integrates jt/SRF
+parts. Next: implement in build_garment_rig, then extend torso-column
+override to 'NOT SRF_Sleeve above pelvis' in the warp (kills the 40%).
+
+## v1.36.0 - VOXELBIND SHIPPED (part-aware voxel weights, 4 attempts measured)
+New module voxelbind.py: build_garment_rig tries voxelbind.weights() first
+(segment weights = fallback). Occupancy grid 128 on the long axis; verts +
+edge midpoints + poly centres + 1-voxel dilation; BODY voxels = obstacles;
+per-domain per-bone GEODESIC fields (6-neighbour relaxation, 72 sweeps);
+occlusion-tested bone seeding (ray bone->cell must not cross other fabric
+first); weights 1/(d+1.5)^2 blended by feathered domain masks; 3 Laplacian
+passes over the MESH graph; top-4, normalised.
+THE FOUR ATTEMPTS (all measured on Mens_Shirt_4 + rigged body, arm 40-50deg):
+1. domains from the pre-warp radius masks: bleed 2% BUT the mask both
+   under-covers (upper sleeve -> kinked tube) and over-covers (flared side
+   panels -> dragged wings). Mask quality was the ceiling.
+2. pure geodesic VORONOI (no domains): 40% torso arm-bleed. THE LESSON:
+   the armpit SEAM is sewn fabric = a perfect heat bridge; geodesic
+   connectivity CANNOT encode part semantics. vhd.exe (35%) fails the
+   same way - more diffusion never fixes it.
+3. body-class transfer (garment vert takes nearest BODY vert's class from
+   the body's own rig weights, normal-filtered): arm classes swallowed
+   58% incl. chest slabs - A-pose proximity is ambiguous even with the
+   inner-side normal test. Kept EXPERIMENTAL: scene["srf_vb_bodyclass"].
+4. SHIPPED: WORN-STATE domains - in the worn shape with the CHARACTER's
+   joints (jt=dst in build_garment_rig), sleeve fabric WRAPS the arm and
+   side panels HUG the torso: sleeve := d_arm < 0.55*rho(spine axis),
+   legs analog below pelvis (skipped for LOOSE), rest -> spine1/2.
+   Bias 0.55 keeps ambiguous fabric on the torso.
+MORE LESSONS:
+- Voxel-quantised weights show as rigid SLABS when posed. Mesh-graph
+  Laplacian smoothing (3 passes) = vhd's 'Diffuse Loops'. Mandatory.
+- FEATHER 2 voxels with mask^2 fade; 6 passes + feather 3 dragged a
+  wing of side fabric with the arm.
+- The old bleed metric used the radius mask as ground truth - once the
+  mask is wrong BOTH ways the metric misleads. POSED RENDERS are the
+  only honest judge for weight quality (screenshots of the REST pose
+  show the warp, not the weights: the rig is built at rest).
+OPEN (next session): underarm loose-drape wing at high arm raise (the
+Drape/cloth pass should settle it - or cap arm influence by height);
+collar tears = PLACEMENT (shirt yoke lands below the body shoulder line,
+body pokes through - fix garment neck/shoulder mapping); body-class R&D
+(k-vote + component validation + canonical pose); kandura + pants
+regression tests before trusting VoxelBind beyond shirts.
+
+## v1.36.1-2 - boundary frames + collision hardening (AI-council session)
+Saeed had me consult DeepSeek/ChatGPT/Gemini (he relayed answers; I was
+the final arbiter). Their consensus matched our measurements and added
+two upgrades; all shipped and verified live:
+- OPEN-BOUNDARY FRAMES (the collar-spike killer): _boundary_info() maps
+  every vert within 3 rings of an open edge to a parent one ring farther
+  in; F0 AND F1 frames are COPIED outward along these links (frame
+  propagation - ChatGPT/Gemini rank it above damping: a half-ring PCA is
+  rank-deficient and flips). Detail also fades softly (0.4/0.75/0.95/1).
+- COLLISION (chest was left inside the body by the single 0.35x push):
+  final pass now = 3 CAPPED full-depth projections along the body
+  closest-point normal (cap = max(2*avg_edge, 3*floor); a small cap
+  ping-pongs in concave pockets - 0.6*edge left 285 then 58 verts inside)
+  + a 4th UNCAPPED DEFINITE push (Gemini's 'definite push').
+  Verified: 0/6901 sampled verts inside the body (was ~4%+).
+- Numbers: match 12s, damage 15.7 (damping counts as deviation), zero
+  penetration, no spikes.
+THE REMAINING GAP (measured, not guessed): the yoke-below-shoulder
+hypothesis was DISPROVEN (worn yoke z=1.544 vs body shoulder 1.537 - it
+sits correctly). The real issues: (1) chest fabric lands ~1cm inside the
+PECS because auto_size_targets measures body depth in a band AT the
+chest joint z (1.307 = armpit level) while the pec bulge is lower ->
+depth morph underestimates -> collision then shrink-wraps the chest
+skin-tight (the 'painted-on' look). FIX NEXT: target depth = MAX body
+band extent over the pelvis..neck span (or per-band z sampling), not a
+single slice. (2) collar band geometry needs its own ring mapping
+(collar top ring -> neck circle at the right z) instead of riding the
+generic warp. Drape pass remains the finisher for loose underarm folds.
+
+## v1.36.3 - COMPLETE MANNEQUIN + collar attempts + SAEED'S ARCHITECTURE
+- build_mannequin now reads as a PERSON (Saeed's spec): head capsule
+  (neck +0.18T/+0.34T, r=1.7/1.15 x neck), MITT hands (wrist + 0.38 x
+  forearm, flat skin radius (1.05r, 0.45r)), synthesized FULL legs when
+  the garment implies none (hips at max(0.30 x shoulder-span, 0.75 x
+  torso_r), ankle to GROUND z not torso-proportional - hockey sticks
+  otherwise), feet (ankle + 0.5 x shin forward, flat). Verified render.
+- COLLAR: two ring-mapping attempts (map collar band onto the measured
+  neck column, pin, ARAP-blend) still read ~12.8cm mean radius - the
+  85th->25th percentile fix + design-radius gate + trap exclusion were
+  right but the pinned ring fights the rest of the pipeline (rigidify /
+  detail / collision). STOP PATCHING: Saeed's architecture (below)
+  solves the collar structurally - the mannequin has a NECK, the collar
+  encircles it by construction, and riding the mannequin morph carries
+  it to the character's neck exactly.
+- SAEED'S ARCHITECTURE DECISION (his words, session end): garment ->
+  generate ITS mannequin -> BIND garment to the mannequin -> PLACE by
+  MAPPING mannequin bones onto character bones -> fitting only as the
+  final polish. This is the MetaTailor ride (LESSONS v1.27) - the
+  experimental retarget_ride minus its documented weakness. REFINEMENT
+  AGREED: bind with VOXELBIND WEIGHTS TO THE MANNEQUIN'S BONES (not
+  Surface Deform onto the sparse mannequin mesh - that was the v1.27
+  failure), bone names already match 1:1, snap_rig_to_joints already
+  poses them. NEXT SESSION = make this the default one-click pipeline:
+  complete mannequin -> VoxelBind bind -> bone map+snap -> collision/
+  tune/drape polish.
+- OPS NOTES: Saeed inspects the scene live - operators must tolerate
+  hidden garment/mannequin (auto_pick skips invisible meshes BY DESIGN;
+  unhide before matching). SRF_Mannequin torso-only confusion resolved
+  by completing it; 'Place Garment' hides the body deliberately.
+
+## 2026-07-04 - v1.58.0 -> v1.63.1: pro hand system + ARP AI integration
+- FINE SKIN ROOT CAUSE (middle finger collapsed on curl): DEF-hand is ~19cm,
+  its TAIL reaches the middle FINGERTIP, and nearest-2-segments weighting gave
+  tip verts ~22% hand -> tearing. Middle only, because it lies exactly on the
+  hand bone axis. Fix: clamp the base segment at the digit's knuckle.
+- fine_register used to WIPE BOTH side groups then write the selected side:
+  registering hand B erased hand A. Now only sides present in the selection
+  are touched. Fingers do NOT auto-mirror; smartrig.fine_mirror (world-X
+  KDTree, mirrored 1185 verts / 0 misses) copies registrations across.
+- WEIGHTS v2 (fine_skin_apply): arc-length chain profile with smoothstep
+  blends at joints (0.25 x min bone len) + TIGHT knuckle fold (hb0=0.15 L0)
+  anchored at c0 = 5th-percentile arc of the REGISTERED verts (bone heads can
+  sit ~2cm inside the palm - never trust them for the fold line). Web verts
+  (registered to 2 digits) = inverse-square radial mix of both digits.
+  KNUCKLE EXPANSION: unregistered verts behind the knuckle get <=0.35 graded
+  weight - the metacarpal head is STATIC bone; wide soft blends flatten the
+  knuckles into a dome ("mush"). Judge web stretch in ABSOLUTE mm (1mm edge
+  stretching to 5mm is fine skin behavior), not ratios.
+- PALM (v1.61): per-metacarpal columns, 2-nearest inverse-square lateral
+  blend, hand->palm smoothstep ramp along the column; forearm share at the
+  wrist PRESERVED (_fine_write_weights own=/scale=). Finger folds blend into
+  their PALM column, not DEF-hand. _fine_palm_map = greedy UNIQUE nearest
+  (plain nearest collapsed onto one finger).
+- ARP-style polish replaced the slow python Laplacian: masked
+  vertex_group_smooth(BONE_DEFORM, 0.5, x2) + vertex_group_clean(0.01),
+  wrist-border verts excluded from the mask.
+- PLACEMENT: knuckle .01 heads sat ~15mm (45% of L0) inside the palm. Weights
+  cannot fix a wrong ROTATION CENTER. But NEVER slide only the head: that left
+  3mm stub bones -> Rigify sizes widgets by bone length -> "controls shrank".
+  Rebuild the WHOLE chain: J0 at the fold, tip at 99th-percentile arc,
+  phalanges 40/32/28%. Palm tails pair with fingers BY NAME (palm.01->index
+  ... palm.04->pinky) - a proximity snap inside the finger loop let the LAST
+  finger steal every palm tail (all palms converged on the pinky).
+- SR_Metarig has use_mirror_x=True: editing .L silently mirrors .R. Disable
+  it when writing both sides explicitly.
+- GEOMETRIC KNUCKLE DETECTOR (smartrig.refine_fingers, auto after
+  build_metarig): Voronoi ownership by finger axes (touching neighbour
+  fingers poison any slab profile without it), scan +-25% window around the
+  current head; web top reads ~1.6 x finger radius and sits ~15% L DISTAL of
+  the true knuckle (first version stopped there = wrong), palm mass proper
+  crosses ~2.1 x r. Accuracy 4-11mm vs registration ground truth.
+- ARP RESEARCH (installed addon src, local research/arp_src - NOT committed,
+  proprietary): HEAT_MAP engine = split loose parts + parent_set
+  ARMATURE_AUTO + rig_add helper armature; PSEUDO_VOXELS = join + remesh
+  proxy -> data_transfer POLYINTERP_NEAREST back; post passes = helper-group
+  weight transfers, head cleanup (strip finger/arm weights), masked
+  vertex_group_smooth(0.5 x4), vertex_group_clean(0.01), twist gradient decay.
+- ARP AI FINGERS integrated (arp_ai.py, smartrig.ai_fingers; AI files from
+  the ARP author, extracted to <project>/AI). Verified: 5/5 fingers, tips
+  1.9-4.7mm, ~18s. TRAPS, each cost a debug round:
+  1) run_process(bin, img, threshold, fingers) param names LIE - the body
+     appends FINGERS before THRESHOLD. Real order: images, nfingers(int),
+     thresh(float). Wrong order -> int('0.5') crash rc=1.
+  2) ARP's camera formula assumes a T-POSE arm; lowered arms film the hand
+     edge-on -> every keypoint null. Camera must sit on the PALM NORMAL
+     (smallest PCA axis of the hand verts); try BOTH signs, keep the batch
+     with more non-null keypoints.
+  3) matrix_world LAGS location assignment (ARP forces update via a no-op
+     transform.translate). Build the look-at from cam_pos directly +
+     view_layer.update(), else renders are EMPTY.
+  4) Render the REST pose (a fist ruins detection - ARP's own error admits
+     it), exact ARP shading (SOLID, SINGLE 0.8, studio 'Default', bg
+     0.0409, 256x256, 'Standard' view transform), cwd = inference dir,
+     trailing comma in the image list, chmod +x on mac/linux.
+- CONVENTION DISCOVERY: ARP's AI puts MCP roots 13-18mm PROXIMAL (deep at the
+  metacarpal head) of the skin fold - i.e. where our wizard originally put
+  them. Both conventions deform correctly HERE because the fine-skin fold is
+  anchored at c0 from the registration, independent of bone heads.
+- WORKFLOW (Saeed's request): NO zip per fix. Patch the INSTALLED addon via
+  Blender MCP (ast.parse before write), shutil sync to _src, reload module
+  list, save blend. Final zip only at project end. Cross-platform status:
+  Windows tested; mac/linux code paths ready but UNTESTED (Gatekeeper
+  quarantine expected on mac; per-OS AI package required).

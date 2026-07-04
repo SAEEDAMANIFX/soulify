@@ -234,7 +234,7 @@ def _fit_core(mo, props, J, h, ground, yc):
             setz(n, BACK)
         elif n.startswith(("toe", "heel", "pelvis", "breast")):
             setz(n, UP)
-    fit._orient_fingers_pro(eb)
+    fit._orient_fingers_pro(eb, arm=mo)
 
     # ---- enforce perfect L/R roll symmetry (mirror roll: R = -L) ----
     for b in eb:
@@ -258,6 +258,19 @@ def _fit_core(mo, props, J, h, ground, yc):
                 pass
 
     bpy.ops.object.mode_set(mode='OBJECT')
+    # Finger rotation axis = EXPLICIT 'X' so Rigify KEEPS our shared-axis roll
+    # (in _orient_fingers_pro all four fingers share one bend axis). 'automatic'
+    # would re-align each finger to its OWN plane and scatter them again
+    # ('index goes sideways'). ensure_finger_curl adds the scale-curl drivers.
+    try:
+        mo2 = bpy.data.objects.get(META_NAME)
+        for _pb in (mo2.pose.bones if mo2 else []):
+            if _pb.name.startswith(("f_", "thumb")) and _pb.name.endswith((".01.L", ".01.R")):
+                rp = getattr(_pb, "rigify_parameters", None)
+                if rp is not None and hasattr(rp, "primary_rotation_axis"):
+                    rp.primary_rotation_axis = 'X'
+    except Exception as _e:
+        print("SmartRig finger axis guard:", _e)
 
 
 def build_metarig(props):
@@ -580,6 +593,17 @@ class SMARTRIG_OT_build_metarig(bpy.types.Operator):
             bpy.ops.object.mode_set(mode='EDIT')
         except Exception:
             pass
+        # ARP-AI-style pass: snap finger joints to the mesh knuckles
+        try:
+            from . import skirt as _sk
+            meta_ob = bpy.data.objects.get(META_NAME)
+            mesh_ob = context.scene.smartrig.target_mesh
+            if meta_ob is not None and mesh_ob is not None:
+                _ref = _sk.refine_finger_joints_meta(meta_ob, mesh_ob)
+                if _ref:
+                    print("SmartRig refined finger joints:", _ref)
+        except Exception as _e:
+            print("SmartRig finger refine skipped:", _e)
         self.report({'INFO'}, "Metarig built (Edit Mode). Tweak bones, add samples, then Generate.")
         return {'FINISHED'}
 
@@ -675,7 +699,23 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
         # (Rigify regenerate rebuilds the rig and wipes jiggle/follow/anti-pen).
         _prev = _generated_rig()
         _had = {k: (bool(_prev.get(k)) if _prev else False)
-                for k in ("sk_jiggle", "sk_chest_jiggle", "sk_follow", "sk_antipen")}
+                for k in ("sk_jiggle", "sk_follow", "sk_antipen")}
+        # NO DUPLICATE RIGS: point Rigify at the ONE existing RIG-* so it
+        # re-generates INTO it (not a new RIG-SR_Metarig.001); remove any strays.
+        try:
+            existing = [o for o in bpy.data.objects
+                        if o.type == 'ARMATURE'
+                        and o.name.startswith("RIG-" + META_NAME)]
+            existing.sort(key=lambda o: o.name)      # RIG-SR_Metarig before .001
+            keep = existing[0] if existing else None
+            for o in existing[1:]:                   # kill duplicates
+                bpy.data.objects.remove(o, do_unlink=True)
+            if keep is not None:
+                keep.name = "RIG-" + META_NAME
+                if hasattr(meta.data, "rigify_target_rig"):
+                    meta.data.rigify_target_rig = keep
+        except Exception as _e:
+            print("SmartRig dedup rigs:", _e)
         try:
             bpy.ops.pose.rigify_generate()
         except Exception as e:
@@ -703,6 +743,28 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                 context.view_layer.objects.active = rig
             except Exception:
                 pass
+            # ARP-style default: NO rubber limbs. Rigify ships IK_Stretch=1.0
+            # (the limb stretches infinitely to reach the IK target - reads as
+            # a broken "jump/stretch" on a clothed character). Animators can
+            # still raise the slider per-limb in the N-panel when wanted.
+            try:
+                for _pb in rig.pose.bones:
+                    if "IK_Stretch" in _pb.keys():
+                        _pb["IK_Stretch"] = 0.0
+            except Exception:
+                pass
+            # Finger scale-curl drivers: Rigify emits its OWN when the fingers
+            # have a clean primary axis (they all use local X consistently, as
+            # they should). ONLY rebuild them if Rigify actually left them
+            # MISSING - never override Rigify's consistent drivers, because our
+            # per-bone axis detection would mix X/Z axes on a single finger and
+            # break the curl (the metarig roll is right but the rig "won't work").
+            try:
+                from . import skirt as _sk
+                if _sk.finger_curl_missing(rig):
+                    _sk.ensure_finger_curl(rig)
+            except Exception as _e:
+                print("SmartRig finger curl:", _e)
         for a in (context.window.screen.areas if context.window else []):
             a.tag_redraw()
         # apply ARP-style skirt collision + region masters on the fresh rig
@@ -735,11 +797,6 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                     _sk.add_skirt_follow_body(rg, p)
                 if _had["sk_antipen"]:
                     _sk.add_skirt_antipen(rg, p)
-            # chest jiggle needs breast bones, not a skirt
-            if _had["sk_chest_jiggle"] and rg is not None:
-                from . import skirt as _sk2
-                if _sk2.add_chest_jiggle(rg, p):
-                    extras.append("chest jiggle")
         except Exception as e:
             print("SmartRig skirt extras failed:", e)
         # safety net: no bone left without a collection (so Rig Layers can hide all)
@@ -824,8 +881,33 @@ class SMARTRIG_OT_refit_metarig(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_toggle_metarig(bpy.types.Operator):
+    bl_idname = "smartrig.toggle_metarig"
+    bl_label = "Hide / Show Metarig"
+    bl_description = ("Hide the metarig so it doesn't clutter the scene while you "
+                      "edit the markers. Press again to show it.")
+
+    @classmethod
+    def poll(cls, context):
+        return bpy.data.objects.get(META_NAME) is not None
+
+    def execute(self, context):
+        mo = bpy.data.objects.get(META_NAME)
+        if mo is None:
+            self.report({'INFO'}, "No metarig yet.")
+            return {'CANCELLED'}
+        try:
+            mo.hide_set(not mo.hide_get())
+        except Exception:
+            mo.hide_viewport = not mo.hide_viewport
+        for a in (context.window.screen.areas if context.window else []):
+            a.tag_redraw()
+        return {'FINISHED'}
+
+
 classes = (SMARTRIG_OT_toggle_group, SMARTRIG_OT_add_sample, SMARTRIG_OT_build_metarig,
-           SMARTRIG_OT_generate,           SMARTRIG_OT_back_to_metarig, SMARTRIG_OT_refit_metarig)
+           SMARTRIG_OT_generate,           SMARTRIG_OT_back_to_metarig, SMARTRIG_OT_refit_metarig,
+           SMARTRIG_OT_toggle_metarig)
 
 
 def register():
