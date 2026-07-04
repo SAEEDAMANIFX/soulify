@@ -554,9 +554,15 @@ classes = (SMARTRIG_OT_ai_fingers,)
 
 def register():
     for c in classes:
-        bpy.utils.register_class(c)
+        try:
+            bpy.utils.register_class(c)
+        except Exception:
+            pass
 
 
 def unregister():
     for c in reversed(classes):
-        bpy.utils.unregister_class(c)
+        try:
+            bpy.utils.unregister_class(c)
+        except Exception:
+            pass

@@ -5,7 +5,7 @@ import bpy
 from bpy.utils import previews
 
 _pcoll = None
-ICON_NAMES = ["body", "foot", "hand", "palm", "finger", "marker", "bone", "rig", "skirt"]
+ICON_NAMES = ["body", "foot", "hand", "palm", "finger", "marker", "bone", "rig", "skirt", "move"]
 
 
 def get(name):

@@ -814,6 +814,13 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
             assign_orphan_bones(_generated_rig())
         except Exception as e:
             print("SmartRig orphan-bone assign failed:", e)
+        # friendly deform names so users don't get lost: DEF-spine top -> DEF-head,
+        # neck segments -> DEF-neck(.NNN) (bones + weight groups; metarig untouched)
+        try:
+            from . import skirt as _sk
+            _sk.rename_head_neck_defs(_generated_rig(), verbose=True)
+        except Exception as e:
+            print("SmartRig head/neck rename failed:", e)
         if extras:
             self.report({'INFO'}, "Rig generated with skirt %s." % " + ".join(extras))
         else:

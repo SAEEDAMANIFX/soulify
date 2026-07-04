@@ -5,6 +5,61 @@ from . import markers
 from . import icons
 
 
+def _wf_draw_folder(container, props, rig, mesh, sel, skf, fi, fol):
+    """Draw one weight folder recursively (nesting subfolders inside)."""
+    bx = container.box()
+    hd = bx.row(align=True)
+    hd.prop(fol, "expanded", text="",
+            icon=('TRIA_DOWN' if fol.expanded else 'TRIA_RIGHT'), emboss=False)
+    active = (props.weight_folders_index == fi)
+    hd.operator("smartrig.wf_select", text="",
+                icon=('RADIOBUT_ON' if active else 'RADIOBUT_OFF'),
+                emboss=False, depress=active).index = fi
+    hd.prop(fol, "name", text="")
+    hd.label(text="%d" % len(skf._wf_descendant_bones(props, fol)))
+    _ln, _tn = skf._wf_lock_stats(props, mesh, fol)
+    if _ln:
+        _ind = hd.row(align=True)
+        _ind.alert = (_ln == _tn)
+        _ind.label(text=str(_ln), icon='LOCKED')
+    hd.operator("smartrig.wf_isolate", text="",
+                icon=('RESTRICT_VIEW_OFF'
+                      if props.weight_isolated_folder == fol.uid else 'VIEWZOOM'),
+                depress=(props.weight_isolated_folder == fol.uid)).index = fi
+    hd.operator("smartrig.wf_select_verts", text="", icon='VERTEXSEL').index = fi
+    _allk = (_tn > 0 and _ln == _tn)
+    _lk = hd.operator("smartrig.wf_lock", text="",
+                      icon=('LOCKED' if _allk else 'UNLOCKED'), depress=_allk)
+    _lk.index = fi; _lk.lock = (not _allk)
+    hd.operator("smartrig.wf_assign", text="", icon='ADD').index = fi
+    hd.operator("smartrig.wf_new_sub", text="", icon='NEWFOLDER').parent = fol.uid
+    hd.operator("smartrig.wf_delete", text="", icon='X').index = fi
+    if fol.expanded:
+        mem = [m for m in fol.members.split(",") if m]
+        has_child = (any(f.parent == fol.uid for f in props.weight_folders)
+                     if fol.uid else False)
+        if not mem and not has_child:
+            bx.label(text="Empty - pick a bone, press +", icon='DOT')
+        for bn in mem:
+            if rig.data.bones.get(bn) is None:
+                continue
+            r = bx.row(align=True)
+            r.separator(factor=1.4)
+            op = r.operator("smartrig.wf_pick", text=skf._wt_pretty(bn),
+                            icon='BONE_DATA', depress=(bn == sel))
+            op.bone = bn
+            vg = mesh.vertex_groups.get(bn)
+            if vg is not None:
+                r.prop(vg, "lock_weight", text="", emboss=False,
+                       icon=('LOCKED' if vg.lock_weight else 'UNLOCKED'))
+            rm = r.operator("smartrig.wf_remove_bone", text="", icon='PANEL_CLOSE')
+            rm.index = fi; rm.bone = bn
+        if fol.uid:
+            for cj, cf in enumerate(props.weight_folders):
+                if cf.parent == fol.uid:
+                    _wf_draw_folder(bx, props, rig, mesh, sel, skf, cj, cf)
+
+
 def _step(layout, num, label, icon, state, icon_value=0):
     """Numbered step header box. state: 'done'|'active'|'todo'. Pass either a
     native Blender `icon` string or a custom `icon_value` (preview icon id)."""
@@ -873,84 +928,167 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             fb.prop(props, "skin_tongue")
             fb.label(text="Eyes/teeth -> head-area bones, rigid.", icon='INFO')
 
-        # ---- Fine Skinning: register each finger BY NAME (no bleed) ----
+        # ---- Weight Editing (per deform bone) - manual, professional ----
         gb = layout.box()
         gr = gb.row(align=True)
         gr.prop(props, "show_skin_fine", text="",
                 icon=('TRIA_DOWN' if props.show_skin_fine else 'TRIA_RIGHT'),
                 emboss=False)
-        gr.label(text="Fine Skinning (per finger)", icon='HAND')
+        gr.label(text="Weight Editing (per bone)", icon='WPAINT_HLT')
         if props.show_skin_fine:
-            from . import skirt as _skf
+            from .metarig import _generated_rig
             _mesh = props.target_mesh
-            gb.label(text="Pick each finger's verts, name it, Bind = crisp finger.",
-                     icon='INFO')
-            _inwp = (context.object is _mesh and _mesh is not None
-                     and _mesh.mode == 'WEIGHT_PAINT') if False else False
+            _rig = _generated_rig()
+            _inwp = False
             try:
-                _inwp = (context.object is props.target_mesh
-                         and props.target_mesh is not None
-                         and props.target_mesh.mode == 'WEIGHT_PAINT')
+                _inwp = (context.object is _mesh and _mesh is not None
+                         and _mesh.mode == 'WEIGHT_PAINT')
             except Exception:
                 _inwp = False
+            gb.label(text="Fingers & body are skinned by AI. Touch up any bone by hand here.",
+                     icon='INFO')
             wpr = gb.row(align=True); wpr.scale_y = 1.3
             wpr.operator("smartrig.weight_paint",
-                         text=("Leave Weight Paint" if _inwp else "View Weights (Weight Paint)"),
+                         text=("Leave Weight Paint" if _inwp else "Enter Weight Paint"),
                          icon=('LOOP_BACK' if _inwp else 'WPAINT_HLT'),
                          depress=_inwp)
-            # ---------- HAND ----------
-            hb = gb.box()
-            hr = hb.row(align=True)
-            hr.prop(props, "skin_fine_hands", text="Fingers", toggle=True)
-            hr.operator("smartrig.fine_autodetect", text="Auto-Split All",
-                        icon='VIEWZOOM').kind = 'hand'
-            hr.operator("smartrig.fine_mirror", text="",
-                        icon='MOD_MIRROR').kind = 'hand'
-            hr.operator("smartrig.refine_fingers", text="", icon='BONE_DATA')
-            from . import arp_ai as _arpai
-            if _arpai.fingers_available():
-                hr.operator("smartrig.ai_fingers", text="", icon='SHADERFX')
-            for f in _skf.FINGER_NAMES:
-                cnt = 0
-                if _mesh is not None:
-                    cnt = len(_skf._fine_region(_mesh, f, ".L")) + \
-                          len(_skf._fine_region(_mesh, f, ".R"))
-                row = hb.row(align=True)
-                row.label(text=f.title(),
-                          icon=('CHECKMARK' if cnt else 'DOT'))
-                op = row.operator("smartrig.fine_register", text="Register")
-                op.finger = f
-                _wp = row.operator("smartrig.weight_paint", text="",
-                                   icon='WPAINT_HLT')
-                _wp.finger = f; _wp.side = ".L"
-                if cnt:
-                    row.operator("smartrig.fine_select", text="",
-                                 icon='RESTRICT_SELECT_OFF').finger = f
-                    row.label(text="%d" % cnt)
-            hb.operator("smartrig.fine_clear", text="Clear Fingers",
-                        icon='X').kind = 'hand'
-            # ---------- FOOT ----------
-            fb2 = gb.box()
-            fr2 = fb2.row(align=True)
-            fr2.prop(props, "skin_fine_feet", text="Toes", toggle=True)
-            fr2.operator("smartrig.fine_autodetect", text="Auto-Split All",
-                         icon='VIEWZOOM').kind = 'foot'
-            fr2.operator("smartrig.fine_mirror", text="",
-                         icon='MOD_MIRROR').kind = 'foot'
-            for f in _skf.TOE_NAMES:
-                cnt = 0
-                if _mesh is not None:
-                    cnt = len(_skf._fine_region(_mesh, f, ".L")) + \
-                          len(_skf._fine_region(_mesh, f, ".R"))
-                row = fb2.row(align=True)
-                row.label(text=f.title(), icon=('CHECKMARK' if cnt else 'DOT'))
-                row.operator("smartrig.fine_register", text="Register").finger = f
-                if cnt:
-                    row.operator("smartrig.fine_select", text="",
-                                 icon='RESTRICT_SELECT_OFF').finger = f
-                    row.label(text="%d" % cnt)
-            fb2.operator("smartrig.fine_clear", text="Clear Toes",
-                         icon='X').kind = 'foot'
+            from . import skirt as _skv
+            _bshown = False
+            try:
+                _bshown = _skv._deform_bones_shown(_rig) if _rig is not None else False
+            except Exception:
+                _bshown = False
+            vrow = gb.row(align=True)
+            vrow.operator("smartrig.toggle_deform_bones",
+                          text=("Hide Deform Bones" if _bshown else "Show Deform Bones"),
+                          icon=('HIDE_OFF' if _bshown else 'HIDE_ON'),
+                          depress=_bshown)
+            _ined = (_mesh is not None and _mesh.mode == 'EDIT')
+            if _mesh is not None and (_inwp or _ined):
+                es = gb.row(align=True); es.scale_y = 1.2
+                es.operator("smartrig.edit_select",
+                            text=("Back to Weight Paint" if _ined
+                                  else "Edit-Select Part of Body"),
+                            icon=('BRUSH_DATA' if _ined else 'EDITMODE_HLT'),
+                            depress=_ined)
+                mk = gb.row(align=True)
+                mk.label(text="Mask:")
+                mk.prop(_mesh.data, "use_paint_mask_vertex", text="Verts",
+                        toggle=True, icon='VERTEXSEL')
+                mk.prop(_mesh.data, "use_paint_mask", text="Faces",
+                        toggle=True, icon='FACESEL')
+                if _ined or (_mesh.data.use_paint_mask
+                             or _mesh.data.use_paint_mask_vertex):
+                    iv = gb.row(align=True)
+                    iv.operator("smartrig.invert_selection",
+                                text="Invert Selection", icon='SELECT_SUBTRACT')
+                if _inwp and (_mesh.data.use_paint_mask
+                              or _mesh.data.use_paint_mask_vertex):
+                    gb.label(text="Mask on: switch bones from the list below "
+                                  "(viewport click = select, not bone).",
+                             icon='INFO')
+            if _mesh is None:
+                gb.label(text="Pick the character mesh first.", icon='ERROR')
+            elif _rig is None:
+                gb.label(text="Generate the rig to list its deform bones.", icon='ERROR')
+            else:
+                _sel = ""
+                try:
+                    _sel = _rig.data.bones[props.weight_bone_index].name
+                except Exception:
+                    _sel = ""
+                from . import skirt as _skf
+                vm = gb.row(align=True)
+                vm.prop(props, "weight_use_folders", text="Folders",
+                        icon='OUTLINER', toggle=True)
+                vm.prop(props, "weight_show_all_bones",
+                        text=("All" if props.weight_show_all_bones else "Deform"),
+                        icon='BONE_DATA', toggle=True)
+                _nb = sum(1 for _b in _rig.data.bones
+                          if props.weight_show_all_bones or _b.use_deform)
+                vm.label(text="%d" % _nb)
+                if props.weight_use_folders:
+                    fbar = gb.row(align=True)
+                    fbar.operator("smartrig.wf_autobuild", text="Auto-Build",
+                                  icon='FILE_REFRESH')
+                    fbar.operator("smartrig.wf_new", text="New Folder",
+                                  icon='NEWFOLDER')
+                    if len(props.weight_folders):
+                        fbar.operator("smartrig.wf_clear", text="", icon='TRASH')
+                    if not len(props.weight_folders):
+                        gb.label(text="No folders - press Auto-Build or New Folder.",
+                                 icon='INFO')
+                    _assigned = set()
+                    for _fl in props.weight_folders:
+                        _assigned.update(m for m in _fl.members.split(",") if m)
+                    if len(props.weight_folders):
+                        _ai = props.weight_folders_index
+                        _an = (props.weight_folders[_ai].name
+                               if 0 <= _ai < len(props.weight_folders) else "-")
+                        _rb = gb.row(align=True)
+                        _rb.label(text="Reorder: %s" % _an, icon='RADIOBUT_ON')
+                        _rb.operator("smartrig.wf_move_up", text="", icon='TRIA_UP')
+                        _rb.operator("smartrig.wf_move_down", text="", icon='TRIA_DOWN')
+                        _rb.operator("smartrig.wf_outdent", text="", icon='BACK')
+                        _rb.operator("smartrig.wf_indent", text="", icon='FORWARD')
+                    for _fi, _fl in enumerate(props.weight_folders):
+                        if _fl.parent == "":
+                            _wf_draw_folder(gb, props, _rig, _mesh, _sel, _skf,
+                                            _fi, _fl)
+                    _ung = [b.name for b in _rig.data.bones
+                            if (props.weight_show_all_bones or b.use_deform)
+                            and b.name not in _assigned]
+                    if _ung:
+                        _ub = gb.box()
+                        _ub.label(text="Ungrouped (%d) - pick one, then + on a folder"
+                                       % len(_ung), icon='DOT')
+                        for _bn in _ung[:60]:
+                            _op = _ub.operator("smartrig.wf_pick",
+                                               text=_skf._wt_pretty(_bn),
+                                               icon='BONE_DATA', depress=(_bn == _sel))
+                            _op.bone = _bn
+                else:
+                    gb.template_list("SMARTRIG_UL_deform_bones", "",
+                                     _rig.data, "bones",
+                                     props, "weight_bone_index", rows=9)
+                prow = gb.row(align=True); prow.scale_y = 1.3
+                op = prow.operator("smartrig.weight_paint",
+                                   text=(("Paint: " + _sel) if _sel
+                                         else "Paint Selected Bone"),
+                                   icon='BRUSH_DATA')
+                op.group = _sel
+                lrow = gb.row(align=True)
+                _lk = lrow.operator("smartrig.lock_bones", text="Lock All",
+                                    icon='LOCKED'); _lk.lock = True
+                _ul = lrow.operator("smartrig.lock_bones", text="Unlock All",
+                                    icon='UNLOCKED'); _ul.lock = False
+                if (_rig.data.bones.get("DEF-head") is None
+                        and _rig.data.bones.get("head") is not None):
+                    fxr = gb.row(align=True)
+                    fxr.operator("smartrig.fix_head_neck_names",
+                                 text="Fix Head / Neck Names", icon='SORTALPHA')
+                if _sel and _mesh.vertex_groups.get(_sel) is None:
+                    gb.label(text="No weights on this bone yet - paint to add.",
+                             icon='INFO')
+                tb = gb.box()
+                tb.label(text="Weight Tools (active group):", icon='MODIFIER')
+                anr = tb.row(align=True)
+                anr.prop(context.scene.tool_settings, "use_auto_normalize",
+                         text="Auto Normalize (keep sum = 1 while painting)",
+                         toggle=True, icon='MOD_VERTEX_WEIGHT')
+                trow = tb.row(align=True)
+                trow.operator("smartrig.weight_smooth", text="Smooth",
+                              icon='MOD_SMOOTH')
+                trow.operator("smartrig.weight_normalize", text="Normalize",
+                              icon='MOD_VERTEX_WEIGHT')
+                trow.operator("smartrig.weight_clean", text="Clean",
+                              icon='BRUSH_DATA')
+                mrow = tb.row(align=True)
+                mrow.operator("smartrig.weight_mirror", text="Mirror L / R",
+                              icon='MOD_MIRROR')
+                mall = mrow.operator("smartrig.weight_mirror",
+                                     text="Symmetrise All", icon='ARROW_LEFTRIGHT')
+                mall.all_groups = True
 
         bnd = layout.box()
         bnd.label(text="Bind", icon='POSE_HLT')

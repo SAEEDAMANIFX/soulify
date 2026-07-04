@@ -1,6 +1,7 @@
 import bpy
 from bpy.props import (PointerProperty, IntProperty, BoolProperty,
-                       FloatProperty, StringProperty, EnumProperty)
+                       FloatProperty, StringProperty, EnumProperty,
+                       CollectionProperty)
 from bpy.types import PropertyGroup
 
 
@@ -256,6 +257,75 @@ def _kandura_align_update(self, context):
         kandura.align_snap_apply(context, self.kandura_align_surface)
     except Exception as e:
         print("SmartRig kandura align:", e)
+
+
+_SYNC_FROM_VIEWPORT = False   # set True by the WP->list sync timer to avoid re-select loops
+
+
+def _weight_bone_update(self, context):
+    if _SYNC_FROM_VIEWPORT:
+        return
+    """Selecting a bone in the Weight-Editing list lights it up on the character:
+    unhide the rig, draw bones in front, reveal its bone collection, select +
+    activate ONLY that bone so the user sees exactly what they are painting."""
+    try:
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            return
+        arm = rig.data
+        bones = arm.bones
+        i = self.weight_bone_index
+        if i < 0 or i >= len(bones):
+            return
+        b = bones[i]
+        try:
+            rig.hide_set(False); rig.hide_viewport = False; rig.show_in_front = True
+        except Exception:
+            pass
+        try:
+            for coll in b.collections:
+                coll.is_visible = True
+        except Exception:
+            pass
+        try:
+            arm.bones.active = b          # active bone highlights in the viewport
+        except Exception:
+            pass
+        # if we're weight painting, ALSO switch the painted group so clicking a
+        # bone in the list instantly changes what you paint - no viewport Ctrl-click
+        try:
+            _msh = context.scene.smartrig.target_mesh
+            if _msh is not None and _msh.mode == 'WEIGHT_PAINT':
+                _vg = _msh.vertex_groups.get(b.name)
+                if _vg is not None:
+                    _msh.vertex_groups.active_index = _vg.index
+        except Exception:
+            pass
+        # if the rig is in Pose Mode, also select just this pose bone (5.x path)
+        try:
+            pbones = rig.pose.bones
+            for pb in pbones:
+                pb.bone.select = False
+        except Exception:
+            pass
+        try:
+            rig.pose.bones[b.name].bone.select = True
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+class WeightFolder(PropertyGroup):
+    """A user folder that groups deform bones for the Weight-Editing list.
+    Membership is stored as comma-separated BONE NAMES so it survives Rigify
+    regeneration (bones are re-created with the same names)."""
+    name: StringProperty(name="Folder", default="Folder")
+    members: StringProperty(default="")   # comma-separated bone names
+    expanded: BoolProperty(default=True)
+    uid: StringProperty(default="")       # stable unique id
+    parent: StringProperty(default="")    # parent folder uid ("" = top level)
 
 
 class SmartRigProps(PropertyGroup):
@@ -594,6 +664,19 @@ class SmartRigProps(PropertyGroup):
         description="PRO per-toe skinning on the foot region (no bleed between toes)")
     show_skin_fine: BoolProperty(name="Fine Skinning", default=False,
         description="Collapse / expand the fine hand/foot skinning tools")
+    weight_bone_index: IntProperty(name="Deform Bone", default=0,
+        description="Active bone in the weight-editing list",
+        update=_weight_bone_update)
+    weight_show_all_bones: BoolProperty(name="All Bones", default=False,
+        description="Show every bone, not only the deform (DEF-) bones")
+    weight_use_folders: BoolProperty(name="Folders", default=True,
+        description="Group the deform bones into user folders (fingers, head, "
+                    "eyes...) for faster navigation, locking and masking")
+    weight_folders: CollectionProperty(type=WeightFolder)
+    weight_folders_index: IntProperty(default=0)
+    weight_isolated_folder: StringProperty(default="")   # uid of isolated folder, if any
+    weight_folder_uid_next: IntProperty(default=0)
+    weight_move_uid: StringProperty(default="")   # folder uid picked up for moving
     show_skin_pick: BoolProperty(name="Pick Bones", default=False,
         description="Collapse / expand the bone family pick buttons")
     skin_eye_l: PointerProperty(name="Eye L", type=bpy.types.Object, poll=_mesh_poll,
@@ -739,6 +822,7 @@ class SmartRigProps(PropertyGroup):
 
 
 def register():
+    bpy.utils.register_class(WeightFolder)
     bpy.utils.register_class(SmartRigProps)
     bpy.types.Scene.smartrig = PointerProperty(type=SmartRigProps)
 
@@ -746,3 +830,4 @@ def register():
 def unregister():
     del bpy.types.Scene.smartrig
     bpy.utils.unregister_class(SmartRigProps)
+    bpy.utils.unregister_class(WeightFolder)

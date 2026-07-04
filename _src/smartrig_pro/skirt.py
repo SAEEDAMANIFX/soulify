@@ -4799,6 +4799,7 @@ class SMARTRIG_OT_weight_paint(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
     finger: bpy.props.StringProperty(default="")   # optional: show this finger
     side: bpy.props.StringProperty(default=".L")
+    group: bpy.props.StringProperty(default="")    # optional: show this exact vertex group / bone
 
     def execute(self, context):
         from .metarig import _generated_rig
@@ -4810,6 +4811,7 @@ class SMARTRIG_OT_weight_paint(bpy.types.Operator):
         # toggle OFF if already weight painting
         if context.object is mesh and mesh.mode == 'WEIGHT_PAINT':
             bpy.ops.object.mode_set(mode='OBJECT')
+            _set_deform_bones_visible(rig, False)   # hide DEF bones again on exit
             self.report({'INFO'}, "Left Weight Paint.")
             return {'FINISHED'}
         if context.object and context.object.mode != 'OBJECT':
@@ -4836,6 +4838,28 @@ class SMARTRIG_OT_weight_paint(bpy.types.Operator):
             vg = mesh.vertex_groups.get(want)
             if vg is not None:
                 mesh.vertex_groups.active_index = vg.index
+        # jump straight to an EXACT bone / vertex group when asked
+        if self.group:
+            vgg = mesh.vertex_groups.get(self.group)
+            if vgg is not None:
+                mesh.vertex_groups.active_index = vgg.index
+            if rig is not None:
+                try:
+                    rig.hide_set(False); rig.hide_viewport = False
+                    rig.show_in_front = True
+                except Exception:
+                    pass
+                gb2 = rig.data.bones.get(self.group)
+                if gb2 is not None:
+                    try:
+                        for coll in gb2.collections:
+                            coll.is_visible = True
+                    except Exception:
+                        pass
+                    try:
+                        rig.data.bones.active = gb2
+                    except Exception:
+                        pass
         bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
         # show the weights clearly (overlay defaults are on; make sure)
         try:
@@ -4847,6 +4871,8 @@ class SMARTRIG_OT_weight_paint(bpy.types.Operator):
         msg = "Weight Paint: Ctrl-click a bone to see its weight."
         if self.finger:
             msg = "Showing %s weights. Ctrl-click bones to switch." % self.finger
+        if self.group:
+            msg = "Editing %s weights. Ctrl-click bones to switch." % self.group
         self.report({'INFO'}, msg)
         return {'FINISHED'}
 
@@ -5273,6 +5299,1143 @@ class SMARTRIG_OT_rig_skirt_standalone(bpy.types.Operator):
         return {'FINISHED'}
 
 
+
+# ============================================================================
+#  PROFESSIONAL MANUAL WEIGHT EDITING  (per deform bone)
+#  AI handles fingers/body automatically; this is the manual touch-up layer:
+#  a searchable list of every DEF- (deform) bone -> paint it -> smooth /
+#  normalize / clean. Works for body, head/face, garment and any custom bone
+#  the user adds (anything with use_deform, exactly like Auto-Rig Pro).
+# ============================================================================
+
+_WT_STRIP = ("DEF-", "DEF_", "ORG-", "MCH-")
+
+
+def _wt_pretty(name):
+    for pre in _WT_STRIP:
+        if name.startswith(pre):
+            return name[len(pre):]
+    return name
+
+
+class SMARTRIG_UL_deform_bones(bpy.types.UIList):
+    """Searchable list of the rig's deform bones for manual weight editing."""
+
+    def draw_item(self, context, layout, data, item, icon, active_data,
+                  active_propname, index):
+        mesh = None
+        try:
+            mesh = context.scene.smartrig.target_mesh
+        except Exception:
+            mesh = None
+        has_vg = bool(mesh and mesh.vertex_groups.get(item.name))
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            row = layout.row(align=True)
+            row.label(text=_wt_pretty(item.name),
+                      icon=('BONE_DATA' if item.use_deform else 'BLANK1'))
+            vg = mesh.vertex_groups.get(item.name) if mesh else None
+            if vg is not None:
+                row.label(text="", icon='CHECKMARK')
+                row.prop(vg, "lock_weight", text="", emboss=False,
+                         icon=('LOCKED' if vg.lock_weight else 'UNLOCKED'))
+            else:
+                row.label(text="", icon='BLANK1')
+        elif self.layout_type == 'GRID':
+            layout.alignment = 'CENTER'
+            layout.label(text="", icon='BONE_DATA')
+
+    def filter_items(self, context, data, propname):
+        bones = getattr(data, propname)
+        helper = bpy.types.UI_UL_list
+        # name search box (built-in)
+        if self.filter_name:
+            flt = helper.filter_items_by_name(
+                self.filter_name, self.bitflag_filter_item, bones, "name")
+        else:
+            flt = [self.bitflag_filter_item] * len(bones)
+        show_all = False
+        try:
+            show_all = context.scene.smartrig.weight_show_all_bones
+        except Exception:
+            show_all = False
+        if not show_all:
+            for i, b in enumerate(bones):
+                if not b.use_deform:
+                    flt[i] &= ~self.bitflag_filter_item
+        order = helper.sort_items_by_name(bones, "name")
+        return flt, order
+
+
+def _deform_collections(rig):
+    """Bone collections that contain ONLY deform bones (safe to hide without
+    hiding control bones) - typically the Rigify 'DEF' collection."""
+    if rig is None:
+        return []
+    arm = rig.data
+    out = []
+    try:
+        colls = getattr(arm, "collections_all", None) or arm.collections
+        for c in colls:
+            bs = list(c.bones)
+            if bs and all(getattr(b, "use_deform", False) for b in bs):
+                out.append(c)
+    except Exception:
+        pass
+    return out
+
+
+def _set_deform_bones_visible(rig, show):
+    if rig is None:
+        return
+    show = bool(show)
+    try:
+        rig.show_in_front = show
+    except Exception:
+        pass
+    for c in _deform_collections(rig):
+        try:
+            c.is_visible = show
+        except Exception:
+            pass
+
+
+def _deform_bones_shown(rig):
+    cs = _deform_collections(rig)
+    return bool(cs) and all(c.is_visible for c in cs)
+
+
+def _wt_prep(context, want_group=None):
+    """Make the character mesh the active object in Weight Paint mode, with the
+    requested (or currently active) vertex group active. Returns the mesh."""
+    mesh = None
+    try:
+        mesh = context.scene.smartrig.target_mesh
+    except Exception:
+        mesh = None
+    if mesh is None:
+        mesh = context.active_object
+    if mesh is None or mesh.type != 'MESH':
+        return None
+    if context.view_layer.objects.active is not mesh:
+        try:
+            for o in context.selected_objects:
+                o.select_set(False)
+        except Exception:
+            pass
+        try:
+            mesh.hide_set(False)
+        except Exception:
+            pass
+        mesh.select_set(True)
+        context.view_layer.objects.active = mesh
+    if want_group:
+        vg = mesh.vertex_groups.get(want_group)
+        if vg is not None:
+            mesh.vertex_groups.active_index = vg.index
+    if mesh.mode != 'WEIGHT_PAINT':
+        try:
+            bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+        except Exception:
+            pass
+    return mesh
+
+
+class SMARTRIG_OT_weight_smooth(bpy.types.Operator):
+    bl_idname = "smartrig.weight_smooth"
+    bl_label = "Smooth Weights"
+    bl_description = ("Smooth the ACTIVE deform group's weights across the mesh - "
+                      "softens harsh, blocky deformation. Repeat for stronger effect")
+    bl_options = {'REGISTER', 'UNDO'}
+    factor: bpy.props.FloatProperty(name="Factor", default=0.5, min=0.0, max=1.0)
+    repeat: bpy.props.IntProperty(name="Repeat", default=3, min=1, max=100)
+
+    def execute(self, context):
+        mesh = _wt_prep(context)
+        if mesh is None or not mesh.vertex_groups:
+            self.report({'ERROR'}, "Pick the mesh and a bone in the list first.")
+            return {'CANCELLED'}
+        try:
+            bpy.ops.object.vertex_group_smooth(
+                group_select_mode='ACTIVE', factor=self.factor, repeat=self.repeat)
+        except Exception as e:
+            self.report({'ERROR'}, "Smooth failed: %s" % e)
+            return {'CANCELLED'}
+        av = mesh.vertex_groups.active
+        self.report({'INFO'}, "Smoothed %s." % (av.name if av else "group"))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_weight_normalize(bpy.types.Operator):
+    bl_idname = "smartrig.weight_normalize"
+    bl_label = "Normalize All"
+    bl_description = ("Make every vertex's deform weights add up to 1.0 - fixes "
+                      "over/under-weighting so bones share the mesh cleanly")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        mesh = _wt_prep(context)
+        if mesh is None or not mesh.vertex_groups:
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        try:
+            bpy.ops.object.vertex_group_normalize_all(
+                group_select_mode='ALL', lock_active=False)
+        except Exception as e:
+            self.report({'ERROR'}, "Normalize failed: %s" % e)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Normalized all deform weights (sum = 1.0).")
+        return {'FINISHED'}
+
+
+
+def _wt_list_sync():
+    """Timer: while weight-painting the character, keep the Weight-Editing list
+    selection in sync with the bone the user Ctrl-clicked in the viewport (which
+    changes the mesh's active vertex group)."""
+    from . import properties as _pp
+    try:
+        ctx = bpy.context
+        sc = getattr(ctx, "scene", None)
+        if sc is None:
+            return 0.3
+        pr = sc.smartrig
+        mesh = pr.target_mesh
+        if (mesh is not None and ctx.view_layer.objects.active is mesh
+                and mesh.mode == 'WEIGHT_PAINT'):
+            av = mesh.vertex_groups.active
+            if av is not None:
+                from .metarig import _generated_rig
+                rig = _generated_rig()
+                if rig is not None:
+                    idx = rig.data.bones.find(av.name)
+                    if idx != -1 and idx != pr.weight_bone_index:
+                        _pp._SYNC_FROM_VIEWPORT = True
+                        try:
+                            pr.weight_bone_index = idx
+                        finally:
+                            _pp._SYNC_FROM_VIEWPORT = False
+    except Exception:
+        try:
+            _pp._SYNC_FROM_VIEWPORT = False
+        except Exception:
+            pass
+    return 0.2
+
+
+def register_wt_sync():
+    try:
+        if not bpy.app.timers.is_registered(_wt_list_sync):
+            bpy.app.timers.register(_wt_list_sync, persistent=True)
+    except Exception:
+        pass
+
+
+def unregister_wt_sync():
+    try:
+        if bpy.app.timers.is_registered(_wt_list_sync):
+            bpy.app.timers.unregister(_wt_list_sync)
+    except Exception:
+        pass
+
+
+class SMARTRIG_OT_invert_selection(bpy.types.Operator):
+    bl_idname = "smartrig.invert_selection"
+    bl_label = "Invert Selection"
+    bl_description = ("Invert the current selection - works in Edit Mode and on the "
+                      "Weight-Paint vertex/face mask, so you can flip 'this part' into "
+                      "'everything but this part' instantly")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        mesh = context.scene.smartrig.target_mesh or context.active_object
+        if mesh is None or mesh.type != 'MESH':
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        if mesh.mode == 'EDIT':
+            bpy.ops.mesh.select_all(action='INVERT')
+        elif mesh.mode == 'WEIGHT_PAINT':
+            try:
+                if mesh.data.use_paint_mask:
+                    bpy.ops.paint.face_select_all(action='INVERT')
+                elif mesh.data.use_paint_mask_vertex:
+                    bpy.ops.paint.vert_select_all(action='INVERT')
+                else:
+                    self.report({'WARNING'}, "Turn on a Verts/Faces mask first.")
+                    return {'CANCELLED'}
+            except Exception as e:
+                self.report({'ERROR'}, "Invert failed: %s" % e)
+                return {'CANCELLED'}
+        else:
+            self.report({'ERROR'}, "Use Edit-Select or Weight Paint first.")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Selection inverted.")
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_edit_select(bpy.types.Operator):
+    bl_idname = "smartrig.edit_select"
+    bl_label = "Edit-Select Part"
+    bl_description = ("Jump into Edit Mode on the body to select the part you want "
+                      "(Alt-click = loop, box select, Select > by seam...), then press "
+                      "again to snap back to Weight Paint - your selection becomes the "
+                      "paint mask so you only affect that part")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        mesh = context.scene.smartrig.target_mesh or context.active_object
+        if mesh is None or mesh.type != 'MESH':
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        if context.view_layer.objects.active is not mesh:
+            try:
+                for o in context.selected_objects:
+                    o.select_set(False)
+            except Exception:
+                pass
+            try:
+                mesh.hide_set(False)
+            except Exception:
+                pass
+            mesh.select_set(True)
+            context.view_layer.objects.active = mesh
+        # turn the vertex mask on so the Edit-Mode selection restricts painting
+        try:
+            mesh.data.use_paint_mask_vertex = True
+        except Exception:
+            pass
+        if mesh.mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+            # keep the rig selected + in front so Ctrl-click bone picking still works
+            try:
+                from .metarig import _generated_rig
+                _rg = _generated_rig()
+                if _rg is not None:
+                    _rg.hide_set(False); _rg.show_in_front = True
+                    _rg.select_set(True)
+            except Exception:
+                pass
+            self.report({'INFO'}, "Back to Weight Paint - painting only your selection.")
+            return {'FINISHED'}
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            bpy.ops.mesh.select_mode(type='VERT')
+        except Exception:
+            pass
+        self.report({'INFO'}, "Edit Mode: select the part (Alt-click = loop), then press again.")
+        return {'FINISHED'}
+
+
+def rename_head_neck_defs(rig, verbose=False):
+    """Give the super-spine's top deform bones friendly names so users don't get
+    lost: DEF-spine.<top> -> DEF-head, and the neck segments -> DEF-neck(.NNN).
+    Head/neck are identified by the 'head' and 'neck' CONTROL bones' Z spans, so
+    this is independent of spine_count / neck_count. Also renames the matching
+    vertex groups on every skinned mesh. Idempotent + non-destructive: the metarig
+    and ORG-/MCH- bones are left untouched (kandura / retarget still reference
+    them). Returns {old: new}."""
+    if rig is None:
+        return {}
+    arm = rig.data
+
+    def zspan(name):
+        b = arm.bones.get(name)
+        if b is None:
+            return None
+        return (min(b.head_local.z, b.tail_local.z),
+                max(b.head_local.z, b.tail_local.z))
+
+    head_ctrl = zspan("head")
+    neck_ctrl = zspan("neck")
+    if head_ctrl is None:
+        return {}
+    def_spine = sorted([b for b in arm.bones if b.name.startswith("DEF-spine")],
+                       key=lambda b: b.head_local.z)
+    if not def_spine:
+        return {}
+
+    def ctr(b):
+        return 0.5 * (b.head_local.z + b.tail_local.z)
+
+    renames = {}
+    head_c = [b for b in def_spine
+              if head_ctrl[0] - 1e-4 <= ctr(b) <= head_ctrl[1] + 1e-4]
+    if head_c:
+        renames[head_c[-1].name] = "DEF-head"
+    if neck_ctrl is not None:
+        neck_c = [b for b in def_spine
+                  if neck_ctrl[0] - 1e-4 <= ctr(b) <= neck_ctrl[1] + 1e-4
+                  and b.name not in renames]
+        for i, b in enumerate(neck_c):
+            renames[b.name] = "DEF-neck" if i == 0 else "DEF-neck.%03d" % i
+
+    applied = {}
+    for old, new in renames.items():
+        if old == new or arm.bones.get(new) is not None:
+            continue
+        bn = arm.bones.get(old)
+        if bn is None:
+            continue
+        try:
+            bn.name = new
+            applied[old] = new
+        except Exception:
+            pass
+    # rename the matching weight groups on every mesh skinned to this rig
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH':
+            continue
+        if not any(m.type == 'ARMATURE' and m.object == rig for m in ob.modifiers):
+            continue
+        for old, new in applied.items():
+            vg = ob.vertex_groups.get(old)
+            if vg is not None and ob.vertex_groups.get(new) is None:
+                vg.name = new
+    if verbose:
+        print("SmartRig head/neck rename:", applied)
+    return applied
+
+
+class SMARTRIG_OT_fix_head_neck(bpy.types.Operator):
+    bl_idname = "smartrig.fix_head_neck_names"
+    bl_label = "Fix Head / Neck Names"
+    bl_description = ("Rename the spine chain's top deform bones (and their weight "
+                      "groups) to DEF-head / DEF-neck so they are easy to find. "
+                      "Runs automatically on Generate too; safe & reversible")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first.")
+            return {'CANCELLED'}
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        applied = rename_head_neck_defs(rig)
+        if not applied:
+            self.report({'INFO'}, "Head / neck names are already correct.")
+            return {'FINISHED'}
+        self.report({'INFO'}, "Renamed %d bone(s): %s" %
+                    (len(applied), ", ".join("%s->%s" % kv for kv in applied.items())))
+        return {'FINISHED'}
+
+
+# ============================================================================
+#  WEIGHT FOLDERS - user folders that group deform bones (fingers, head, eyes..)
+#  for faster navigation, per-folder lock, isolate and vertex selection.
+# ============================================================================
+
+_WF_ORDER = ["Head", "Neck", "Eyes", "Mouth", "Torso", "Arm L", "Arm R",
+             "Leg L", "Leg R", "Thumb", "Index", "Middle", "Ring", "Pinky",
+             "Toes", "Other"]
+
+
+def _wf_members(folder):
+    return [x for x in folder.members.split(",") if x]
+
+
+def _wf_set(folder, names):
+    seen = []
+    for n in names:
+        if n and n not in seen:
+            seen.append(n)
+    folder.members = ",".join(seen)
+
+
+def _wf_add_member(folder, name):
+    m = _wf_members(folder)
+    if name not in m:
+        m.append(name)
+    _wf_set(folder, m)
+
+
+def _wf_remove_member(folder, name):
+    _wf_set(folder, [n for n in _wf_members(folder) if n != name])
+
+
+def _wf_new_uid(props):
+    props.weight_folder_uid_next += 1
+    return "f%d" % props.weight_folder_uid_next
+
+
+def _wf_add_folder(props, name, parent_uid=""):
+    f = props.weight_folders.add()
+    f.uid = _wf_new_uid(props)
+    f.name = name
+    f.parent = parent_uid
+    f.expanded = True
+    return f
+
+
+def _wf_children(props, uid):
+    return [f for f in props.weight_folders if f.parent == uid]
+
+
+def _wf_lock_stats(props, mesh, folder):
+    """(locked_count, total_count) of the folder's weight groups incl. subfolders."""
+    if mesh is None:
+        return (0, 0)
+    vgs = [mesh.vertex_groups.get(n) for n in _wf_descendant_bones(props, folder)]
+    vgs = [v for v in vgs if v is not None]
+    return (sum(1 for v in vgs if v.lock_weight), len(vgs))
+
+
+def _wf_folder_locked(props, mesh, folder):
+    """True if the folder (incl. subfolders) has weight groups and ALL are locked."""
+    if mesh is None:
+        return False
+    vgs = [mesh.vertex_groups.get(n) for n in _wf_descendant_bones(props, folder)]
+    vgs = [v for v in vgs if v is not None]
+    return bool(vgs) and all(v.lock_weight for v in vgs)
+
+
+def _wf_descendant_uids(props, uid):
+    """uid + all descendant folder uids (for cycle-safe reparenting)."""
+    out = {uid}
+    changed = True
+    while changed:
+        changed = False
+        for f in props.weight_folders:
+            if f.parent in out and f.uid and f.uid not in out:
+                out.add(f.uid)
+                changed = True
+    return out
+
+
+def _wf_descendant_bones(props, folder):
+    out = list(_wf_members(folder))
+    if folder.uid:
+        for ch in props.weight_folders:
+            if ch.parent == folder.uid:
+                out += _wf_descendant_bones(props, ch)
+    seen = []
+    for n in out:
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
+def _wf_side(n):
+    if n.endswith(".L") or ".L." in n:
+        return " L"
+    if n.endswith(".R") or ".R." in n:
+        return " R"
+    return ""
+
+
+def _wf_classify(n):
+    if n == "DEF-head":
+        return "Head"
+    if n.startswith("DEF-neck"):
+        return "Neck"
+    low = n.lower()
+    if "eye" in low:
+        return "Eyes"
+    if any(s in low for s in ("mouth", "lip", "jaw", "teeth", "tongue", "tooth")):
+        return "Mouth"
+    if "thumb" in low:
+        return "Thumb"
+    if "index" in low:
+        return "Index"
+    if "middle" in low:
+        return "Middle"
+    if "f_ring" in low or low.endswith("ring.l") or low.endswith("ring.r"):
+        return "Ring"
+    if "pinky" in low:
+        return "Pinky"
+    if "toe" in low:
+        return "Toes"
+    if any(s in low for s in ("shoulder", "upper_arm", "forearm", "hand", "palm")):
+        return "Arm" + _wf_side(n)
+    if any(s in low for s in ("thigh", "shin", "foot", "pelvis", "calf")):
+        return "Leg" + _wf_side(n)
+    if "breast" in low or n.startswith("DEF-spine"):
+        return "Torso"
+    return "Other"
+
+
+def wf_autobuild(props, rig):
+    props.weight_folders.clear()
+    props.weight_folder_uid_next = 0
+    props.weight_move_uid = ""
+    props.weight_isolated_folder = ""
+    defs = [b.name for b in rig.data.bones if b.use_deform]
+    low = lambda n: n.lower()
+    Lp = lambda n: n.endswith(".L") or ".L." in n
+    Rp = lambda n: n.endswith(".R") or ".R." in n
+    used = set()
+
+    def take(pred):
+        got = [n for n in defs if pred(n) and n not in used]
+        used.update(got)
+        return got
+
+    def setm(f, names):
+        f.members = ",".join(sorted(set(names)))
+
+    def add(name, parent=""):
+        return _wf_add_folder(props, name, parent)
+
+    for nm, pred in [
+            ("Head", lambda n: n == "DEF-head"),
+            ("Neck", lambda n: n.startswith("DEF-neck")),
+            ("Torso", lambda n: n.startswith("DEF-spine")
+                                or "breast" in low(n) or "pelvis" in low(n))]:
+        m = take(pred)
+        if m:
+            setm(add(nm), m)
+    for nm, keys in [("Eyes", ("eye",)),
+                     ("Mouth", ("mouth", "lip", "jaw", "teeth", "tongue", "tooth"))]:
+        m = take(lambda n, keys=keys: any(k in low(n) for k in keys))
+        if m:
+            setm(add(nm), m)
+    for sd, ps in [("L", Lp), ("R", Rp)]:
+        arm = add("Arm %s" % sd)
+        setm(arm, take(lambda n, ps=ps: ps(n) and any(
+            k in low(n) for k in ("shoulder", "upper_arm", "forearm"))))
+        hand = add("Hand %s" % sd, arm.uid)
+        setm(hand, take(lambda n, ps=ps: ps(n) and "hand" in low(n)))
+        palm = take(lambda n, ps=ps: ps(n) and "palm" in low(n))
+        if palm:
+            setm(add("Palm %s" % sd, hand.uid), palm)
+        for fn, keys in [("Thumb", ("thumb",)), ("Index", ("index",)),
+                         ("Middle", ("middle",)), ("Ring", ("f_ring", "ring")),
+                         ("Pinky", ("pinky",))]:
+            fb = take(lambda n, ps=ps, keys=keys: ps(n)
+                      and any(k in low(n) for k in keys))
+            if fb:
+                setm(add(fn + " " + sd, hand.uid), fb)
+    for sd, ps in [("L", Lp), ("R", Rp)]:
+        leg = add("Leg %s" % sd)
+        setm(leg, take(lambda n, ps=ps: ps(n) and any(
+            k in low(n) for k in ("thigh", "shin", "calf"))))
+        foot = add("Foot %s" % sd, leg.uid)
+        setm(foot, take(lambda n, ps=ps: ps(n)
+                        and ("foot" in low(n) or "toe" in low(n))))
+    rest = [n for n in defs if n not in used]
+    if rest:
+        setm(add("Other"), rest)
+    return len(props.weight_folders)
+
+
+def _wf_skinned_meshes(rig):
+    return [o for o in bpy.data.objects if o.type == 'MESH'
+            and any(m.type == 'ARMATURE' and m.object == rig for m in o.modifiers)]
+
+
+class SMARTRIG_OT_wf_autobuild(bpy.types.Operator):
+    bl_idname = "smartrig.wf_autobuild"
+    bl_label = "Auto-Build Folders"
+    bl_description = ("Create suggested folders (Head, Neck, Eyes, Mouth, Torso, "
+                      "Arms, Legs, each finger, Toes) by bone name - you can rename, "
+                      "add or remove afterwards")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first.")
+            return {'CANCELLED'}
+        n = wf_autobuild(context.scene.smartrig, rig)
+        self.report({'INFO'}, "Built %d folder(s)." % n)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_new(bpy.types.Operator):
+    bl_idname = "smartrig.wf_new"
+    bl_label = "New Folder"
+    bl_description = "Add a new empty folder"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        _wf_add_folder(pr, "Folder %d" % (len(pr.weight_folders) + 1))
+        pr.weight_folders_index = len(pr.weight_folders) - 1
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_grab(bpy.types.Operator):
+    bl_idname = "smartrig.wf_grab"
+    bl_label = "Move Folder"
+    bl_description = ("Pick up this folder to move it - then press 'Drop here' on "
+                      "another folder to nest it inside, or 'To Top' to take it out")
+    bl_options = {'REGISTER', 'UNDO'}
+    uid: bpy.props.StringProperty(default="")
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        pr.weight_move_uid = "" if pr.weight_move_uid == self.uid else self.uid
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_move_cancel(bpy.types.Operator):
+    bl_idname = "smartrig.wf_move_cancel"
+    bl_label = "Cancel Move"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        context.scene.smartrig.weight_move_uid = ""
+        return {'FINISHED'}
+
+
+def _wf_by_uid(props, uid):
+    for f in props.weight_folders:
+        if f.uid == uid:
+            return f
+    return None
+
+
+class SMARTRIG_OT_wf_drop(bpy.types.Operator):
+    bl_idname = "smartrig.wf_drop"
+    bl_label = "Drop Into Folder"
+    bl_description = "Move the picked-up folder inside this one"
+    bl_options = {'REGISTER', 'UNDO'}
+    target: bpy.props.StringProperty(default="")   # "" = top level
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        src = _wf_by_uid(pr, pr.weight_move_uid)
+        if src is None:
+            pr.weight_move_uid = ""
+            return {'CANCELLED'}
+        # cycle guard: cannot drop into itself or its own descendant
+        if self.target and self.target in _wf_descendant_uids(pr, src.uid):
+            self.report({'WARNING'}, "Can't move a folder into its own subfolder.")
+            return {'CANCELLED'}
+        src.parent = self.target
+        nm = _wf_by_uid(pr, self.target).name if self.target else "top level"
+        self.report({'INFO'}, "Moved %s into %s." % (src.name, nm))
+        pr.weight_move_uid = ""
+        return {'FINISHED'}
+
+
+def _wf_sibling_positions(props, i):
+    """Return (list of sibling collection indices in order, position of i)."""
+    fol = props.weight_folders[i]
+    sibs = [j for j, f in enumerate(props.weight_folders) if f.parent == fol.parent]
+    return sibs, sibs.index(i)
+
+
+class SMARTRIG_OT_wf_select(bpy.types.Operator):
+    bl_idname = "smartrig.wf_select"
+    bl_label = "Select Folder"
+    bl_description = "Make this the active folder (the reorder arrows act on it)"
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        if 0 <= self.index < len(pr.weight_folders):
+            pr.weight_folders_index = self.index
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_move_up(bpy.types.Operator):
+    bl_idname = "smartrig.wf_move_up"
+    bl_label = "Move Folder Up"
+    bl_description = "Move the active folder up among its siblings"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        i = pr.weight_folders_index
+        if not (0 <= i < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        sibs, pos = _wf_sibling_positions(pr, i)
+        if pos > 0:
+            tgt = sibs[pos - 1]
+            pr.weight_folders.move(i, tgt)
+            pr.weight_folders_index = tgt
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_move_down(bpy.types.Operator):
+    bl_idname = "smartrig.wf_move_down"
+    bl_label = "Move Folder Down"
+    bl_description = "Move the active folder down among its siblings"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        i = pr.weight_folders_index
+        if not (0 <= i < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        sibs, pos = _wf_sibling_positions(pr, i)
+        if pos < len(sibs) - 1:
+            tgt = sibs[pos + 1]
+            pr.weight_folders.move(i, tgt)
+            pr.weight_folders_index = tgt
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_indent(bpy.types.Operator):
+    bl_idname = "smartrig.wf_indent"
+    bl_label = "Nest Into Folder Above"
+    bl_description = ("Nest the active folder inside the sibling directly above it "
+                      "(move it one level deeper)")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        i = pr.weight_folders_index
+        if not (0 <= i < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        sibs, pos = _wf_sibling_positions(pr, i)
+        if pos > 0:
+            prev = pr.weight_folders[sibs[pos - 1]]
+            pr.weight_folders[i].parent = prev.uid
+        else:
+            self.report({'WARNING'}, "No folder above to nest into.")
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_outdent(bpy.types.Operator):
+    bl_idname = "smartrig.wf_outdent"
+    bl_label = "Move Folder Out"
+    bl_description = "Move the active folder out to its parent's level"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        i = pr.weight_folders_index
+        if not (0 <= i < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        fol = pr.weight_folders[i]
+        if not fol.parent:
+            self.report({'WARNING'}, "Already at the top level.")
+            return {'CANCELLED'}
+        par = _wf_by_uid(pr, fol.parent)
+        fol.parent = par.parent if par else ""
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_new_sub(bpy.types.Operator):
+    bl_idname = "smartrig.wf_new_sub"
+    bl_label = "New Subfolder"
+    bl_description = "Add a subfolder inside this folder (e.g. Palm inside Hand)"
+    bl_options = {'REGISTER', 'UNDO'}
+    parent: bpy.props.StringProperty(default="")
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        _wf_add_folder(pr, "Subfolder", self.parent)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_delete(bpy.types.Operator):
+    bl_idname = "smartrig.wf_delete"
+    bl_label = "Delete Folder"
+    bl_description = "Delete this folder (bones are not touched, only the grouping)"
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        i = self.index
+        if 0 <= i < len(pr.weight_folders):
+            uid = pr.weight_folders[i].uid
+            par = pr.weight_folders[i].parent
+            if uid:
+                for f in pr.weight_folders:
+                    if f.parent == uid:
+                        f.parent = par
+            pr.weight_folders.remove(i)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_clear(bpy.types.Operator):
+    bl_idname = "smartrig.wf_clear"
+    bl_label = "Clear All Folders"
+    bl_description = "Remove all folders (bones untouched)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        pr.weight_folders.clear()
+        pr.weight_move_uid = ""
+        pr.weight_isolated_folder = ""
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_assign(bpy.types.Operator):
+    bl_idname = "smartrig.wf_assign"
+    bl_label = "Add Active Bone to Folder"
+    bl_description = ("Add the bone currently selected in the list to this folder "
+                      "(a bone lives in one folder at a time)")
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+    bone: bpy.props.StringProperty(default="")
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        pr = context.scene.smartrig
+        rig = _generated_rig()
+        if rig is None or not (0 <= self.index < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        bname = self.bone
+        if not bname:
+            try:
+                bname = rig.data.bones[pr.weight_bone_index].name
+            except Exception:
+                self.report({'ERROR'}, "Pick a bone in the list first.")
+                return {'CANCELLED'}
+        for f in pr.weight_folders:
+            _wf_remove_member(f, bname)
+        _wf_add_member(pr.weight_folders[self.index], bname)
+        self.report({'INFO'}, "Added %s to %s." %
+                    (bname, pr.weight_folders[self.index].name))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_remove_bone(bpy.types.Operator):
+    bl_idname = "smartrig.wf_remove_bone"
+    bl_label = "Remove Bone from Folder"
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+    bone: bpy.props.StringProperty(default="")
+
+    def execute(self, context):
+        pr = context.scene.smartrig
+        if 0 <= self.index < len(pr.weight_folders):
+            _wf_remove_member(pr.weight_folders[self.index], self.bone)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_pick(bpy.types.Operator):
+    bl_idname = "smartrig.wf_pick"
+    bl_label = "Pick Bone"
+    bl_description = "Select this bone (switches the painted bone while weight painting)"
+    bl_options = {'REGISTER', 'UNDO'}
+    bone: bpy.props.StringProperty(default="")
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        pr = context.scene.smartrig
+        rig = _generated_rig()
+        if rig is None:
+            return {'CANCELLED'}
+        idx = rig.data.bones.find(self.bone)
+        if idx != -1:
+            pr.weight_bone_index = idx
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_lock(bpy.types.Operator):
+    bl_idname = "smartrig.wf_lock"
+    bl_label = "Lock / Unlock Folder"
+    bl_description = "Lock (or unlock) the weight groups of every bone in this folder"
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+    lock: bpy.props.BoolProperty(default=True)
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        pr = context.scene.smartrig
+        rig = _generated_rig()
+        if rig is None or not (0 <= self.index < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        names = _wf_descendant_bones(pr, pr.weight_folders[self.index])
+        n = 0
+        for mesh in _wf_skinned_meshes(rig):
+            for bn in names:
+                vg = mesh.vertex_groups.get(bn)
+                if vg is not None:
+                    vg.lock_weight = self.lock
+                    n += 1
+        self.report({'INFO'}, "%s %s (%d group%s)." %
+                    ("Locked" if self.lock else "Unlocked",
+                     pr.weight_folders[self.index].name, n, "" if n == 1 else "s"))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_isolate(bpy.types.Operator):
+    bl_idname = "smartrig.wf_isolate"
+    bl_label = "Isolate Folder Bones"
+    bl_description = ("Show ONLY this folder's bones on the character (hide the rest). "
+                      "Press again to show all deform bones")
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        pr = context.scene.smartrig
+        rig = _generated_rig()
+        if rig is None or not (0 <= self.index < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        fol = pr.weight_folders[self.index]
+        members = set(_wf_descendant_bones(pr, fol))
+        try:
+            rig.hide_set(False); rig.hide_viewport = False; rig.show_in_front = True
+        except Exception:
+            pass
+        for c in _deform_collections(rig):
+            c.is_visible = True
+        if pr.weight_isolated_folder == fol.uid:
+            # un-isolate: show all deform bones
+            for b in rig.data.bones:
+                if b.use_deform:
+                    b.hide = False
+            pr.weight_isolated_folder = ""
+            self.report({'INFO'}, "Showing all deform bones.")
+        else:
+            for b in rig.data.bones:
+                if b.use_deform:
+                    b.hide = (b.name not in members)
+            pr.weight_isolated_folder = fol.uid
+            self.report({'INFO'}, "Isolated %s." % fol.name)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_wf_select_verts(bpy.types.Operator):
+    bl_idname = "smartrig.wf_select_verts"
+    bl_label = "Select Folder Vertices"
+    bl_description = ("Select every vertex weighted to this folder's bones as the "
+                      "paint mask, so you paint only this part")
+    bl_options = {'REGISTER', 'UNDO'}
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        pr = context.scene.smartrig
+        rig = _generated_rig()
+        mesh = pr.target_mesh
+        if rig is None or mesh is None or not (0 <= self.index < len(pr.weight_folders)):
+            return {'CANCELLED'}
+        if context.view_layer.objects.active is not mesh:
+            for o in context.selected_objects:
+                o.select_set(False)
+            mesh.select_set(True)
+            context.view_layer.objects.active = mesh
+        if context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        gidx = set()
+        for bn in _wf_descendant_bones(pr, pr.weight_folders[self.index]):
+            vg = mesh.vertex_groups.get(bn)
+            if vg is not None:
+                gidx.add(vg.index)
+        cnt = 0
+        for v in mesh.data.vertices:
+            hit = any(g.group in gidx for g in v.groups)
+            v.select = hit
+            cnt += 1 if hit else 0
+        mesh.data.use_paint_mask_vertex = True
+        bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+        self.report({'INFO'}, "Selected %d vert(s) of %s." %
+                    (cnt, pr.weight_folders[self.index].name))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_lock_bones(bpy.types.Operator):
+    bl_idname = "smartrig.lock_bones"
+    bl_label = "Lock / Unlock All"
+    bl_description = ("Lock (or unlock) EVERY deform group. Locked groups are "
+                      "protected: Smooth / Normalize / Mirror / Auto Normalize and "
+                      "brush strokes will not change their weights")
+    bl_options = {'REGISTER', 'UNDO'}
+    lock: bpy.props.BoolProperty(default=True)
+
+    def execute(self, context):
+        mesh = context.scene.smartrig.target_mesh
+        if mesh is None:
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        defnames = (set(b.name for b in rig.data.bones if b.use_deform)
+                    if rig is not None else None)
+        n = 0
+        for vg in mesh.vertex_groups:
+            if defnames is None or vg.name in defnames:
+                vg.lock_weight = self.lock
+                n += 1
+        self.report({'INFO'}, "%s %d deform group(s)."
+                    % ("Locked" if self.lock else "Unlocked", n))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_toggle_deform_bones(bpy.types.Operator):
+    bl_idname = "smartrig.toggle_deform_bones"
+    bl_label = "Show / Hide Deform Bones"
+    bl_description = ("Show or hide the deform (DEF-) bones drawn over the "
+                      "character - handy while manually editing weights")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .metarig import _generated_rig
+        rig = _generated_rig()
+        if rig is None:
+            self.report({'ERROR'}, "Generate the rig first.")
+            return {'CANCELLED'}
+        show = not _deform_bones_shown(rig)
+        if show:
+            try:
+                rig.hide_set(False); rig.hide_viewport = False
+            except Exception:
+                pass
+        _set_deform_bones_visible(rig, show)
+        self.report({'INFO'}, "Deform bones %s." % ("shown" if show else "hidden"))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_weight_mirror(bpy.types.Operator):
+    bl_idname = "smartrig.weight_mirror"
+    bl_label = "Mirror Weights"
+    bl_description = ("Mirror the ACTIVE deform group's weights across X to the "
+                      "other side (e.g. paint upper_arm.L, mirror it to upper_arm.R). "
+                      "Turn on All groups to symmetrise the whole skin at once")
+    bl_options = {'REGISTER', 'UNDO'}
+    all_groups: bpy.props.BoolProperty(
+        name="All groups", default=False,
+        description="Mirror every deform group at once (full symmetrise) instead "
+                    "of just the active bone")
+    use_topology: bpy.props.BoolProperty(
+        name="Topology mirror", default=False,
+        description="Match verts by topology instead of position (for meshes that "
+                    "are not perfectly symmetric in space)")
+
+    def execute(self, context):
+        mesh = _wt_prep(context)
+        if mesh is None or not mesh.vertex_groups:
+            self.report({'ERROR'}, "Pick the mesh and a bone in the list first.")
+            return {'CANCELLED'}
+        try:
+            bpy.ops.object.vertex_group_mirror(
+                mirror_weights=True, flip_group_names=True,
+                all_groups=self.all_groups, use_topology=self.use_topology)
+        except Exception as e:
+            self.report({'ERROR'}, "Mirror failed: %s" % e)
+            return {'CANCELLED'}
+        av = mesh.vertex_groups.active
+        self.report({'INFO'}, "Mirrored %s across X." %
+                    ("all groups" if self.all_groups else (av.name if av else "group")))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_weight_clean(bpy.types.Operator):
+    bl_idname = "smartrig.weight_clean"
+    bl_label = "Clean Weights"
+    bl_description = ("Delete tiny weights below the limit from every group - "
+                      "removes stray influences for cleaner, faster deformation")
+    bl_options = {'REGISTER', 'UNDO'}
+    limit: bpy.props.FloatProperty(name="Limit", default=0.01, min=0.0, max=1.0)
+
+    def execute(self, context):
+        mesh = _wt_prep(context)
+        if mesh is None or not mesh.vertex_groups:
+            self.report({'ERROR'}, "Pick the character mesh first.")
+            return {'CANCELLED'}
+        try:
+            bpy.ops.object.vertex_group_clean(
+                group_select_mode='ALL', limit=self.limit, keep_single=False)
+        except Exception as e:
+            self.report({'ERROR'}, "Clean failed: %s" % e)
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Cleaned weights below %.3f." % self.limit)
+        return {'FINISHED'}
+
+
 classes = (SMARTRIG_OT_register_skirt, SMARTRIG_OT_add_skirt,
            SMARTRIG_OT_remove_skirt, SMARTRIG_OT_skirt_masters,
            SMARTRIG_OT_bind, SMARTRIG_OT_unbind, SMARTRIG_OT_facial_detect,
@@ -5282,6 +6445,20 @@ classes = (SMARTRIG_OT_register_skirt, SMARTRIG_OT_add_skirt,
            SMARTRIG_OT_fine_select, SMARTRIG_OT_fine_clear,
            SMARTRIG_OT_fine_mirror, SMARTRIG_OT_refine_fingers,
            SMARTRIG_OT_weight_paint,
+           SMARTRIG_UL_deform_bones,
+           SMARTRIG_OT_weight_smooth, SMARTRIG_OT_weight_normalize,
+           SMARTRIG_OT_weight_clean, SMARTRIG_OT_weight_mirror,
+           SMARTRIG_OT_toggle_deform_bones, SMARTRIG_OT_lock_bones,
+           SMARTRIG_OT_wf_autobuild, SMARTRIG_OT_wf_new, SMARTRIG_OT_wf_new_sub,
+           SMARTRIG_OT_wf_grab, SMARTRIG_OT_wf_drop, SMARTRIG_OT_wf_move_cancel,
+           SMARTRIG_OT_wf_select, SMARTRIG_OT_wf_move_up, SMARTRIG_OT_wf_move_down,
+           SMARTRIG_OT_wf_indent, SMARTRIG_OT_wf_outdent,
+           SMARTRIG_OT_wf_delete,
+           SMARTRIG_OT_wf_clear, SMARTRIG_OT_wf_assign, SMARTRIG_OT_wf_remove_bone,
+           SMARTRIG_OT_wf_pick, SMARTRIG_OT_wf_lock, SMARTRIG_OT_wf_isolate,
+           SMARTRIG_OT_wf_select_verts,
+           SMARTRIG_OT_edit_select, SMARTRIG_OT_invert_selection,
+           SMARTRIG_OT_fix_head_neck,
            SMARTRIG_OT_selbones_pick, SMARTRIG_OT_skirt_collision,
            SMARTRIG_OT_skirt_jiggle, SMARTRIG_OT_bake_jiggle,
            SMARTRIG_OT_skirt_follow, SMARTRIG_OT_skirt_antipen,
@@ -5292,6 +6469,10 @@ classes = (SMARTRIG_OT_register_skirt, SMARTRIG_OT_add_skirt,
 def register():
     for c in classes:
         bpy.utils.register_class(c)
+    try:
+        register_wt_sync()
+    except Exception:
+        pass
     # Always arm the live jiggle handler (it no-ops when there are no jiggle rigs).
     # The handler is @persistent so it also survives file loads. This is more
     # reliable than conditionally re-arming, which could miss after a reload.
@@ -5302,6 +6483,10 @@ def register():
 
 
 def unregister():
+    try:
+        unregister_wt_sync()
+    except Exception:
+        pass
     unregister_jiggle_handler()
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
