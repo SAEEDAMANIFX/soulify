@@ -1174,11 +1174,17 @@ def _kan_tweak_map(rig, side, joints):
 
 def _kanr_var(drv, nm, rig, kind, bone, key):
     v = drv.variables.new(); v.name = nm
-    if kind in ('LOC', 'ROTX', 'ROTZ'):
+    if kind == 'LOC':
+        # the roll amount is the master's clamped "roll_up" custom prop
+        # (professional Item-panel slider; no gizmo dragging artefacts)
+        v.type = 'SINGLE_PROP'
+        t = v.targets[0]; t.id_type = 'OBJECT'; t.id = rig
+        t.data_path = 'pose.bones["%s"]["roll_up"]' % bone
+        return
+    if kind in ('ROTX', 'ROTZ'):
         v.type = 'TRANSFORMS'
         t = v.targets[0]; t.id = rig; t.bone_target = bone
-        t.transform_type = {'LOC': 'LOC_Y', 'ROTX': 'ROT_X',
-                            'ROTZ': 'ROT_Z'}[kind]
+        t.transform_type = {'ROTX': 'ROT_X', 'ROTZ': 'ROT_Z'}[kind]
         t.transform_space = 'LOCAL_SPACE'
     else:
         v.type = 'SINGLE_PROP'
@@ -1338,13 +1344,15 @@ def add_sleeve_rollup(rig, props):
             ctl0.parent = fj
         # orientation reference for the rolled stack: +Y points UP the
         # upper arm (same convention as the KANR helpers), rides ORG-00
-        o00 = eb.get("ORG-%s.%s.00" % (BONE_SLEEVE, side))
-        if o00 is not None:
+        # parent = BODY upper arm (NOT ORG-kan: that depends on the tweaks
+        # whose helpers target this bone -> dependency CYCLE -> jitter)
+        oua = eb.get("ORG-upper_arm." + side)
+        if oua is not None:
             ko = eb.new("KANO_ref." + side)
             ko.head = joints[1].copy()
             ko.tail = joints[1] + (joints[0] - joints[1]).normalized() * 0.04
             ko.use_deform = False
-            ko.parent = o00
+            ko.parent = oua
         # roll-up master: at the cuff, +Y pointing up the forearm
         d0 = (joints[ei] - joints[tipi]).normalized()
         mb = eb.new(ROLLUP_MASTER + "." + side)
@@ -1409,7 +1417,11 @@ def add_sleeve_rollup(rig, props):
         if mpb is None:
             continue
         mpb.rotation_mode = 'XYZ'
+        cap = max(0.1, Lt - 0.07)
         for key, val, lo, hi, desc in (
+                ("roll_up", 0.0, 0.0, cap,
+                 "ROLL-UP (tashmeer): slide the sleeve up the arm - 0 = down, "
+                 "max = gathered at the top of the upper arm"),
                 ("pile", 0.02, 0.005, 0.12,
                  "Spacing of the gathered folds (roll-up stack)"),
                 ("bulge", 0.18, 0.0, 1.5,
@@ -1433,18 +1445,7 @@ def add_sleeve_rollup(rig, props):
                           description=desc)
             except Exception:
                 pass
-        con = mpb.constraints.new('LIMIT_LOCATION')
-        con.use_min_x = con.use_max_x = True
-        con.use_min_z = con.use_max_z = True
-        con.use_min_y = con.use_max_y = True
-        con.min_y = 0.0
-        con.max_y = max(0.1, Lt - 0.07)   # stop BELOW the armpit seam
-        con.owner_space = 'LOCAL'; con.use_transform_limit = True
-        try:
-            mpb.custom_shape = _sk._ensure_master_widget()
-            mpb.custom_shape_scale_xyz = (0.5, 0.5, 0.5)
-        except Exception:
-            pass
+        rig.data.bones[mn].hide = True     # slider in Item drives the roll
         src_b = rig.data.bones.get("%s.%s.00" % (BONE_SLEEVE, side))
         if src_b is not None:
             for coll in src_b.collections:
@@ -1552,7 +1553,7 @@ def add_sleeve_rollup(rig, props):
         # parented in the forearm frame) -> blend a WORLD copy-rotation from
         # the first upper-arm sleeve bone as t passes the elbow.
         crpb = rig.pose.bones.get("KANC_root." + side)
-        up_org = rig.data.bones.get("ORG-%s.%s.00" % (BONE_SLEEVE, side))
+        up_org = rig.data.bones.get("ORG-upper_arm." + side)
         if crpb is not None and up_org is not None and Lt > Lf + 1e-4:
             cro = crpb.constraints.new('COPY_ROTATION')
             cro.target = rig; cro.subtarget = up_org.name

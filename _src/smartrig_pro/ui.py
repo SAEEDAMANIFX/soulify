@@ -113,7 +113,8 @@ class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
             box = lay.box()
             box.label(text=label, icon='MOD_CLOTH')
             r = box.row(align=True)
-            r.prop(pb, "location", index=1, text="Roll-Up", slider=True)
+            if "roll_up" in pb.keys():
+                r.prop(pb, '["roll_up"]', text="Roll-Up", slider=True)
             col = box.column(align=True)
             if "cuff_collide" in pb.keys():
                 col.prop(pb, '["cuff_collide"]', text="Hand Collide Strength",
