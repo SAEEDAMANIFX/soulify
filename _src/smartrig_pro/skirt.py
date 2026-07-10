@@ -2336,16 +2336,39 @@ def add_skirt_collision(rig, props, h=None):
             continue
         wL0, kr = lw
         sd0 = "L" if wL0 >= 0.5 else "R"
-        th = eb.get((_thLn if sd0 == "L" else _thRn) or "")
         seg0 = eb.get("SKC_dt.%02d.00" % ci)
-        if th is not None and seg0 is not None:
-            lg = eb.new("SKC_leg.%02d" % ci)
-            lg.head = seg0.head.copy()
-            lg.tail = lg.head + (th.tail - th.head)
-            lg.roll = th.roll
-            lg.use_deform = False
-            lg.parent = seg0.parent
-            seg0.parent = lg
+        if seg0 is not None:
+            # aim point = the fabric KNEE ring (or hem end without one):
+            # real cloth is CAUGHT ON THE KNEE - aiming the panel at the
+            # live knee point contains the leg; copying the thigh's
+            # ROTATION did not (the panel pivot sits at the waist ring,
+            # below/inside the hip, so a raised knee escaped the cloth)
+            segk = (eb.get("SKC_dt.%02d.%02d" % (ci, rws[kr][0]))
+                    if kr is not None else None)
+            hemb = eb.get(rws[-1][1])
+            aim = (segk.head.copy() if segk is not None
+                   else (hemb.tail.copy() if hemb is not None else None))
+            if aim is not None and (aim - seg0.head).length > 1e-4:
+                lg = eb.new("SKC_leg.%02d" % ci)
+                lg.head = seg0.head.copy()
+                lg.tail = aim.copy()        # +Y points DOWN the column
+                lg.use_deform = False
+                lg.parent = seg0.parent
+                seg0.parent = lg
+                # per-leg TARGETS riding the thighs, placed exactly ON the
+                # aim point at rest -> damped track = ZERO rest error; when
+                # the thigh lifts, the target carries the rest clearance
+                # with it, so the panel TENTS over the knee (KANH_tgt rule:
+                # put the target ON the rest line, never on the bone)
+                for tsd, tnm in (("L", _thLn), ("R", _thRn)):
+                    tb = eb.get(tnm or "")
+                    if tb is None:
+                        continue
+                    tg = eb.new("SKC_tgt.%02d.%s" % (ci, tsd))
+                    tg.head = aim.copy()
+                    tg.tail = aim + Vector((0.0, 0.0, 0.05))
+                    tg.use_deform = False
+                    tg.parent = tb
         if kr is not None and _shLn is not None:
             sh = eb.get(_shLn if sd0 == "L" else _shRn)
             segk = eb.get("SKC_dt.%02d.%02d" % (ci, rws[kr][0]))
@@ -2357,6 +2380,20 @@ def add_skirt_collision(rig, props, h=None):
                 sn.use_deform = False
                 sn.parent = segk.parent
                 segk.parent = sn
+    # ---- BONE-LEVEL FLOOR: the column chain CRUMPLES above the ground
+    # instead of passing through it (the mesh clamp alone irons the hem
+    # outward into a rounded lip lying ON the floor - rejected look) ----
+    _gz = None
+    try:
+        from . import kandura as _kn
+        _gz = _kn._ground_z(props)
+    except Exception:
+        _gz = None
+    if _gz is not None:
+        fb = eb.new("SKC_floor")
+        fb.head = Vector((_cx0, _cy0, _gz))
+        fb.tail = fb.head + Vector((0.0, 0.0, 0.1))
+        fb.use_deform = False
     # master control bone holding the 4 live collision settings (ARP c_kilt_master)
     cen = Vector((0.0, 0.0, 0.0))
     for _r, (_ro, _hm, _hd) in cols.items():
@@ -2429,10 +2466,12 @@ def add_skirt_collision(rig, props, h=None):
     knee = {"L": _knee_bone(thigh_L), "R": _knee_bone(thigh_R)}
     hipb = {"L": thigh_L, "R": thigh_R}
     rdxy = {}
+    rdz = {}
     for sd in ("L", "R"):
         kw = rw @ rig.data.bones[knee[sd]].head_local
         hw = rw @ rig.data.bones[hipb[sd]].head_local
         rdxy[sd] = (kw.x - hw.x, kw.y - hw.y)
+        rdz[sd] = kw.z - hw.z
 
     def _locvar(drv, nm, bone, axis):
         v = drv.variables.new(); v.name = nm; v.type = 'TRANSFORMS'
@@ -2473,11 +2512,25 @@ def add_skirt_collision(rig, props, h=None):
                 _locvar(dre, "ky", knee[esd], 'LOC_Y')
                 _locvar(dre, "hx", hipb[esd], 'LOC_X')
                 _locvar(dre, "hy", hipb[esd], 'LOC_Y')
+                _locvar(dre, "kz", knee[esd], 'LOC_Z')
+                _locvar(dre, "hz", hipb[esd], 'LOC_Z')
                 erdx, erdy = rdxy[esd]
+                # horizontal swing toward the column + KNEE RISE. The rise
+                # term fires (a) for columns the swing faces (hp>0) and (b)
+                # for FRONT columns NEAR this leg regardless of direction
+                # (lcf) - a knee raised past 90deg loses horizontal reach
+                # and the front-side diagonal panels went dead, letting the
+                # knee slip out at the panel seam in deep crouches
+                ew = wL if esd == "L" else wR
+                lcf = (0.9 * min(1.0, max(0.0, (ew - 0.35) / 0.4))
+                       * max(0.0, -oyn))
                 dre.expression = (
                     "min(1.0,max(0.0,((kx-hx-(%.4f))*(%.4f)"
-                    "+(ky-hy-(%.4f))*(%.4f))/%.4f))"
-                    % (erdx, oxn, erdy, oyn, 0.75 * _lth))
+                    "+(ky-hy-(%.4f))*(%.4f)+max(0.0,kz-hz-(%.4f))"
+                    "*max(0.6*((((kx-hx-(%.4f))*(%.4f)+(ky-hy-(%.4f))"
+                    "*(%.4f)))>0),%.4f))/%.4f))"
+                    % (erdx, oxn, erdy, oyn, rdz[esd],
+                       erdx, oxn, erdy, oyn, lcf, 0.75 * _lth))
         # the total swing (AMP) is SPLIT across the row segments and accumulates
         # down the chain -> a smooth progressive bend toward the hem (cloth-like).
         for rr, bn in rws:
@@ -2526,27 +2579,50 @@ def add_skirt_collision(rig, props, h=None):
         ol = math.hypot(ox, oy) or 1.0
         oxn2 = ox / ol; oyn2 = oy / ol
         rn = 0.75 * _lth
-        for hname, tgL, tgR, gkey in (
-                ("SKC_leg.%02d" % ci, _thLn, _thRn, "leg_follow"),
-                ("SKC_shin.%02d" % ci, _shLn, _shRn, "shin_follow")):
+        for hname, tgL, tgR, gkey, kind in (
+                ("SKC_leg.%02d" % ci, "SKC_tgt.%02d.L" % ci,
+                 "SKC_tgt.%02d.R" % ci, "leg_follow", 'TRACK'),
+                ("SKC_shin.%02d" % ci, _shLn, _shRn, "shin_follow", 'ROT')):
             pbh = rig.pose.bones.get(hname)
             if pbh is None or tgL is None:
                 continue
             for sd, tgt, wgt in (("L", tgL, wL0), ("R", tgR, 1.0 - wL0)):
-                if wgt < 0.02:
+                if (wgt < 0.02 or tgt is None
+                        or rig.pose.bones.get(tgt) is None):
                     continue
-                con = pbh.constraints.new('COPY_ROTATION')
+                if kind == 'TRACK':
+                    con = pbh.constraints.new('DAMPED_TRACK')
+                    con.track_axis = 'TRACK_Y'
+                else:
+                    con = pbh.constraints.new('COPY_ROTATION')
+                    con.target_space = 'WORLD'
+                    con.owner_space = 'WORLD'
+                    con.mix_mode = 'REPLACE'
                 con.name = "SK_LEGFOLLOW_" + sd
                 con.target = rig
                 con.subtarget = tgt
-                con.target_space = 'WORLD'
-                con.owner_space = 'WORLD'
-                con.mix_mode = 'REPLACE'
                 drv = con.driver_add("influence").driver
                 drv.type = 'SCRIPTED'
                 _evar(drv, "e", ci, "e" + sd)
                 _mvar(drv, "gv", gkey)
-                drv.expression = "gv*%.4f*e" % min(1.0, 1.6 * wgt)
+                drv.expression = "gv*%.4f*e" % min(1.0, 2.2 * wgt)
+    # bone-level floor constraints (see SKC_floor above): every row below
+    # the root stops at the ground plane, so deep sits stack the fabric
+    if _gz is not None and rig.pose.bones.get("SKC_floor") is not None:
+        for ci, rws in colrows.items():
+            for rr, bn in rws:
+                if rr == 0:
+                    continue
+                seg = rig.pose.bones.get("SKC_dt.%02d.%02d" % (ci, rr))
+                if seg is None:
+                    continue
+                con = seg.constraints.new('FLOOR')
+                con.name = "SK_FLOOR_G"
+                con.target = rig
+                con.subtarget = "SKC_floor"
+                con.floor_location = 'FLOOR_Z'
+                con.use_rotation = False
+                con.offset = 0.0
     _organize_skirt_bones(rig)
     return n
 

@@ -1842,15 +1842,46 @@ def polish_sleeve_weights(ob, rig):
                     shg = (ob.vertex_groups.get(shn)
                            or ob.vertex_groups.new(name=shn))
                     shg.add([v.index], 1.0 - kan_share, 'REPLACE')
-            elif has_kan:
+            else:
                 freed = 0.0
-                for g in list(v.groups):
-                    if g.group in kan_idx:
-                        freed += g.weight
-                        try:
-                            ob.vertex_groups[gi_all[g.group]].remove([v.index])
-                        except Exception:
-                            pass
+                if has_kan:
+                    for g in list(v.groups):
+                        if g.group in kan_idx:
+                            freed += g.weight
+                            try:
+                                ob.vertex_groups[gi_all[g.group]].remove([v.index])
+                            except Exception:
+                                pass
+                # TORSO fabric must not ride the ARMS: arm-family weight
+                # beyond a shoulder-blend falloff is freed to the torso.
+                # Arm weight left on the chest fabric TEARS the cloth open
+                # the moment the arms pose (deep-crouch bug): 0.5 upper_arm
+                # was measured on chest-centre verts of the kandoorah.
+                ub = rig.data.bones.get("DEF-upper_arm.%s" % side)
+                if ub is not None:
+                    arm_pfx = ("DEF-upper_arm.%s" % side,
+                               "DEF-forearm.%s" % side,
+                               "DEF-hand.%s" % side)
+                    shj = rw @ ub.head_local
+                    allowed = max(0.0, min(1.0,
+                                  1.0 - ((p - shj).length - 0.12) / 0.18))
+                    mods = [(gi_all.get(g.group, ""), g.weight)
+                            for g in v.groups
+                            if gi_all.get(g.group, "").startswith(arm_pfx)]
+                    warm = sum(wv for _nm, wv in mods)
+                    if warm > allowed + 1e-3:
+                        fac = allowed / warm
+                        for nm, wv in mods:
+                            keepw = wv * fac
+                            freed += wv - keepw
+                            try:
+                                if keepw > 1e-4:
+                                    ob.vertex_groups[nm].add(
+                                        [v.index], keepw, 'REPLACE')
+                                else:
+                                    ob.vertex_groups[nm].remove([v.index])
+                            except Exception:
+                                pass
                 if freed > 1e-4:
                     cands = [n for n in ("DEF-shoulder.%s" % side,
                                          "DEF-breast.%s" % side,
@@ -2011,6 +2042,128 @@ def live_kandura_antipen(context):
             md.offset = float(context.scene.smartrig.kandura_antipen_offset)
     except Exception as e:
         print("SmartRig kandura anti-pen tune:", e)
+
+
+# ====================================================================
+# KANDURA FLOOR — the cloth must never sink below the ground
+# ====================================================================
+
+def _ground_z(props):
+    """Ground height = the lowest REST vertex of the body mesh (soles)."""
+    body = getattr(props, "target_mesh", None)
+    if body is None:
+        return None
+    mw = body.matrix_world
+    try:
+        return min((mw @ v.co).z for v in body.data.vertices)
+    except ValueError:
+        return None
+
+
+def _ensure_floor_plane(props, ob):
+    """A big hidden ground plane at the detected floor height (the
+    Shrinkwrap clamp target). Rebuilt on every call so it follows the
+    character/garment placement."""
+    gz = _ground_z(props)
+    if gz is None:
+        return None
+    cos = _garment_coords(ob)
+    if cos:
+        xs = [p.x for p in cos]
+        ys = [p.y for p in cos]
+        cx = 0.5 * (min(xs) + max(xs))
+        cy = 0.5 * (min(ys) + max(ys))
+        r = 3.0 * max(max(xs) - min(xs), max(ys) - min(ys), 0.5)
+    else:
+        cx = cy = 0.0
+        r = 4.0
+    me = bpy.data.meshes.get("SR_Floor")
+    if me is None:
+        me = bpy.data.meshes.new("SR_Floor")
+    me.clear_geometry()
+    me.from_pydata([(cx - r, cy - r, gz), (cx + r, cy - r, gz),
+                    (cx + r, cy + r, gz), (cx - r, cy + r, gz)],
+                   [], [[0, 1, 2, 3]])
+    me.update()
+    # the ABOVE_SURFACE clamp keeps verts on the POSITIVE normal side: the
+    # plane normal MUST point +Z or the whole garment gets slammed onto the
+    # floor (verified: winding here evaluated -Z and flattened everything)
+    if me.polygons and me.polygons[0].normal.z < 0.0:
+        me.flip_normals()
+        me.update()
+    pl = bpy.data.objects.get("SR_Floor")
+    if pl is None:
+        pl = bpy.data.objects.new("SR_Floor", me)
+        bpy.context.scene.collection.objects.link(pl)
+    elif pl.data is not me:
+        pl.data = me
+    pl.hide_render = True
+    try:
+        pl.hide_set(True)
+    except Exception:
+        pass
+    return pl
+
+
+def remove_kandura_floor(rig):
+    n = 0
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH':
+            continue
+        md = ob.modifiers.get("KAN_Floor")
+        if md is not None:
+            try:
+                ob.modifiers.remove(md)
+                n += 1
+            except Exception:
+                pass
+    if rig is not None and "kan_floor" in rig:
+        del rig["kan_floor"]
+    return n
+
+
+def add_kandura_floor(rig, props):
+    """THE ADDON KNOWS WHERE THE GROUND IS: a Shrinkwrap in ABOVE_SURFACE
+    mode clamps any kandura vertex that ends up BELOW the floor back onto
+    it (+offset) - deep sits and kneels pool the hem ON the ground instead
+    of sinking through it. Ground height is auto-detected from the body's
+    lowest rest vertex. Ordered LAST (after KAN_AntiPen)."""
+    ob = kandura_object(bpy.context)
+    if ob is None:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    remove_kandura_floor(rig)
+    pl = _ensure_floor_plane(props, ob)
+    if pl is None:
+        return 0
+    vg = (ob.vertex_groups.get("SR_KanAntiPen")
+          or ob.vertex_groups.new(name="SR_KanAntiPen"))
+    if not any(True for _v in ob.data.vertices for g in _v.groups
+               if g.group == vg.index):
+        vg.add([v.index for v in ob.data.vertices], 1.0, 'REPLACE')
+    mod = ob.modifiers.new("KAN_Floor", 'SHRINKWRAP')
+    mod.target = pl
+    mod.wrap_method = 'NEAREST_SURFACEPOINT'
+    # OUTSIDE = CONDITIONAL clamp: only verts on the NEGATIVE normal side
+    # (below the floor) are pushed back up. ABOVE_SURFACE/ON_SURFACE snap
+    # EVERY vert to the plane - verified: they flattened the whole garment
+    mod.wrap_mode = 'OUTSIDE'
+    mod.offset = float(getattr(props, "kandura_floor_offset", 0.004))
+    mod.vertex_group = "SR_KanAntiPen"
+    if rig is not None:
+        rig["kan_floor"] = 1
+    return 1
+
+
+def live_kandura_floor(context):
+    off = float(getattr(context.scene.smartrig,
+                        "kandura_floor_offset", 0.004))
+    for ob in bpy.data.objects:
+        if ob.type == 'MESH':
+            md = ob.modifiers.get("KAN_Floor")
+            if md is not None:
+                md.offset = off
 
 
 def remove_kandura_smooth(rig):
@@ -2460,6 +2613,58 @@ def ensure_kandura_bind(rig, props):
     if need and (missing or n_kan < 50):
         nd, nf = polish_sleeve_weights(ob, rig)
         acts.append("sleeve weights rebuilt (%d verts)" % nf)
+    # --- 6: WAIST-DOWN weights match the CURRENT skirt grid? ---
+    # Changing Columns/Rows (or registering a new waist loop) renames the
+    # whole DEF-skirt grid: the mesh keeps vertex groups of bones that no
+    # longer exist -> half the fabric is DEAD (hem hangs at rest, the legs
+    # poke straight out of the cloth). Detect + rebuild automatically.
+    cur = {b.name for b in rig.data.bones
+           if b.use_deform and b.name.startswith("DEF-skirt.")}
+    if cur:
+        sk_groups = [g for g in ob.vertex_groups
+                     if g.name.startswith("DEF-skirt.")]
+        stale = [g for g in sk_groups if g.name not in cur]
+        have = {g.name for g in sk_groups}
+        if stale or not cur.issubset(have):
+            from . import skirt as _sk
+            rw = rig.matrix_world
+            topz = max((rw @ rig.data.bones[n].head_local).z for n in cur)
+            mw = ob.matrix_world
+            kan_idx = {g.index for g in ob.vertex_groups
+                       if g.name.startswith(("DEF-%s." % BONE_SLEEVE,
+                                             "DEF-%s." % BONE_CUFF))}
+            vids = []
+            for v in ob.data.vertices:
+                if (mw @ v.co).z >= topz - 0.02:
+                    continue
+                # NOT the sleeve fabric (cuffs can hang below the waist)
+                if sum(g.weight for g in v.groups if g.group in kan_idx) > 0.2:
+                    continue
+                vids.append(v.index)
+            for g in stale:
+                try:
+                    ob.vertex_groups.remove(g)
+                except Exception:
+                    pass
+            if vids and _sk._smart_skirt_weights(ob, rig, vids):
+                # fabric follows the FABRIC bones only: strip body-bone
+                # weights below the waist so the legs cannot drag the cloth
+                keep = {g.index for g in ob.vertex_groups
+                        if g.name.startswith("DEF-skirt.")}
+                gidx2 = {g.index: g.name for g in ob.vertex_groups}
+                for vi in vids:
+                    for ge in list(ob.data.vertices[vi].groups):
+                        nm = gidx2.get(ge.group, "")
+                        if (ge.group not in keep and nm.startswith("DEF-")
+                                and not nm.startswith("DEF-kan_")):
+                            try:
+                                ob.vertex_groups[ge.group].remove([vi])
+                            except Exception:
+                                pass
+                ob.data.update()
+                acts.append("waist-down weights rebuilt "
+                            "(%d verts, %d stale groups)"
+                            % (len(vids), len(stale)))
     return acts
 
 

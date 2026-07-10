@@ -249,6 +249,15 @@ def _kandura_antipen_update(self, context):
         print("SmartRig kandura anti-pen:", e)
 
 
+def _kandura_floor_update(self, context):
+    """LIVE: floor-clearance slider -> KAN_Floor modifier offset."""
+    try:
+        from . import kandura
+        kandura.live_kandura_floor(context)
+    except Exception as e:
+        print("SmartRig kandura floor:", e)
+
+
 def _kandura_focus_update(self, context):
     """Hide/show the body bones (focus on kandura bone placement)."""
     try:
@@ -588,6 +597,12 @@ class SmartRigProps(PropertyGroup):
         update=_kandura_antipen_update,
         description="Anti-penetration: minimum gap kept between the body "
         "and the kandura cloth (LIVE)")
+    kandura_floor_offset: FloatProperty(
+        name="Floor Clearance", default=0.004, min=0.0, max=0.05,
+        update=_kandura_floor_update,
+        description="Ground clamp: the kandura cloth is kept this far "
+        "ABOVE the auto-detected floor - deep sits pool the hem on the "
+        "ground instead of sinking through it (LIVE)")
     kandura_focus: BoolProperty(
         name="Hide Body Bones", default=False,
         update=_kandura_focus_update,

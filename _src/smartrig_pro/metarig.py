@@ -827,6 +827,8 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                 _kn.add_kandura_smooth(rg, p)
                 if _kn.add_kandura_antipen(rg, p):
                     extras.append("kandura anti-pen")
+                if _kn.add_kandura_floor(rg, p):
+                    extras.append("floor")
         except Exception as e:
             print("SmartRig kandura sleeve extras failed:", e)
         # safety net: no bone left without a collection (so Rig Layers can hide all)
