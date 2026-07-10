@@ -809,6 +809,19 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                     _sk.add_skirt_antipen(rg, p)
         except Exception as e:
             print("SmartRig skirt extras failed:", e)
+        # kandura sleeve automation: roll-up (tashmeer) master per arm +
+        # sleeve-end hand follow + cuff ring riding the sleeve END
+        try:
+            rg = _generated_rig()
+            if rg is not None and any(b.name.startswith("DEF-kan_sleeve.")
+                                      for b in rg.pose.bones):
+                from . import kandura as _kn
+                nr = _kn.add_sleeve_rollup(rg, p)
+                if nr:
+                    extras.append("%d sleeve roll-up master%s"
+                                  % (nr, "s" if nr > 1 else ""))
+        except Exception as e:
+            print("SmartRig kandura sleeve extras failed:", e)
         # safety net: no bone left without a collection (so Rig Layers can hide all)
         try:
             assign_orphan_bones(_generated_rig())

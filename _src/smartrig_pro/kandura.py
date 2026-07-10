@@ -712,6 +712,39 @@ class SMARTRIG_OT_kandura_add_waist(bpy.types.Operator):
 # ADD SLEEVE BONES — chains along the body arms, then manual placement
 # ====================================================================
 
+def _resample_sleeve_elbow(mo, pts, side, n_up, n_lo):
+    """Resample a placed sleeve chain keeping the ELBOW as a HARD boundary
+    (the knee-ring rule, arm edition): n_up bones on the upper-arm part,
+    n_lo bones on the forearm part. The split point = the point of the
+    PLACED polyline closest to the body elbow joint, so the user's manual
+    placement is preserved on both sides of the elbow."""
+    fa = _read_bone_points(mo).get("forearm." + side)
+    if fa is None or len(pts) < 2:
+        return _resample_open_arc(pts, n_up + n_lo)
+    elbow = fa[0]
+    best = (1e18, 0, 0.0)
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        ab = b - a
+        L2 = ab.length_squared
+        t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (elbow - a).dot(ab) / L2))
+        d = (a + ab * t - elbow).length
+        if d < best[0]:
+            best = (d, i, t)
+    _, i, t = best
+    split = pts[i].lerp(pts[i + 1], t)
+    up_pts = pts[:i + 1] + [split]
+    lo_pts = [split] + pts[i + 1:]
+    alen = lambda ps: sum((ps[j + 1] - ps[j]).length for j in range(len(ps) - 1))
+    if alen(up_pts) < 1e-4 or alen(lo_pts) < 1e-4:
+        return _resample_open_arc(pts, n_up + n_lo)
+    up = _resample_open_arc(up_pts, n_up)
+    lo = _resample_open_arc(lo_pts, n_lo)
+    if up is None or lo is None:
+        return _resample_open_arc(pts, n_up + n_lo)
+    return up + lo[1:]
+
+
 def add_sleeve_bones(context):
     """One kan_sleeve chain per arm, laid along the body arm bones as a
     rough start (the user drags them onto the sleeve). Returns (ok, msg)."""
@@ -728,10 +761,14 @@ def add_sleeve_bones(context):
         # PRESERVE MANUAL PLACEMENT: resample the CURRENT chain if it exists
         cur = _existing_chain(mo, "%s.%s" % (BONE_SLEEVE, side))
         if cur is not None:
-            if len(cur) - 1 == n_up + n_lo:
-                chains[side] = cur              # same count: untouched
+            same = (len(cur) - 1 == n_up + n_lo
+                    and int(mo.get("sr_sleeve_up", -1)) == n_up
+                    and int(mo.get("sr_sleeve_lo", -1)) == n_lo)
+            if same:
+                chains[side] = cur              # same counts: untouched
                 continue
-            res = _resample_open_arc(cur, n_up + n_lo)
+            # ELBOW = hard boundary: resample each segment separately
+            res = _resample_sleeve_elbow(mo, cur, side, n_up, n_lo)
             if res is not None:
                 chains[side] = res
                 continue
@@ -785,6 +822,8 @@ def add_sleeve_bones(context):
                 pb.rigify_type = "limbs.simple_tentacle"
             except Exception:
                 pass
+    mo["sr_sleeve_up"] = n_up
+    mo["sr_sleeve_lo"] = n_lo
     mo["sr_kandura"] = True
     return True, made
 
@@ -1094,6 +1133,296 @@ class SMARTRIG_OT_kandura_add_cuffs(bpy.types.Operator):
 # ====================================================================
 # REMOVE
 # ====================================================================
+
+# ====================================================================
+# POST-GENERATE — SLEEVE ROLL-UP (tashmeer) + sleeve-end hand follow
+# ====================================================================
+
+ROLLUP_MASTER = "kan_rollup"
+
+
+def _kan_joints(rig, side):
+    """Rest joints of the generated sleeve chain, shoulder -> cuff tip."""
+    import re
+    pat = re.compile(r"^ORG-%s\.%s\.(\d+)$" % (BONE_SLEEVE, side))
+    segs = {}
+    for b in rig.data.bones:
+        m = pat.match(b.name)
+        if m:
+            segs[int(m.group(1))] = b
+    if not segs or set(segs) != set(range(len(segs))):
+        return None
+    joints = [Vector(segs[k].head_local) for k in range(len(segs))]
+    joints.append(Vector(segs[len(segs) - 1].tail_local))
+    return joints
+
+
+def _kan_tweak_map(rig, side, joints):
+    """{joint index: tweak bone name} matched by nearest rest head."""
+    out = {}
+    for b in rig.data.bones:
+        if not b.name.startswith("tweak_%s.%s" % (BONE_SLEEVE, side)):
+            continue
+        h = Vector(b.head_local)
+        k = min(range(len(joints)), key=lambda i: (joints[i] - h).length)
+        if (joints[k] - h).length < 0.02 and k not in out:
+            out[k] = b.name
+    return out
+
+
+def _kanr_var(drv, nm, rig, kind, bone, key):
+    v = drv.variables.new(); v.name = nm
+    if kind == 'LOC':
+        v.type = 'TRANSFORMS'
+        t = v.targets[0]; t.id = rig; t.bone_target = bone
+        t.transform_type = 'LOC_Y'; t.transform_space = 'LOCAL_SPACE'
+    else:
+        v.type = 'SINGLE_PROP'
+        t = v.targets[0]; t.id_type = 'OBJECT'; t.id = rig
+        t.data_path = 'pose.bones["%s"]["%s"]' % (bone, key)
+
+
+def remove_sleeve_rollup(rig):
+    """Undo add_sleeve_rollup: restore tweak/cuff parents, drop helpers,
+    masters and their drivers."""
+    if rig is None:
+        return
+    from . import skirt as _sk
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    restore = {}
+    for pb in rig.pose.bones:
+        if "kanr_origparent" in pb.keys():
+            restore[pb.name] = pb["kanr_origparent"]
+    doomed = tuple(n for n in rig.data.bones.keys()
+                   if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
+                                    "KANC_root.",
+                                    ROLLUP_MASTER + ".")))
+    if not doomed and not restore:
+        return
+    ad = rig.animation_data
+    if ad is not None:
+        for fc in list(ad.drivers):
+            if any(('"%s"' % n) in fc.data_path for n in doomed):
+                ad.drivers.remove(fc)
+    if not _sk._edit_rig(rig):
+        return
+    eb = rig.data.edit_bones
+    for name, pn in restore.items():
+        b = eb.get(name)
+        if b is not None:
+            b.parent = eb.get(pn) if pn else None
+    for n in doomed:
+        b = eb.get(n)
+        if b is not None:
+            eb.remove(b)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for name in restore:
+        pb = rig.pose.bones.get(name)
+        if pb is not None and "kanr_origparent" in pb.keys():
+            del pb["kanr_origparent"]
+    rig["kan_rollup"] = 0
+
+
+def add_sleeve_rollup(rig, props):
+    """ARP-style sleeve ROLL-UP (tashmeer). One master per arm at the cuff:
+    drag it UP the forearm and the sleeve gathers accordion-style toward
+    the ELBOW, thickening as it bunches (pile/bulge live settings on the
+    master). The sleeve END also softly follows the hand (damped track on
+    ORG-hand -> works in FK AND IK) so the opening never tears away from
+    the wrist, and the kan_cuff ring is re-parented from the hand onto the
+    sleeve END so it rides the roll-up instead of clipping into the hand.
+    Everything lives in arm space -> layers on top of FK/IK. Returns the
+    number of masters made."""
+    if rig is None:
+        return 0
+    from . import skirt as _sk
+    _sk._ensure_drivers_trusted()
+    remove_sleeve_rollup(rig)
+
+    data = {}
+    for side in ("L", "R"):
+        joints = _kan_joints(rig, side)
+        fb = rig.data.bones.get("ORG-forearm." + side)
+        if joints is None or len(joints) < 3 or fb is None:
+            continue
+        elbow = Vector(fb.head_local)
+        ei = min(range(len(joints)), key=lambda i: (joints[i] - elbow).length)
+        tipi = len(joints) - 1
+        if ei >= tipi:
+            continue
+        arc = {tipi: 0.0}
+        s = 0.0
+        for k in range(tipi, ei, -1):
+            s += (joints[k] - joints[k - 1]).length
+            arc[k - 1] = s
+        Lf = arc[ei]
+        if Lf < 1e-4:
+            continue
+        twmap = _kan_tweak_map(rig, side, joints)
+        if tipi not in twmap:
+            continue
+        data[side] = (joints, twmap, ei, tipi, arc, Lf)
+    if not data:
+        return 0
+
+    if not _sk._edit_rig(rig):
+        return 0
+    eb = rig.data.edit_bones
+    orig_parent = {}
+    for side, (joints, twmap, ei, tipi, arc, Lf) in data.items():
+        # hand-follow jig: rotates the sleeve END about the last joint
+        hj = eb.new("KANH_dt." + side)
+        hj.head = joints[tipi - 1].copy(); hj.tail = joints[tipi].copy()
+        hj.use_deform = False
+        # track TARGET on the hand, placed ON the rest line of the sleeve
+        # end -> ZERO deformation at rest, follows the hand when it moves
+        hand = eb.get("ORG-hand." + side)
+        if hand is not None:
+            dr = (joints[tipi] - joints[tipi - 1]).normalized()
+            hlen = (hand.tail - hand.head).length
+            tg = eb.new("KANH_tgt." + side)
+            tg.head = joints[tipi] + dr * max(0.03, 0.45 * hlen)
+            tg.tail = tg.head + dr * 0.02
+            tg.use_deform = False
+            tg.parent = hand
+        # roll helpers: one per tweak BELOW the elbow (elbow stays put)
+        for k in range(ei + 1, tipi + 1):
+            twn = twmap.get(k)
+            if twn is None:
+                continue
+            tb = eb.get(twn)
+            if tb is None:
+                continue
+            d = (joints[k - 1] - joints[k])
+            if d.length < 1e-9:
+                continue
+            d.normalize()
+            hb = eb.new("KANR_dt.%s.%02d" % (side, k))
+            hb.head = joints[k].copy()
+            hb.tail = joints[k] + d * 0.025      # local +Y = up the sleeve
+            hb.use_deform = False
+            op = tb.parent
+            orig_parent[twn] = op.name if op else ""
+            if k == tipi:
+                hj.parent = op
+                hb.parent = hj
+            else:
+                hb.parent = op
+            tb.parent = hb
+        # roll-up master: at the cuff, +Y pointing up the forearm
+        d0 = (joints[ei] - joints[tipi]).normalized()
+        mb = eb.new(ROLLUP_MASTER + "." + side)
+        mb.head = joints[tipi].copy()
+        mb.tail = joints[tipi] + d0 * min(0.1, max(0.05, 0.3 * Lf))
+        mb.use_deform = False
+        mb.parent = eb.get("ORG-forearm." + side)
+        # cuff ring root: rides the sleeve END (roll-up + hand follow)
+        ring = [n for n in rig.data.bones.keys()
+                if n.startswith("%s.%s." % (BONE_CUFF, side))
+                and not n.startswith(("DEF-", "ORG-"))]
+        if ring:
+            tip_h = eb.get("KANR_dt.%s.%02d" % (side, tipi))
+            cr = eb.new("KANC_root." + side)
+            cr.head = joints[tipi].copy()
+            cr.tail = joints[tipi] + (joints[tipi] - joints[tipi - 1]).normalized() * 0.04
+            cr.use_deform = False
+            cr.parent = tip_h if tip_h is not None else hj
+            for n in ring:
+                cb = eb.get(n)
+                if cb is not None:
+                    orig_parent[n] = cb.parent.name if cb.parent else ""
+                    cb.parent = cr
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    for name, pn in orig_parent.items():
+        pb = rig.pose.bones.get(name)
+        if pb is not None:
+            pb["kanr_origparent"] = pn
+
+    made = 0
+    for side, (joints, twmap, ei, tipi, arc, Lf) in data.items():
+        mn = ROLLUP_MASTER + "." + side
+        mpb = rig.pose.bones.get(mn)
+        if mpb is None:
+            continue
+        mpb.rotation_mode = 'XYZ'
+        for key, val, lo, hi, desc in (
+                ("pile", 0.03, 0.005, 0.12,
+                 "Spacing of the gathered folds (roll-up stack)"),
+                ("bulge", 0.2, 0.0, 1.5,
+                 "How much the gathered fabric thickens as it rolls up"),
+                ("hand_follow", 0.65, 0.0, 1.0,
+                 "How much the sleeve END follows the hand (0 = off)")):
+            mpb[key] = float(val)
+            try:
+                ui = mpb.id_properties_ui(key)
+                ui.update(min=lo, max=hi, soft_min=lo, soft_max=hi,
+                          description=desc)
+            except Exception:
+                pass
+        con = mpb.constraints.new('LIMIT_LOCATION')
+        con.use_min_x = con.use_max_x = True
+        con.use_min_z = con.use_max_z = True
+        con.use_min_y = con.use_max_y = True
+        con.min_y = 0.0; con.max_y = Lf
+        con.owner_space = 'LOCAL'; con.use_transform_limit = True
+        try:
+            mpb.custom_shape = _sk._ensure_master_widget()
+            mpb.custom_shape_scale_xyz = (0.5, 0.5, 0.5)
+        except Exception:
+            pass
+        src_b = rig.data.bones.get("%s.%s.00" % (BONE_SLEEVE, side))
+        if src_b is not None:
+            for coll in src_b.collections:
+                try:
+                    coll.assign(rig.data.bones[mn])
+                except Exception:
+                    pass
+        # hand follow (damped track, fades out as the sleeve rolls up)
+        hpb = rig.pose.bones.get("KANH_dt." + side)
+        if hpb is not None and rig.data.bones.get("KANH_tgt." + side):
+            dt = hpb.constraints.new('DAMPED_TRACK')
+            dt.target = rig; dt.subtarget = "KANH_tgt." + side
+            dt.head_tail = 0.0; dt.track_axis = 'TRACK_Y'
+            drv = dt.driver_add("influence").driver
+            drv.type = 'SCRIPTED'
+            _kanr_var(drv, "t", rig, 'LOC', mn, "")
+            _kanr_var(drv, "cf", rig, 'PROP', mn, "hand_follow")
+            drv.expression = "cf*max(0.0, 1.0 - t/%.4f)" % max(1e-4, Lf)
+        # accordion drivers on the roll helpers (tip rank 0, upward)
+        rank = 0
+        for k in range(tipi, ei, -1):
+            hn = "KANR_dt.%s.%02d" % (side, k)
+            hb = rig.pose.bones.get(hn)
+            if hb is None:
+                continue
+            a = arc[k]
+            cmax = max(a, Lf - rank * 0.012)
+            drv = hb.driver_add("location", 1).driver
+            drv.type = 'SCRIPTED'
+            _kanr_var(drv, "t", rig, 'LOC', mn, "")
+            _kanr_var(drv, "pl", rig, 'PROP', mn, "pile")
+            drv.expression = ("min(max(%.4f, t - %d*pl), %.4f) - %.4f"
+                              % (a, rank, cmax, a))
+            for idx in (0, 2):
+                d2 = hb.driver_add("scale", idx).driver
+                d2.type = 'SCRIPTED'
+                _kanr_var(d2, "t", rig, 'LOC', mn, "")
+                _kanr_var(d2, "bg", rig, 'PROP', mn, "bulge")
+                _kanr_var(d2, "pl", rig, 'PROP', mn, "pile")
+                d2.expression = ("1.0 + bg*min(1.0, max(0.0, t - %.4f)"
+                                 "/max(0.02, pl))" % a)
+            rig.data.bones[hn].hide = True
+            rank += 1
+        for hn in ("KANH_dt." + side, "KANH_tgt." + side,
+                   "KANC_root." + side):
+            if rig.data.bones.get(hn):
+                rig.data.bones[hn].hide = True
+        made += 1
+    rig["kan_rollup"] = 1 if made else 0
+    return made
+
 
 def remove_kandura_bones(mo):
     """Delete every bone the kandura module created from the metarig."""
