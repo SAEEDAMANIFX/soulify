@@ -1207,7 +1207,7 @@ def remove_sleeve_rollup(rig):
     doomed = tuple(n for n in rig.data.bones.keys()
                    if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
                                     "KANC_root.", "KANC_dt.", "KANF_dt.",
-                                    "KANO_ref.",
+                                    "KANO_ref.", "KANA.",
                                     ROLLUP_MASTER + ".")))
     if not doomed and not restore:
         return
@@ -1299,6 +1299,14 @@ def add_sleeve_rollup(rig, props):
             tg.tail = tg.head + dr * 0.02
             tg.use_deform = False
             tg.parent = hand
+        # PATH ANCHOR at joint 0 (top of the sleeve)
+        tw0 = eb.get(twmap.get(0, ""))
+        if tw0 is not None:
+            an0 = eb.new("KANA.%s.00" % side)
+            an0.head = joints[0].copy()
+            an0.tail = joints[0] + (joints[1] - joints[0]).normalized() * 0.02
+            an0.use_deform = False
+            an0.parent = tw0.parent
         # roll helpers: one per tweak, cuff to the TOP (joint 0 anchors)
         for k in range(1, tipi + 1):
             twn = twmap.get(k)
@@ -1311,6 +1319,13 @@ def add_sleeve_rollup(rig, props):
             if d.length < 1e-9:
                 continue
             d.normalize()
+            # PATH ANCHOR: the un-rolled ring position, riding the arm -
+            # the rings SLIDE through these one by one (clean animation)
+            ank = eb.new("KANA.%s.%02d" % (side, k))
+            ank.head = joints[k].copy()
+            ank.tail = joints[k] + d * 0.02
+            ank.use_deform = False
+            ank.parent = tb.parent
             hb = eb.new("KANR_dt.%s.%02d" % (side, k))
             hb.head = joints[k].copy()
             hb.tail = joints[k] + d * 0.04       # local +Y = up the sleeve
@@ -1509,23 +1524,29 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(dro, "pl", rig, 'PROP', mn, "pile")
                 dro.expression = ("min(1.0, max(0.0, (t - %d*pl - %.4f)/%.4f))"
                                   % (rank, Lf, max(1e-3, 0.5 * (Lt - Lf))))
-            # target the helper ABOVE (already reoriented) when there is one
-            hn_up = "KANR_dt.%s.%02d" % (side, k - 1)
-            if k >= 2 and rig.pose.bones.get(hn_up) is not None:
-                tgt = hn_up
-            tlen = max(1e-4, rig.data.bones[tgt].length)
-            con = hb.constraints.new('COPY_LOCATION')
-            con.name = "KAN Roll Cascade"
-            con.target = rig; con.subtarget = tgt
-            drv = con.driver_add("influence").driver
-            drv.type = 'SCRIPTED'
-            _kanr_var(drv, "t", rig, 'LOC', mn, "")
-            drv.expression = ("min(1.0, max(0.0, (t - %.4f)/%.4f))"
-                              % (a, seg))
-            dht = con.driver_add("head_tail").driver
-            dht.type = 'SCRIPTED'
-            _kanr_var(dht, "pl", rig, 'PROP', mn, "pile")
-            dht.expression = "min(0.9, pl/%.4f)" % tlen
+            # SLIDING PATH: the ring passes through EVERY anchor above it in
+            # sequence (constraint stack, later ones override progressively).
+            # Its slider time lags by rank*pile -> arc-spaced stacking; the
+            # motion follows the sleeve surface, never a straight chord.
+            cap_k = max(arc[k], (Lt - 0.07) - rank * 0.012)
+            for j in range(k - 1, -1, -1):
+                an = "KANA.%s.%02d" % (side, j)
+                if rig.pose.bones.get(an) is None:
+                    continue
+                w0 = arc[j + 1]
+                span = max(1e-4, arc[j] - arc[j + 1])
+                maxfrac = min(1.0, max(0.0, (cap_k - w0) / span))
+                if maxfrac <= 1e-4:
+                    continue
+                con = hb.constraints.new('COPY_LOCATION')
+                con.name = "KAN Roll Path %02d" % j
+                con.target = rig; con.subtarget = an
+                drv = con.driver_add("influence").driver
+                drv.type = 'SCRIPTED'
+                _kanr_var(drv, "t", rig, 'LOC', mn, "")
+                _kanr_var(drv, "pl", rig, 'PROP', mn, "pile")
+                drv.expression = ("min(%.4f, max(0.0, (t - %d*pl - %.4f)"
+                                  "/%.4f))" % (maxfrac, rank, w0, span))
             # optional fold thickening (default 0 = perfectly clean)
             for idx in (0, 2):
                 d2 = hb.driver_add("scale", idx).driver
@@ -2025,7 +2046,7 @@ def organize_sleeve_bones(rig):
         n = b.name
         if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
                          "KANC_dt.", "KANC_root.", "KANF_dt.",
-                         "KANO_ref.")):
+                         "KANO_ref.", "KANA.")):
             for c in list(b.collections):
                 try:
                     c.unassign(b)
