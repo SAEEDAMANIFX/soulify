@@ -1409,6 +1409,21 @@ def add_sleeve_rollup(rig, props):
         ring = [n for n in rig.data.bones.keys()
                 if n.startswith("%s.%s." % (BONE_CUFF, side))
                 and not n.startswith(("DEF-", "ORG-"))]
+        # ROWS-AWARE (any Bones x Rows count): the compass grabs only the
+        # ROW-0 bone of each column; deeper rows stay CHAINED under it so
+        # the whole column rides the automation together
+        rows_built = 1
+        mo_ = _metarig()
+        if mo_ is not None:
+            rows_built = max(1, int(mo_.get("sr_cuff_rows_built", 1)))
+
+        def _cidx(nm):
+            try:
+                return int(nm.rsplit(".", 1)[-1])
+            except Exception:
+                return 0
+        ring = sorted([n for n in ring if _cidx(n) % rows_built == 0],
+                      key=_cidx)
         if ring:
             tip_h = eb.get("KANR_dt.%s.%02d" % (side, tipi))
             cr = eb.new("KANC_root." + side)
