@@ -1005,8 +1005,26 @@ def add_cuff_bones(context):
         gh = max(1e-6, zs[-1] - zs[0])
 
     pts = _read_bone_points(mo)
+    rows = max(1, int(getattr(props, "kandura_cuff_rows", 1)))
     rings = {}
     for side in ("L", "R"):
+        # REGISTERED LOOP: count/rows ALWAYS rebuild exactly from the
+        # STORED loop (never from the bones) -> placement can never drift
+        stored = mo.get("sr_cuff_loop_" + side)
+        if stored is not None and len(stored) >= 9:
+            lp = [Vector(stored[i:i + 3]) for i in range(0, len(stored), 3)]
+            heads = _resample_ring_arc(lp, n)
+            if heads is not None:
+                axis = Vector(mo.get("sr_cuff_axis_" + side, (1.0, 0.0, 0.0)))
+                dend = float(mo.get("sr_cuff_dend_" + side, 0.05))
+                cen = Vector((0.0, 0.0, 0.0))
+                for h in heads:
+                    cen += h
+                cen /= len(heads)
+                rings[side] = [[h, h + axis * max(0.02, dend
+                                                  - (h - cen).dot(axis))]
+                               for h in heads]
+                continue
         # PRESERVE MANUAL PLACEMENT: resample the CURRENT ring if it exists
         pat = re.compile(r"^%s\.%s\.(\d+)$" % (re.escape(BONE_CUFF), side))
         cur = {}
@@ -1014,10 +1032,14 @@ def add_cuff_bones(context):
             m = pat.match(name)
             if m:
                 cur[int(m.group(1))] = ht
+        old_rows = max(1, int(mo.get("sr_cuff_rows_built", 1)))
         if cur and set(cur) == set(range(len(cur))) and len(cur) >= 3:
-            pairs = [[cur[k][0], cur[k][1]] for k in range(len(cur))]
-            if len(pairs) == n:
-                rings[side] = pairs             # same count: untouched
+            ncol_old = max(1, len(cur) // old_rows)
+            pairs = [[cur[k * old_rows][0],
+                      cur[k * old_rows + old_rows - 1][1]]
+                     for k in range(ncol_old)]
+            if len(pairs) == n and rows == old_rows:
+                rings[side] = pairs             # same layout: untouched
                 continue
             heads = _resample_ring_arc([p[0] for p in pairs], n)
             tails = _resample_ring_arc([p[1] for p in pairs], n)
@@ -1084,14 +1106,21 @@ def add_cuff_bones(context):
     for side, ring in rings.items():
         parent = (eb.get("hand." + side) or eb.get("forearm." + side))
         for k, (head, tail) in enumerate(ring):
-            name = "%s.%s.%02d" % (BONE_CUFF, side, k)
-            b = eb.new(name)
-            b.head = head
-            b.tail = tail
-            if parent is not None:
-                b.parent = parent
-                b.use_connect = False
-            made.append(name)
+            prev = None
+            for r in range(rows):
+                name = "%s.%s.%02d" % (BONE_CUFF, side, k * rows + r)
+                b = eb.new(name)
+                b.head = head.lerp(tail, r / rows)
+                b.tail = head.lerp(tail, (r + 1) / rows)
+                if prev is None:
+                    if parent is not None:
+                        b.parent = parent
+                        b.use_connect = False
+                else:
+                    b.parent = prev
+                    b.use_connect = True
+                prev = b
+                made.append(name)
     bpy.ops.object.mode_set(mode='OBJECT')
     for name in made:
         pb = mo.pose.bones.get(name)
@@ -1102,6 +1131,7 @@ def add_cuff_bones(context):
             except Exception:
                 pass
     mo["sr_kandura"] = True
+    mo["sr_cuff_rows_built"] = rows
     ensure_sleeve_collections(mo)
     return True, made
 
@@ -2189,58 +2219,25 @@ class SMARTRIG_OT_kandura_cuffs_register(bpy.types.Operator):
             tproj = l.dot(axis)
             if 0.0 < tproj < 0.35 and (l - axis * tproj).length < rad * 1.6:
                 dend = max(dend, tproj)
-        rings = {side: []}
-        for h in heads:
-            tl = max(0.02, dend - (h - cen).dot(axis))
-            rings[side].append([h, h + axis * tl])
+        # STORE the loop on the metarig: count/rows rebuild from IT forever
+        mo["sr_cuff_loop_" + side] = [c for pt in pts for c in pt]
+        mo["sr_cuff_axis_" + side] = list(axis)
+        mo["sr_cuff_dend_" + side] = dend
         if props.kandura_mirror:
             oside = "R" if side == "L" else "L"
-            rings[oside] = [[Vector((-h.x, h.y, h.z)),
-                             Vector((-t.x, t.y, t.z))]
-                            for h, t in rings[side]]
-        # build on the metarig (replace existing rings on the built sides)
-        try:
-            mo.hide_set(False)
-        except Exception:
-            pass
-        mo.hide_viewport = False
-        bpy.ops.object.select_all(action='DESELECT')
-        mo.select_set(True)
-        bpy.context.view_layer.objects.active = mo
-        bpy.ops.object.mode_set(mode='EDIT')
-        eb = mo.data.edit_bones
-        for sd in rings:
-            for b in [b for b in eb
-                      if b.name.startswith("%s.%s." % (BONE_CUFF, sd))]:
-                eb.remove(b)
-        made = []
-        for sd, ring in rings.items():
-            parent = (eb.get("hand." + sd) or eb.get("forearm." + sd))
-            for k, (head, tail) in enumerate(ring):
-                name = "%s.%s.%02d" % (BONE_CUFF, sd, k)
-                b = eb.new(name)
-                b.head = head
-                b.tail = tail
-                if parent is not None:
-                    b.parent = parent
-                    b.use_connect = False
-                made.append(name)
-        bpy.ops.object.mode_set(mode='OBJECT')
-        for name in made:
-            pb = mo.pose.bones.get(name)
-            if pb is not None:
-                try:
-                    pb.rigify_type = "basic.super_copy"
-                    pb.rigify_parameters.make_deform = True
-                except Exception:
-                    pass
-        mo["sr_kandura"] = True
-        ensure_sleeve_collections(mo)
-        _enter_metarig_edit(context, select_names=made)
+            mo["sr_cuff_loop_" + oside] = [c for pt in pts for c in
+                                           (-pt.x, pt.y, pt.z)]
+            mo["sr_cuff_axis_" + oside] = [-axis.x, axis.y, axis.z]
+            mo["sr_cuff_dend_" + oside] = dend
+        ok, res = add_cuff_bones(context)   # builds from the stored loop
+        if not ok:
+            self.report({'ERROR'}, res)
+            return {'CANCELLED'}
+        _enter_metarig_edit(context, select_names=res)
         self.report({'INFO'},
-                    "Cuffs REGISTERED on the loop (%d bones%s). Raise the "
-                    "count to subdivide on the same loop."
-                    % (len(made), " + mirrored" if props.kandura_mirror else ""))
+                    "Cuffs REGISTERED on the loop (%d bones%s). Bones/Rows "
+                    "now subdivide ON this loop exactly."
+                    % (len(res), " + mirrored" if props.kandura_mirror else ""))
         return {'FINISHED'}
 
 

@@ -565,6 +565,13 @@ class SmartRigProps(PropertyGroup):
         update=_kandura_collar_update,
         description="Number of collar bones added as a ring around the "
         "neck. REAL-TIME: rebuilds the ring keeping the placed shape")
+    kandura_cuff_rows: IntProperty(
+        name="Cuff Rows", default=1, min=1, max=4,
+        update=_kandura_cuff_update,
+        description="LENGTHWISE subdivision of each cuff bone (a chain "
+        "from the registered loop down to the sleeve end) - more rows = "
+        "smoother cuff automation. REAL-TIME, rebuilds from the "
+        "registered loop")
     kandura_cuff_count: IntProperty(
         name="Cuff Bones", default=6, min=3, max=16,
         update=_kandura_cuff_update,

@@ -766,6 +766,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 st.label(text="Cuffs (wrist):", icon='MESH_CIRCLE')
                 cf_ = st.row(align=True)
                 cf_.prop(props, "kandura_cuff_count", text="Bones")
+                cf_.prop(props, "kandura_cuff_rows", text="Rows")
                 bf = st.row(align=True); bf.scale_y = 1.5
                 bf.operator("smartrig.kandura_add_cuffs",
                             text="Add Cuff Bones", icon='ADD')
