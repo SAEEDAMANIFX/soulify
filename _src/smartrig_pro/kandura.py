@@ -1172,10 +1172,12 @@ def _kan_tweak_map(rig, side, joints):
 
 def _kanr_var(drv, nm, rig, kind, bone, key):
     v = drv.variables.new(); v.name = nm
-    if kind == 'LOC':
+    if kind in ('LOC', 'ROTX', 'ROTZ'):
         v.type = 'TRANSFORMS'
         t = v.targets[0]; t.id = rig; t.bone_target = bone
-        t.transform_type = 'LOC_Y'; t.transform_space = 'LOCAL_SPACE'
+        t.transform_type = {'LOC': 'LOC_Y', 'ROTX': 'ROT_X',
+                            'ROTZ': 'ROT_Z'}[kind]
+        t.transform_space = 'LOCAL_SPACE'
     else:
         v.type = 'SINGLE_PROP'
         t = v.targets[0]; t.id_type = 'OBJECT'; t.id = rig
@@ -1348,12 +1350,15 @@ def add_sleeve_rollup(rig, props):
             continue
         mpb.rotation_mode = 'XYZ'
         for key, val, lo, hi, desc in (
-                ("pile", 0.03, 0.005, 0.12,
+                ("pile", 0.02, 0.005, 0.12,
                  "Spacing of the gathered folds (roll-up stack)"),
-                ("bulge", 0.2, 0.0, 1.5,
+                ("bulge", 0.0, 0.0, 1.5,
                  "How much the gathered fabric thickens as it rolls up"),
-                ("hand_follow", 0.65, 0.0, 1.0,
-                 "How much the sleeve END follows the hand (0 = off)")):
+                ("hand_follow", 0.8, 0.0, 1.0,
+                 "How much the sleeve END follows the hand (0 = off)"),
+                ("hand_clear", 0.6, 0.0, 1.0,
+                 "Sleeve END retreats up the forearm when the wrist bends "
+                 "so the cuff never intersects the hand (0 = off)")):
             mpb[key] = float(val)
             try:
                 ui = mpb.id_properties_ui(key)
@@ -1390,21 +1395,42 @@ def add_sleeve_rollup(rig, props):
             _kanr_var(drv, "t", rig, 'LOC', mn, "")
             _kanr_var(drv, "cf", rig, 'PROP', mn, "hand_follow")
             drv.expression = "cf*max(0.0, 1.0 - t/%.4f)" % max(1e-4, Lf)
-        # accordion drivers on the roll helpers (tip rank 0, upward)
+        # NO ballooning: the sleeve stretch segments must not fatten as
+        # they compress (the roll-up look is controlled ONLY by "bulge")
+        import re as _re
+        for opb in rig.pose.bones:
+            if _re.match(r"^ORG-%s\.%s\.\d+$" % (BONE_SLEEVE, side), opb.name):
+                for c in opb.constraints:
+                    if c.type == 'STRETCH_TO':
+                        c.volume = 'NO_VOLUME'
+        # CASCADE roll-up: each gathered tweak COPIES THE LOCATION of the
+        # tweak ABOVE it as the master passes its rest spot - the tip rides
+        # bone-for-bone up the LIVE chain (works in any FK/IK pose), and the
+        # stack cascades because each target itself moves up in turn.
+        # head_tail keeps a small "pile" offset so no segment collapses.
         rank = 0
         for k in range(tipi, ei, -1):
             hn = "KANR_dt.%s.%02d" % (side, k)
             hb = rig.pose.bones.get(hn)
-            if hb is None:
+            tgt = twmap.get(k - 1)
+            if hb is None or tgt is None:
                 continue
             a = arc[k]
-            cmax = max(a, Lf - rank * 0.012)
-            drv = hb.driver_add("location", 1).driver
+            seg = max(1e-4, arc[k - 1] - arc[k])
+            tlen = max(1e-4, rig.data.bones[tgt].length)
+            con = hb.constraints.new('COPY_LOCATION')
+            con.name = "KAN Roll Cascade"
+            con.target = rig; con.subtarget = tgt
+            drv = con.driver_add("influence").driver
             drv.type = 'SCRIPTED'
             _kanr_var(drv, "t", rig, 'LOC', mn, "")
-            _kanr_var(drv, "pl", rig, 'PROP', mn, "pile")
-            drv.expression = ("min(max(%.4f, t - %d*pl), %.4f) - %.4f"
-                              % (a, rank, cmax, a))
+            drv.expression = ("min(1.0, max(0.0, (t - %.4f)/%.4f))"
+                              % (a, seg))
+            dht = con.driver_add("head_tail").driver
+            dht.type = 'SCRIPTED'
+            _kanr_var(dht, "pl", rig, 'PROP', mn, "pile")
+            dht.expression = "min(0.9, pl/%.4f)" % tlen
+            # optional fold thickening (default 0 = perfectly clean)
             for idx in (0, 2):
                 d2 = hb.driver_add("scale", idx).driver
                 d2.type = 'SCRIPTED'
@@ -1413,6 +1439,15 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(d2, "pl", rig, 'PROP', mn, "pile")
                 d2.expression = ("1.0 + bg*min(1.0, max(0.0, t - %.4f)"
                                  "/max(0.02, pl))" % a)
+            # HAND CLEARANCE: the sleeve END retreats up the forearm when
+            # the wrist bends, so the cuff opening NEVER eats into the hand
+            if k == tipi and rig.data.bones.get("ORG-hand." + side):
+                d3 = hb.driver_add("location", 1).driver
+                d3.type = 'SCRIPTED'
+                _kanr_var(d3, "rx", rig, 'ROTX', "ORG-hand." + side, "")
+                _kanr_var(d3, "rz", rig, 'ROTZ', "ORG-hand." + side, "")
+                _kanr_var(d3, "hc", rig, 'PROP', mn, "hand_clear")
+                d3.expression = "hc*0.06*min(1.6, abs(rx) + abs(rz))"
             rig.data.bones[hn].hide = True
             rank += 1
         for hn in ("KANH_dt." + side, "KANH_tgt." + side,
@@ -1422,6 +1457,164 @@ def add_sleeve_rollup(rig, props):
         made += 1
     rig["kan_rollup"] = 1 if made else 0
     return made
+
+
+# ====================================================================
+# SLEEVE WEIGHT POLISH — professional kandura binding
+# ====================================================================
+
+def polish_sleeve_weights(ob, rig):
+    """PROFESSIONAL sleeve binding pass. The generic bind leaves part of the
+    sleeve fabric weighted to the BODY arm bones (upper_arm/forearm/hand) -
+    those verts stay behind when the sleeve chain rolls up or the cuff
+    follows the hand => tearing. This pass:
+      1. deletes DEAD vertex groups (no bone of that name on the rig),
+      2. on every vert that carries kan_sleeve/kan_cuff weight, transfers
+         the body-ARM share to the NEAREST kan_sleeve/kan_cuff bone,
+      3. graph-smooths the kan weights inside the sleeve (keeps the torso
+         blend at the shoulder seam untouched).
+    Returns (n_dead_groups, n_verts_fixed)."""
+    if ob is None or rig is None:
+        return 0, 0
+    bones = set(rig.data.bones.keys())
+    dead = [g for g in ob.vertex_groups if g.name not in bones]
+    n_dead = len(dead)
+    for g in dead:
+        ob.vertex_groups.remove(g)
+
+    rw = rig.matrix_world
+    mw = ob.matrix_world
+    fixed = 0
+    for side in ("L", "R"):
+        kan_named = [b.name for b in rig.data.bones
+                     if b.use_deform
+                     and (b.name.startswith("DEF-%s.%s." % (BONE_SLEEVE, side))
+                          or b.name.startswith("DEF-%s.%s." % (BONE_CUFF, side)))]
+        if not kan_named:
+            continue
+        segs = []
+        for n in kan_named:
+            b = rig.data.bones[n]
+            segs.append((n, rw @ b.head_local, rw @ b.tail_local))
+        arm_named = [n for n in (
+            "DEF-upper_arm.%s" % side, "DEF-upper_arm.%s.001" % side,
+            "DEF-forearm.%s" % side, "DEF-forearm.%s.001" % side,
+            "DEF-hand.%s" % side) if n in bones]
+        gi = {g.name: g.index for g in ob.vertex_groups}
+        kan_idx = {gi[n] for n in kan_named if n in gi}
+        arm_idx = {gi[n] for n in arm_named if n in gi}
+        if not kan_idx:
+            continue
+
+        def _nearest(pt):
+            best, bn = 1e18, None
+            for n, a, b in segs:
+                ab = b - a
+                L2 = ab.length_squared
+                t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (pt - a).dot(ab) / L2))
+                d = (a + ab * t - pt).length_squared
+                if d < best:
+                    best, bn = d, n
+            return bn
+
+        sleeve_verts = []
+        for v in ob.data.vertices:
+            wk = sum(g.weight for g in v.groups if g.group in kan_idx)
+            if wk <= 0.02:
+                continue
+            sleeve_verts.append(v.index)
+            wa = sum(g.weight for g in v.groups if g.group in arm_idx)
+            if wa <= 1e-4:
+                continue
+            tgt = _nearest(mw @ v.co)
+            if tgt is None:
+                continue
+            for idx in arm_idx:
+                try:
+                    ob.vertex_groups[idx].remove([v.index])
+                except Exception:
+                    pass
+            ob.vertex_groups[tgt].add([v.index], wa, 'ADD')
+            fixed += 1
+
+        # graph smoothing of the kan groups INSIDE the sleeve only: keeps
+        # the shoulder-seam torso blend, evens the roll-up transitions
+        sv = set(sleeve_verts)
+        nbr = {i: [] for i in sv}
+        for e in ob.data.edges:
+            a, b = e.vertices
+            if a in sv and b in sv:
+                nbr[a].append(b)
+                nbr[b].append(a)
+        gnames = [n for n in kan_named if n in gi]
+        for _ in range(2):
+            cur = {}
+            for n in gnames:
+                g = ob.vertex_groups[n]
+                col = {}
+                for i in sv:
+                    try:
+                        col[i] = g.weight(i)
+                    except RuntimeError:
+                        col[i] = 0.0
+                cur[n] = col
+            for n in gnames:
+                g = ob.vertex_groups[n]
+                col = cur[n]
+                for i in sv:
+                    ns = nbr[i]
+                    if not ns:
+                        continue
+                    w = 0.5 * col[i] + 0.5 * sum(col[j] for j in ns) / len(ns)
+                    # rescale so the vert's total kan share is preserved
+                    g.add([i], w, 'REPLACE')
+            # renormalise the kan share per vert (torso share untouched)
+            for i in sv:
+                v = ob.data.vertices[i]
+                wk = sum(gg.weight for gg in v.groups if gg.group in
+                         {gi[n] for n in gnames})
+                tot = sum(gg.weight for gg in v.groups)
+                free = max(0.0, 1.0 - (tot - wk))
+                if wk > 1e-6 and abs(wk - free) > 1e-4:
+                    s = free / wk
+                    for n in gnames:
+                        try:
+                            w0 = ob.vertex_groups[n].weight(i)
+                        except RuntimeError:
+                            continue
+                        ob.vertex_groups[n].add([i], w0 * s, 'REPLACE')
+    ob.data.update()
+    return n_dead, fixed
+
+
+class SMARTRIG_OT_kandura_polish_weights(bpy.types.Operator):
+    bl_idname = "smartrig.kandura_polish_weights"
+    bl_label = "Polish Sleeve Weights"
+    bl_description = ("PROFESSIONAL sleeve binding: move any body-arm weight "
+                      "on the sleeve fabric onto the nearest sleeve/cuff bone "
+                      "(stops tearing on roll-up), delete dead vertex groups, "
+                      "smooth the sleeve weights (shoulder blend untouched)")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return kandura_object(context) is not None
+
+    def execute(self, context):
+        ob = kandura_object(context)
+        rig = None
+        for m in ob.modifiers:
+            if m.type == 'ARMATURE' and m.object is not None:
+                rig = m.object
+                break
+        if rig is None:
+            self.report({'ERROR'}, "Bind the kandura first (no Armature modifier)")
+            return {'CANCELLED'}
+        nd, nf = polish_sleeve_weights(ob, rig)
+        self.report({'INFO'},
+                    "Sleeve weights polished: %d verts fixed, %d dead groups removed"
+                    % (nf, nd))
+        return {'FINISHED'}
 
 
 def remove_kandura_bones(mo):
@@ -1523,6 +1716,7 @@ class SMARTRIG_OT_kandura_remove(bpy.types.Operator):
 
 classes = (SMARTRIG_OT_kandura_add_waist,
            SMARTRIG_OT_kandura_add_sleeves,
+           SMARTRIG_OT_kandura_polish_weights,
            SMARTRIG_OT_kandura_add_collar,
            SMARTRIG_OT_kandura_add_cuffs,
            SMARTRIG_OT_kandura_align_now,

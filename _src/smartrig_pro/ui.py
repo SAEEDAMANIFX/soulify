@@ -712,6 +712,10 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 _of.part = 'CUFF'
                 knb.label(text="Re-Add keeps your manual placement.",
                           icon='INFO')
+                pw = knb.row(); pw.scale_y = 1.3
+                pw.operator("smartrig.kandura_polish_weights",
+                            text="Polish Sleeve Weights (bind fix)",
+                            icon='MOD_VERTEX_WEIGHT')
                 rm = knb.row(); rm.scale_y = 1.2
                 _oa = rm.operator("smartrig.kandura_remove",
                                   text="Remove ALL Kandura Bones",
