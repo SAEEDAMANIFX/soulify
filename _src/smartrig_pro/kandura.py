@@ -1857,8 +1857,12 @@ def polish_sleeve_weights(ob, rig):
                 # Arm weight left on the chest fabric TEARS the cloth open
                 # the moment the arms pose (deep-crouch bug): 0.5 upper_arm
                 # was measured on chest-centre verts of the kandoorah.
+                # GUARD: NEVER strip fabric near the sleeve chain itself
+                # (d = distance to the nearest sleeve segment) - stripping
+                # sleeve verts glued them to the spine and the sleeves
+                # crumpled the moment the arm bent (Saeed's screenshot)
                 ub = rig.data.bones.get("DEF-upper_arm.%s" % side)
-                if ub is not None:
+                if ub is not None and d > rad * 1.4:
                     arm_pfx = ("DEF-upper_arm.%s" % side,
                                "DEF-forearm.%s" % side,
                                "DEF-hand.%s" % side)
@@ -2808,12 +2812,32 @@ def ensure_kandura_bind(rig, props):
             kan_idx = {g.index for g in ob.vertex_groups
                        if g.name.startswith(("DEF-%s." % BONE_SLEEVE,
                                              "DEF-%s." % BONE_CUFF))}
+            # arm segments: sleeve fabric can hang below the waist with
+            # HALF-REBUILT kan weights - exclude by GEOMETRY too, or the
+            # waist heal paints skirt weights onto the sleeves
+            asegs2 = []
+            for sd2 in ("L", "R"):
+                for bn2 in ("DEF-upper_arm.%s" % sd2,
+                            "DEF-forearm.%s" % sd2, "DEF-hand.%s" % sd2):
+                    bb2 = rig.data.bones.get(bn2)
+                    if bb2 is not None:
+                        asegs2.append((rw @ bb2.head_local,
+                                       rw @ bb2.tail_local))
+            def _dseg2(pp, a2, b2):
+                ab2 = b2 - a2
+                t2 = max(0.0, min(1.0, (pp - a2).dot(ab2)
+                                  / max(1e-12, ab2.length_squared)))
+                return (a2 + ab2 * t2 - pp).length
             vids = []
             for v in ob.data.vertices:
-                if (mw @ v.co).z >= topz - 0.02:
+                pv = mw @ v.co
+                if pv.z >= topz - 0.02:
                     continue
                 # NOT the sleeve fabric (cuffs can hang below the waist)
                 if sum(g.weight for g in v.groups if g.group in kan_idx) > 0.2:
+                    continue
+                if asegs2 and min(_dseg2(pv, a2, b2)
+                                  for a2, b2 in asegs2) < 0.13:
                     continue
                 vids.append(v.index)
             for g in stale:
