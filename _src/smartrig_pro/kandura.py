@@ -1992,6 +1992,22 @@ def organize_sleeve_bones(rig):
                             ROLLUP_MASTER + "."))
               and not n.startswith(("DEF-", "ORG-", "MCH-"))):
             ctrl.assign(b)
+    # RIGIFY-style colours: FK green, tweaks blue, cuff ring yellow,
+    # roll-up masters red (set on the pose bone -> widgets follow)
+    pal = ((ROLLUP_MASTER + ".", 'THEME01'),
+           ("tweak_" + BONE_SLEEVE + ".", 'THEME04'),
+           (BONE_CUFF + ".", 'THEME09'),
+           (BONE_SLEEVE + ".", 'THEME03'))
+    for pb in rig.pose.bones:
+        if pb.name.startswith(("DEF-", "ORG-", "MCH-", "KAN")):
+            continue
+        for pref, theme in pal:
+            if pb.name.startswith(pref):
+                try:
+                    pb.color.palette = theme
+                except Exception:
+                    pass
+                break
 
 
 def remove_kandura_bones(mo):
