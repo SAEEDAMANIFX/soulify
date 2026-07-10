@@ -87,6 +87,63 @@ def _step(layout, num, label, icon, state, icon_value=0):
     return box
 
 
+class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
+    """ARP Cloth-Kilt style live settings in the N-panel > Item tab:
+    appears on the generated rig, one block per sleeve master."""
+    bl_label = "Soulify Sleeves"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Item'
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return (ob is not None and ob.type == 'ARMATURE'
+                and (ob.pose.bones.get("kan_rollup.L") is not None
+                     or ob.pose.bones.get("kan_rollup.R") is not None))
+
+    def draw(self, context):
+        lay = self.layout
+        ob = context.active_object
+        props = context.scene.smartrig
+        for side, label in (("L", "Left Sleeve"), ("R", "Right Sleeve")):
+            pb = ob.pose.bones.get("kan_rollup." + side)
+            if pb is None:
+                continue
+            box = lay.box()
+            box.label(text=label, icon='MOD_CLOTH')
+            r = box.row(align=True)
+            r.prop(pb, "location", index=1, text="Roll-Up", slider=True)
+            col = box.column(align=True)
+            if "cuff_collide" in pb.keys():
+                col.prop(pb, '["cuff_collide"]', text="Hand Collide Strength",
+                         slider=True)
+            if "cuff_dist" in pb.keys():
+                col.prop(pb, '["cuff_dist"]', text="Hand Collide Distance",
+                         slider=True)
+            if "hand_clear" in pb.keys():
+                col.prop(pb, '["hand_clear"]', text="Hand Clearance (retreat)",
+                         slider=True)
+            col2 = box.column(align=True)
+            if "pile" in pb.keys():
+                col2.prop(pb, '["pile"]', text="Fold Spacing", slider=True)
+            if "bulge" in pb.keys():
+                col2.prop(pb, '["bulge"]', text="Fold Thickness", slider=True)
+            if "hand_follow" in pb.keys():
+                col2.prop(pb, '["hand_follow"]', text="Soft Hand Follow",
+                          slider=True)
+        try:
+            from . import kandura as _kn
+            k_ob = _kn.kandura_object(context)
+            if k_ob is not None and k_ob.modifiers.get("KAN_AntiPen"):
+                bx = lay.box()
+                bx.label(text="Kandura", icon='OUTLINER_OB_FORCE_FIELD')
+                bx.prop(props, "kandura_antipen_offset",
+                        text="Body Clearance", slider=True)
+        except Exception:
+            pass
+
+
 class SMARTRIG_PT_panel(bpy.types.Panel):
     bl_label = "Soulify"
     bl_idname = "SMARTRIG_PT_panel"
@@ -1686,7 +1743,8 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
         layout.label(text="Keyframe these to animate the cloth.", icon='KEYTYPE_KEYFRAME_VEC')
 
 
-classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item)
+classes = (SMARTRIG_PT_panel, SMARTRIG_PT_skirt_item,
+           SMARTRIG_PT_sleeve_item)
 
 
 def register():

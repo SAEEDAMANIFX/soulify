@@ -1255,16 +1255,17 @@ def add_sleeve_rollup(rig, props):
             continue
         arc = {tipi: 0.0}
         s = 0.0
-        for k in range(tipi, ei, -1):
+        for k in range(tipi, 0, -1):
             s += (joints[k] - joints[k - 1]).length
             arc[k - 1] = s
-        Lf = arc[ei]
-        if Lf < 1e-4:
+        Lf = arc[ei]                 # cuff -> elbow (hand-follow fade)
+        Lt = arc[0]                  # cuff -> TOP of the sleeve (full roll)
+        if Lf < 1e-4 or Lt < 1e-4:
             continue
         twmap = _kan_tweak_map(rig, side, joints)
         if tipi not in twmap:
             continue
-        data[side] = (joints, twmap, ei, tipi, arc, Lf)
+        data[side] = (joints, twmap, ei, tipi, arc, Lf, Lt)
     if not data:
         return 0
 
@@ -1273,7 +1274,7 @@ def add_sleeve_rollup(rig, props):
     eb = rig.data.edit_bones
     orig_parent = {}
     ring_dirs = {}
-    for side, (joints, twmap, ei, tipi, arc, Lf) in data.items():
+    for side, (joints, twmap, ei, tipi, arc, Lf, Lt) in data.items():
         # hand-follow jig: rotates the sleeve END about the last joint
         hj = eb.new("KANH_dt." + side)
         hj.head = joints[tipi - 1].copy(); hj.tail = joints[tipi].copy()
@@ -1289,8 +1290,8 @@ def add_sleeve_rollup(rig, props):
             tg.tail = tg.head + dr * 0.02
             tg.use_deform = False
             tg.parent = hand
-        # roll helpers: one per tweak BELOW the elbow (elbow stays put)
-        for k in range(ei + 1, tipi + 1):
+        # roll helpers: one per tweak, cuff to the TOP (joint 0 anchors)
+        for k in range(1, tipi + 1):
             twn = twmap.get(k)
             if twn is None:
                 continue
@@ -1390,7 +1391,7 @@ def add_sleeve_rollup(rig, props):
             pb["kanr_origparent"] = pn
 
     made = 0
-    for side, (joints, twmap, ei, tipi, arc, Lf) in data.items():
+    for side, (joints, twmap, ei, tipi, arc, Lf, Lt) in data.items():
         mn = ROLLUP_MASTER + "." + side
         mpb = rig.pose.bones.get(mn)
         if mpb is None:
@@ -1404,9 +1405,12 @@ def add_sleeve_rollup(rig, props):
                 ("hand_follow", 0.0, 0.0, 1.0,
                  "OPTIONAL soft follow of the hand by the sleeve END "
                  "(default 0 = pure kilt-style collision, no lifting)"),
-                ("cuff_collide", 1.0, 0.0, 1.0,
-                 "Cloth-kilt collision with the HAND: the rim sector the "
-                 "hand bends toward is pushed outward (never lifts)"),
+                ("cuff_collide", 1.0, 0.0, 2.0,
+                 "Cloth-kilt hand collision STRENGTH: how hard the rim "
+                 "sector the hand bends toward is pushed (never lifts)"),
+                ("cuff_dist", 0.07, 0.0, 0.25,
+                 "Cloth-kilt hand collision DISTANCE: how far the rim can "
+                 "be pushed away from the hand"),
                 ("hand_clear", 0.6, 0.0, 1.0,
                  "Sleeve END retreats up the forearm when the wrist bends "
                  "so the cuff never intersects the hand (0 = off)")):
@@ -1421,7 +1425,7 @@ def add_sleeve_rollup(rig, props):
         con.use_min_x = con.use_max_x = True
         con.use_min_z = con.use_max_z = True
         con.use_min_y = con.use_max_y = True
-        con.min_y = 0.0; con.max_y = Lf
+        con.min_y = 0.0; con.max_y = Lt
         con.owner_space = 'LOCAL'; con.use_transform_limit = True
         try:
             mpb.custom_shape = _sk._ensure_master_widget()
@@ -1468,7 +1472,7 @@ def add_sleeve_rollup(rig, props):
         # stack cascades because each target itself moves up in turn.
         # head_tail keeps a small "pile" offset so no segment collapses.
         rank = 0
-        for k in range(tipi, ei, -1):
+        for k in range(tipi, 0, -1):
             hn = "KANR_dt.%s.%02d" % (side, k)
             hb = rig.pose.bones.get(hn)
             tgt = twmap.get(k - 1)
@@ -1520,7 +1524,8 @@ def add_sleeve_rollup(rig, props):
             _kanr_var(drv, "rx", rig, 'ROTX', "ORG-hand." + side, "")
             _kanr_var(drv, "rz", rig, 'ROTZ', "ORG-hand." + side, "")
             _kanr_var(drv, "cc", rig, 'PROP', mn, "cuff_collide")
-            drv.expression = ("cc*min(0.09, 0.07*max(0.0, %.4f*(-rz) + %.4f*rx))"
+            _kanr_var(drv, "cd", rig, 'PROP', mn, "cuff_dist")
+            drv.expression = ("cc*min(cd*1.3, cd*max(0.0, %.4f*(-rz) + %.4f*rx))"
                               % (ox, oz))
             rig.data.bones[dtn].hide = True
         for hn in ("KANH_dt." + side, "KANH_tgt." + side,
