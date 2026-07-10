@@ -813,13 +813,16 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
         # sleeve-end hand follow + cuff ring riding the sleeve END
         try:
             rg = _generated_rig()
+            from . import kandura as _kn
             if rg is not None and any(b.name.startswith("DEF-kan_sleeve.")
                                       for b in rg.pose.bones):
-                from . import kandura as _kn
                 nr = _kn.add_sleeve_rollup(rg, p)
                 if nr:
                     extras.append("%d sleeve roll-up master%s"
                                   % (nr, "s" if nr > 1 else ""))
+            if rg is not None and _kn.kandura_object(context) is not None:
+                if _kn.add_kandura_antipen(rg, p):
+                    extras.append("kandura anti-pen")
         except Exception as e:
             print("SmartRig kandura sleeve extras failed:", e)
         # safety net: no bone left without a collection (so Rig Layers can hide all)

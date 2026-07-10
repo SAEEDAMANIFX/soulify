@@ -231,6 +231,15 @@ def _kandura_cuff_update(self, context):
         print("SmartRig kandura live cuff:", e)
 
 
+def _kandura_antipen_update(self, context):
+    """LIVE: body-clearance slider -> anti-pen modifier offset."""
+    try:
+        from . import kandura
+        kandura.live_kandura_antipen(context)
+    except Exception as e:
+        print("SmartRig kandura anti-pen:", e)
+
+
 def _kandura_focus_update(self, context):
     """Hide/show the body bones (focus on kandura bone placement)."""
     try:
@@ -553,6 +562,11 @@ class SmartRigProps(PropertyGroup):
         description="Number of cuff bones added as a ring around each "
         "sleeve END (wrist opening). REAL-TIME: rebuilds the rings "
         "keeping the placed shape")
+    kandura_antipen_offset: FloatProperty(
+        name="Body Clearance", default=0.005, min=0.0, max=0.05,
+        update=_kandura_antipen_update,
+        description="Anti-penetration: minimum gap kept between the body "
+        "and the kandura cloth (LIVE)")
     kandura_focus: BoolProperty(
         name="Hide Body Bones", default=False,
         update=_kandura_focus_update,

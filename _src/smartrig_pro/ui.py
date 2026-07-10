@@ -716,6 +716,9 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 pw.operator("smartrig.kandura_polish_weights",
                             text="Polish Sleeve Weights (bind fix)",
                             icon='MOD_VERTEX_WEIGHT')
+                ap = knb.row()
+                ap.prop(props, "kandura_antipen_offset",
+                        text="Body Clearance", slider=True)
                 rm = knb.row(); rm.scale_y = 1.2
                 _oa = rm.operator("smartrig.kandura_remove",
                                   text="Remove ALL Kandura Bones",

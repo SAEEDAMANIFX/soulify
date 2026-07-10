@@ -1617,6 +1617,88 @@ class SMARTRIG_OT_kandura_polish_weights(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# ====================================================================
+# KANDURA ANTI-PENETRATION — the body must NEVER poke through the cloth
+# ====================================================================
+
+def remove_kandura_antipen(rig):
+    n = 0
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH':
+            continue
+        md = ob.modifiers.get("KAN_AntiPen")
+        if md is not None:
+            try:
+                ob.modifiers.remove(md); n += 1
+            except Exception:
+                pass
+    if rig is not None and "kan_antipen" in rig:
+        del rig["kan_antipen"]
+    return n
+
+
+def add_kandura_antipen(rig, props):
+    """PROFESSIONAL no-clipping layer for the WHOLE kandura: a Shrinkwrap
+    in 'OUTSIDE' mode pushes ONLY the verts that end up INSIDE the body
+    back out to the surface (+offset) - verts already outside are never
+    touched, so the drape the rig produced is preserved. Covers the torso,
+    the sleeves AND the cuff-vs-hand case in every pose, FK or IK.
+    Topology-safe; ordered right after the Armature modifier."""
+    ob = kandura_object(bpy.context)
+    body = getattr(props, "target_mesh", None)
+    if ob is None or body is None or ob is body:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    remove_kandura_antipen(rig)
+    vg = (ob.vertex_groups.get("SR_KanAntiPen")
+          or ob.vertex_groups.new(name="SR_KanAntiPen"))
+    vg.add([v.index for v in ob.data.vertices], 1.0, 'REPLACE')
+    mod = ob.modifiers.new("KAN_AntiPen", 'SHRINKWRAP')
+    mod.target = body
+    mod.wrap_method = 'NEAREST_SURFACEPOINT'
+    mod.wrap_mode = 'OUTSIDE'      # push out ONLY penetrating verts
+    mod.offset = float(getattr(props, "kandura_antipen_offset", 0.005))
+    mod.vertex_group = "SR_KanAntiPen"
+    # order: right AFTER the Armature deform
+    names = [m.name for m in ob.modifiers]
+    after = None
+    for mm in ob.modifiers:
+        if mm.type in ('ARMATURE', 'SURFACE_DEFORM'):
+            after = mm.name
+    if after is not None:
+        try:
+            win = bpy.context.window
+            area = next((a for a in win.screen.areas if a.type == 'VIEW_3D'),
+                        None) if win else None
+            region = (next((r for r in area.regions if r.type == 'WINDOW'),
+                           None) if area else None)
+            ov = {"object": ob, "active_object": ob}
+            if win: ov["window"] = win
+            if area: ov["area"] = area
+            if region: ov["region"] = region
+            with bpy.context.temp_override(**ov):
+                idx = [m.name for m in ob.modifiers].index(after) + 1
+                if [m.name for m in ob.modifiers].index("KAN_AntiPen") != idx:
+                    bpy.ops.object.modifier_move_to_index(
+                        modifier="KAN_AntiPen", index=idx)
+        except Exception as e:
+            print("SmartRig kandura anti-pen reorder:", e)
+    if rig is not None:
+        rig["kan_antipen"] = 1
+    return 1
+
+
+def live_kandura_antipen(context):
+    try:
+        ob = kandura_object(context)
+        md = ob.modifiers.get("KAN_AntiPen") if ob else None
+        if md is not None:
+            md.offset = float(context.scene.smartrig.kandura_antipen_offset)
+    except Exception as e:
+        print("SmartRig kandura anti-pen tune:", e)
+
+
 def remove_kandura_bones(mo):
     """Delete every bone the kandura module created from the metarig."""
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
