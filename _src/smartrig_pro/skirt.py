@@ -1677,7 +1677,10 @@ def add_skirt_follow_body(rig, props):
                         bwi2 @ (mws @ v.co), distance=0.5)
                     if ok2:
                         d2 = ((bwi2 @ (mws @ v.co)) - loc2).length
-                        w *= max(0.0, min(1.0, 1.0 - (d2 - 0.025) / 0.065))
+                        # wide falloff: the LAP panel hangs 5-15cm off the
+                        # thighs at rest yet MUST rest on them when seated
+                        # (SD preserves the rest offset, so cling != glue)
+                        w *= max(0.0, min(1.0, 1.0 - (d2 - 0.05) / 0.13))
                 if w > 1e-3:
                     vgf.add([v.index], min(1.0, w), 'REPLACE')
                 else:
