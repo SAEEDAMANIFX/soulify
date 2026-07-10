@@ -140,6 +140,9 @@ class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
                 bx.label(text="Kandura", icon='OUTLINER_OB_FORCE_FIELD')
                 bx.prop(props, "kandura_antipen_offset",
                         text="Body Clearance", slider=True)
+                if k_ob.modifiers.get("KAN_Smooth"):
+                    bx.prop(props, "kandura_smooth",
+                            text="Fold Smoothing", slider=True)
         except Exception:
             pass
 

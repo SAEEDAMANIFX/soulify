@@ -821,6 +821,7 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                     extras.append("%d sleeve roll-up master%s"
                                   % (nr, "s" if nr > 1 else ""))
             if rg is not None and _kn.kandura_object(context) is not None:
+                _kn.add_kandura_smooth(rg, p)
                 if _kn.add_kandura_antipen(rg, p):
                     extras.append("kandura anti-pen")
         except Exception as e:

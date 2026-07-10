@@ -1400,7 +1400,7 @@ def add_sleeve_rollup(rig, props):
         for key, val, lo, hi, desc in (
                 ("pile", 0.02, 0.005, 0.12,
                  "Spacing of the gathered folds (roll-up stack)"),
-                ("bulge", 0.0, 0.0, 1.5,
+                ("bulge", 0.18, 0.0, 1.5,
                  "How much the gathered fabric thickens as it rolls up"),
                 ("hand_follow", 0.0, 0.0, 1.0,
                  "OPTIONAL soft follow of the hand by the sleeve END "
@@ -1500,8 +1500,8 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(d2, "t", rig, 'LOC', mn, "")
                 _kanr_var(d2, "bg", rig, 'PROP', mn, "bulge")
                 _kanr_var(d2, "pl", rig, 'PROP', mn, "pile")
-                d2.expression = ("1.0 + bg*min(1.0, max(0.0, t - %.4f)"
-                                 "/max(0.02, pl))" % a)
+                d2.expression = ("1.0 + bg*%.2f*min(1.0, max(0.0, t - %.4f)"
+                                 "/max(0.02, pl))" % (1.0 + 0.55 * rank, a))
             # HAND CLEARANCE: the sleeve END retreats up the forearm when
             # the wrist bends, so the cuff opening NEVER eats into the hand
             if k == tipi and rig.data.bones.get("ORG-hand." + side):
@@ -1762,7 +1762,8 @@ def add_kandura_antipen(rig, props):
     names = [m.name for m in ob.modifiers]
     after = None
     for mm in ob.modifiers:
-        if mm.type in ('ARMATURE', 'SURFACE_DEFORM'):
+        if (mm.type in ('ARMATURE', 'SURFACE_DEFORM')
+                or mm.name == "KAN_Smooth"):
             after = mm.name
     if after is not None:
         try:
@@ -1795,6 +1796,86 @@ def live_kandura_antipen(context):
             md.offset = float(context.scene.smartrig.kandura_antipen_offset)
     except Exception as e:
         print("SmartRig kandura anti-pen tune:", e)
+
+
+def remove_kandura_smooth(rig):
+    n = 0
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH':
+            continue
+        md = ob.modifiers.get("KAN_Smooth")
+        if md is not None:
+            try:
+                ob.modifiers.remove(md); n += 1
+            except Exception:
+                pass
+    return n
+
+
+def add_kandura_smooth(rig, props):
+    """PROFESSIONAL fold smoothing: a Corrective Smooth masked to the
+    SLEEVE fabric only (kan_sleeve/kan_cuff weights). The roll-up stacks
+    many bones into a small band - raw skinning leaves zigzag creases
+    there; this evens them into clean, round folds. The rest of the
+    kandura (and its tailored wrinkles) is untouched. Ordered between the
+    Armature and KAN_AntiPen (the anti-pen push always wins)."""
+    ob = kandura_object(bpy.context)
+    if ob is None:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    remove_kandura_smooth(rig)
+    # mask = the sleeve share of every vert
+    kan_idx = {g.index for g in ob.vertex_groups
+               if ("kan_sleeve" in g.name or "kan_cuff" in g.name)}
+    if not kan_idx:
+        return 0
+    vg = (ob.vertex_groups.get("SR_SleeveSmooth")
+          or ob.vertex_groups.new(name="SR_SleeveSmooth"))
+    for v in ob.data.vertices:
+        w = sum(g.weight for g in v.groups if g.group in kan_idx)
+        vg.add([v.index], min(1.0, w), 'REPLACE')
+    mod = ob.modifiers.new("KAN_Smooth", 'CORRECTIVE_SMOOTH')
+    mod.factor = float(getattr(props, "kandura_smooth", 0.5))
+    mod.iterations = 10
+    mod.smooth_type = 'LENGTH_WEIGHTED'
+    mod.rest_source = 'ORCO'
+    mod.vertex_group = "SR_SleeveSmooth"
+    # order: right after the Armature (KAN_AntiPen re-anchors after this)
+    try:
+        win = bpy.context.window
+        area = next((a for a in win.screen.areas if a.type == 'VIEW_3D'),
+                    None) if win else None
+        region = (next((r for r in area.regions if r.type == 'WINDOW'),
+                       None) if area else None)
+        ov = {"object": ob, "active_object": ob}
+        if win: ov["window"] = win
+        if area: ov["area"] = area
+        if region: ov["region"] = region
+        names = [m.name for m in ob.modifiers]
+        after = None
+        for mm in ob.modifiers:
+            if mm.type in ('ARMATURE', 'SURFACE_DEFORM'):
+                after = mm.name
+        if after is not None:
+            with bpy.context.temp_override(**ov):
+                idx = [m.name for m in ob.modifiers].index(after) + 1
+                if [m.name for m in ob.modifiers].index("KAN_Smooth") != idx:
+                    bpy.ops.object.modifier_move_to_index(
+                        modifier="KAN_Smooth", index=idx)
+    except Exception as e:
+        print("SmartRig kandura smooth reorder:", e)
+    return 1
+
+
+def live_kandura_smooth(context):
+    try:
+        ob = kandura_object(context)
+        md = ob.modifiers.get("KAN_Smooth") if ob else None
+        if md is not None:
+            md.factor = float(context.scene.smartrig.kandura_smooth)
+    except Exception as e:
+        print("SmartRig kandura smooth tune:", e)
 
 
 def remove_kandura_bones(mo):

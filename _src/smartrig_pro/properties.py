@@ -231,6 +231,15 @@ def _kandura_cuff_update(self, context):
         print("SmartRig kandura live cuff:", e)
 
 
+def _kandura_smooth_update(self, context):
+    """LIVE: fold-smoothing slider -> corrective smooth factor."""
+    try:
+        from . import kandura
+        kandura.live_kandura_smooth(context)
+    except Exception as e:
+        print("SmartRig kandura smooth:", e)
+
+
 def _kandura_antipen_update(self, context):
     """LIVE: body-clearance slider -> anti-pen modifier offset."""
     try:
@@ -562,6 +571,11 @@ class SmartRigProps(PropertyGroup):
         description="Number of cuff bones added as a ring around each "
         "sleeve END (wrist opening). REAL-TIME: rebuilds the rings "
         "keeping the placed shape")
+    kandura_smooth: FloatProperty(
+        name="Fold Smoothing", default=0.5, min=0.0, max=1.0,
+        update=_kandura_smooth_update,
+        description="Corrective-smooth strength on the SLEEVE fabric: "
+        "evens the rolled-up folds into clean rounds (LIVE)")
     kandura_antipen_offset: FloatProperty(
         name="Body Clearance", default=0.005, min=0.0, max=0.05,
         update=_kandura_antipen_update,
