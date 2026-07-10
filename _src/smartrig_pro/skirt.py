@@ -2424,10 +2424,13 @@ def add_skirt_collision(rig, props, h=None):
                 ("collide_dist", dist, 0.0, 0.6, "Clearance kept between the skirt and the legs"),
                 ("collide_dist_falloff", falloff, 0.0, 1.0, "Base clearance kept even at rest"),
                 ("collide_spread", spread, 0.0, 2.0, "How many columns around each leg are pushed"),
-                ("leg_follow", 1.0, 0.0, 1.0,
-                 "SITTING automation: panels facing a moving leg HINGE with the thigh"),
-                ("shin_follow", 1.0, 0.0, 1.0,
-                 "Below the knee the fabric follows the SHIN (hangs down when seated)"))
+                ("leg_follow", 0.0, 0.0, 1.0,
+                 "OPT-IN: panels facing a moving leg hinge with the thigh. "
+                 "Keep 0 for natural animation - for SITTING use the Sit "
+                 "(Follow Body) slider instead"),
+                ("shin_follow", 0.0, 0.0, 1.0,
+                 "OPT-IN: below the knee the fabric follows the SHIN "
+                 "(pairs with Leg Follow)"))
         for key, val, lo, hi, desc in spec:
             mpb[key] = float(val)
             try:

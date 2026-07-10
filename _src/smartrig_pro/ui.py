@@ -1740,6 +1740,12 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
             jr.operator("smartrig.bake_jiggle", text="Clear Bake", icon='TRASH').remove = True
         # ---- Follow Body (sitting blend) = Surface Deform strength ----
         fmod = skirt.follow_modifier(context)
+        if fmod is None and (rig.get("sk_kilt") or rig.get("kan_floor")):
+            sb = layout.column(align=True)
+            sb.label(text="Sit (Follow Body)", icon='MOD_MESHDEFORM')
+            sb.operator("smartrig.skirt_follow",
+                        text="Enable Sit Follow (Surface Deform)",
+                        icon='MOD_MESHDEFORM')
         if fmod is not None:
             fb = layout.column(align=True)
             fb.label(text="Follow Body (sit)", icon='MOD_MESHDEFORM')

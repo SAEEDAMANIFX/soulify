@@ -2665,6 +2665,36 @@ def ensure_kandura_bind(rig, props):
                 acts.append("waist-down weights rebuilt "
                             "(%d verts, %d stale groups)"
                             % (len(vids), len(stale)))
+    # --- 7: PROFESSIONAL BIND GUARANTEE: a fresh auto-bind, or the
+    # torn-chest signature (arm weight parked on torso fabric), gets the
+    # full analytic polish AUTOMATICALLY - the FIRST bind must already be
+    # professional, no manual fixing pass (Saeed's spec) ---
+    has_sleeves = any(b.name.startswith("DEF-%s." % BONE_SLEEVE)
+                      for b in rig.data.bones)
+    if has_sleeves:
+        needs = any("automatic weights" in a for a in acts)
+        if not needs:
+            ub = {g.index for g in ob.vertex_groups
+                  if g.name.startswith(("DEF-upper_arm", "DEF-forearm",
+                                        "DEF-hand"))}
+            if ub:
+                mw2 = ob.matrix_world
+                zs2 = [(mw2 @ v.co).z for v in ob.data.vertices]
+                gz0, gz1 = min(zs2), max(zs2)
+                gh2 = max(1e-6, gz1 - gz0)
+                n_chest = n_bad = 0
+                for v in ob.data.vertices:
+                    p2 = mw2 @ v.co
+                    if (abs(p2.x) < 0.12 * gh2
+                            and p2.z > gz0 + 0.55 * gh2):
+                        n_chest += 1
+                        if sum(g.weight for g in v.groups
+                               if g.group in ub) > 0.3:
+                            n_bad += 1
+                needs = n_chest > 20 and n_bad > 0.05 * n_chest
+        if needs:
+            nd7, nf7 = polish_sleeve_weights(ob, rig)
+            acts.append("bind auto-polished (%d verts)" % nf7)
     return acts
 
 
