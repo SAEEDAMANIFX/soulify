@@ -1523,15 +1523,19 @@ def add_sleeve_rollup(rig, props):
                 dro.type = 'SCRIPTED'
                 _kanr_var(dro, "t", rig, 'LOC', mn, "")
                 _kanr_var(dro, "pl", rig, 'PROP', mn, "pile")
-                dro.expression = ("min(1.0, max(0.0, (%.4f + %.4f*t - %.4f)"
-                                  "/%.4f))" % (a, (Lt - a) / Lt, Lf,
-                                               max(1e-3, 0.5 * (Lt - Lf))))
-            # GATHER (not fold): the WHOLE sleeve compresses toward the top
-            # proportionally - ring k slides along the anchor path to
-            # p_k(t) = a_k + (Lt - a_k) * t/Lt. Every ring moves together,
-            # order and spacing stay graded, the motion is perfectly smooth
-            # (no roll edge, no transit state - fabric just bunches up).
-            mfac = (Lt - a) / Lt
+                sig_o = min(0.1, 0.065 / max(1e-3, Lt))
+                dro.expression = ("min(1.0, max(0.0, (max(%.4f, t + %.4f)"
+                                  " - %.4f)/%.4f))"
+                                  % (a, sig_o * a, Lf,
+                                     max(1e-3, 0.5 * (Lt - Lf))))
+            # BULLDOZER GATHER (Saeed spec): fabric rests until the push
+            # front reaches it - the FOREARM bunches first, and only after
+            # the front passes the ELBOW does the UPPER ARM continue.
+            # p_k(t) = max(a_k, t + SIG*a_k): deeper rings engage later,
+            # then travel at slider speed with graded bunch spacing SIG.
+            # residual bunch spacing: capped so the bunch never crosses the
+            # armpit seam (cap + SIG*a <= Lt)
+            SIG = min(0.1, 0.065 / max(1e-3, Lt))
             for j in range(k - 1, -1, -1):
                 an = "KANA.%s.%02d" % (side, j)
                 if rig.pose.bones.get(an) is None:
@@ -1544,8 +1548,9 @@ def add_sleeve_rollup(rig, props):
                 drv = con.driver_add("influence").driver
                 drv.type = 'SCRIPTED'
                 _kanr_var(drv, "t", rig, 'LOC', mn, "")
-                drv.expression = ("min(1.0, max(0.0, (%.4f + %.4f*t - %.4f)"
-                                  "/%.4f))" % (a, mfac, w0, span))
+                drv.expression = ("min(1.0, max(0.0, (max(%.4f, t + %.4f)"
+                                  " - %.4f)/%.4f))"
+                                  % (a, SIG * a, w0, span))
             # optional fold thickening (default 0 = perfectly clean)
             for idx in (0, 2):
                 d2 = hb.driver_add("scale", idx).driver
@@ -1553,8 +1558,9 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(d2, "t", rig, 'LOC', mn, "")
                 _kanr_var(d2, "bg", rig, 'PROP', mn, "bulge")
                 _kanr_var(d2, "inf", rig, 'PROP', mn, "inflate")
-                d2.expression = ("1.0 + inf + bg*min(1.0, t/%.4f)"
-                                 % max(1e-3, Lt - 0.07))
+                sig_b = min(0.1, 0.065 / max(1e-3, Lt))
+                d2.expression = ("1.0 + inf + bg*min(1.0, max(0.0, "
+                                 "(t - %.4f)/0.05))" % (a * (1.0 - sig_b)))
             # HAND CLEARANCE: the sleeve END retreats up the forearm when
             # the wrist bends, so the cuff opening NEVER eats into the hand
             if k == tipi and rig.data.bones.get("ORG-hand." + side):
