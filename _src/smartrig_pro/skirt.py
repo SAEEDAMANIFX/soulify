@@ -1652,6 +1652,13 @@ def add_skirt_follow_body(rig, props):
             fade = max(0.05, 0.45 * max(0.05, kneez - hemz))
             vgf = (sk.vertex_groups.get("SR_SitFollow")
                    or sk.vertex_groups.new(name="SR_SitFollow"))
+            # CLOTH-AWARE cling: Surface Deform has no cloth logic - at 1.0
+            # it wraps the fabric INTO every crevice like a wetsuit. Real
+            # cloth clings only where it already sits NEAR the body (the
+            # fitted seat/lap) and BRIDGES the gaps elsewhere - so the
+            # cling weight also falls off with the vertex's REST distance
+            # from the body surface (< 2.5cm = full, > 9cm = none).
+            bwi2 = body.matrix_world.inverted()
             for v in sk.data.vertices:
                 z = (mws @ v.co).z
                 if sum(g.weight for g in v.groups
@@ -1662,9 +1669,15 @@ def add_skirt_follow_body(rig, props):
                 elif z > topz - 0.04:
                     w = (topz + 0.06 - z) / 0.10
                 elif z > kneez:
-                    w = 1.0                     # lap/seat: full cling
+                    w = 1.0                     # lap/seat zone
                 else:
                     w = max(0.0, 1.0 - (kneez - z) / fade)
+                if w > 1e-3:
+                    ok2, loc2, _n2, _i2 = body.closest_point_on_mesh(
+                        bwi2 @ (mws @ v.co), distance=0.5)
+                    if ok2:
+                        d2 = ((bwi2 @ (mws @ v.co)) - loc2).length
+                        w *= max(0.0, min(1.0, 1.0 - (d2 - 0.025) / 0.065))
                 if w > 1e-3:
                     vgf.add([v.index], min(1.0, w), 'REPLACE')
                 else:
