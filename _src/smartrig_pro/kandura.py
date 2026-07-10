@@ -1522,40 +1522,37 @@ def add_sleeve_rollup(rig, props):
                 dro.type = 'SCRIPTED'
                 _kanr_var(dro, "t", rig, 'LOC', mn, "")
                 _kanr_var(dro, "pl", rig, 'PROP', mn, "pile")
-                dro.expression = ("min(1.0, max(0.0, (t - %d*pl - %.4f)/%.4f))"
-                                  % (rank, Lf, max(1e-3, 0.5 * (Lt - Lf))))
-            # SLIDING PATH: the ring passes through EVERY anchor above it in
-            # sequence (constraint stack, later ones override progressively).
-            # Its slider time lags by rank*pile -> arc-spaced stacking; the
-            # motion follows the sleeve surface, never a straight chord.
-            cap_k = max(arc[k], (Lt - 0.07) - rank * 0.012)
+                dro.expression = ("min(1.0, max(0.0, (%.4f + %.4f*t - %.4f)"
+                                  "/%.4f))" % (a, (Lt - a) / Lt, Lf,
+                                               max(1e-3, 0.5 * (Lt - Lf))))
+            # GATHER (not fold): the WHOLE sleeve compresses toward the top
+            # proportionally - ring k slides along the anchor path to
+            # p_k(t) = a_k + (Lt - a_k) * t/Lt. Every ring moves together,
+            # order and spacing stay graded, the motion is perfectly smooth
+            # (no roll edge, no transit state - fabric just bunches up).
+            mfac = (Lt - a) / Lt
             for j in range(k - 1, -1, -1):
                 an = "KANA.%s.%02d" % (side, j)
                 if rig.pose.bones.get(an) is None:
                     continue
                 w0 = arc[j + 1]
                 span = max(1e-4, arc[j] - arc[j + 1])
-                maxfrac = min(1.0, max(0.0, (cap_k - w0) / span))
-                if maxfrac <= 1e-4:
-                    continue
                 con = hb.constraints.new('COPY_LOCATION')
-                con.name = "KAN Roll Path %02d" % j
+                con.name = "KAN Gather Path %02d" % j
                 con.target = rig; con.subtarget = an
                 drv = con.driver_add("influence").driver
                 drv.type = 'SCRIPTED'
                 _kanr_var(drv, "t", rig, 'LOC', mn, "")
-                _kanr_var(drv, "pl", rig, 'PROP', mn, "pile")
-                drv.expression = ("min(%.4f, max(0.0, (t - %d*pl - %.4f)"
-                                  "/%.4f))" % (maxfrac, rank, w0, span))
+                drv.expression = ("min(1.0, max(0.0, (%.4f + %.4f*t - %.4f)"
+                                  "/%.4f))" % (a, mfac, w0, span))
             # optional fold thickening (default 0 = perfectly clean)
             for idx in (0, 2):
                 d2 = hb.driver_add("scale", idx).driver
                 d2.type = 'SCRIPTED'
                 _kanr_var(d2, "t", rig, 'LOC', mn, "")
                 _kanr_var(d2, "bg", rig, 'PROP', mn, "bulge")
-                _kanr_var(d2, "pl", rig, 'PROP', mn, "pile")
-                d2.expression = ("1.0 + bg*%.2f*min(1.0, max(0.0, t - %.4f)"
-                                 "/max(0.02, pl))" % (min(2.0, 1.0 + 0.25 * rank), a))
+                d2.expression = ("1.0 + bg*min(1.0, t/%.4f)"
+                                 % max(1e-3, Lt - 0.07))
             # HAND CLEARANCE: the sleeve END retreats up the forearm when
             # the wrist bends, so the cuff opening NEVER eats into the hand
             if k == tipi and rig.data.bones.get("ORG-hand." + side):
@@ -1574,21 +1571,6 @@ def add_sleeve_rollup(rig, props):
         # parented in the forearm frame) -> blend a WORLD copy-rotation from
         # the first upper-arm sleeve bone as t passes the elbow.
         crpb = rig.pose.bones.get("KANC_root." + side)
-        if crpb is not None:
-            # the wrist opening gets SWALLOWED by the roll: shrink the rim
-            # ring as the sleeve rolls up so it tucks inside the band
-            for idx in (0, 1, 2):
-                dsc = crpb.driver_add("scale", idx).driver
-                dsc.type = 'SCRIPTED'
-                _kanr_var(dsc, "t", rig, 'LOC', mn, "")
-                dsc.expression = ("1.0 - 0.7*min(1.0, t/%.4f)"
-                                  % max(1e-3, 0.5 * Lf))
-            # and TUCK it INSIDE the roll (up-chain, behind the outer layer)
-            dtk = crpb.driver_add("location", 1).driver
-            dtk.type = 'SCRIPTED'
-            _kanr_var(dtk, "t", rig, 'LOC', mn, "")
-            dtk.expression = ("-0.035*min(1.0, t/%.4f)"
-                              % max(1e-3, 0.5 * Lf))
         up_org = rig.data.bones.get("ORG-upper_arm." + side)
         if crpb is not None and up_org is not None and Lt > Lf + 1e-4:
             cro = crpb.constraints.new('COPY_ROTATION')
