@@ -2178,15 +2178,26 @@ class SMARTRIG_OT_kandura_cuffs_register(bpy.types.Operator):
         fa = _bone_seg(mo, ["forearm." + side])
         if fa is not None and axis.dot(cen - fa[0]) < 0.0:
             axis = -axis
-        per = sum((heads[(i + 1) % len(heads)] - heads[i]).length
-                  for i in range(len(heads)))
-        blen = max(0.015, 0.5 * per / max(1, n))
-        rings = {side: [[h, h + axis * blen] for h in heads]}
+        # TAILS REACH THE SLEEVE END: measure how far the garment fabric
+        # extends past the registered loop along the ring axis, and stretch
+        # every bone from the loop down to that edge (covers the whole cuff)
+        rad = sum((h - cen).length for h in heads) / len(heads)
+        dend = 0.0
+        cos = _garment_coords(ob)
+        for pnt in cos:
+            l = (mwi @ pnt) - cen
+            tproj = l.dot(axis)
+            if 0.0 < tproj < 0.35 and (l - axis * tproj).length < rad * 1.6:
+                dend = max(dend, tproj)
+        rings = {side: []}
+        for h in heads:
+            tl = max(0.02, dend - (h - cen).dot(axis))
+            rings[side].append([h, h + axis * tl])
         if props.kandura_mirror:
             oside = "R" if side == "L" else "L"
             rings[oside] = [[Vector((-h.x, h.y, h.z)),
-                             Vector((-(h + axis * blen).x, (h + axis * blen).y,
-                                     (h + axis * blen).z))] for h in heads]
+                             Vector((-t.x, t.y, t.z))]
+                            for h, t in rings[side]]
         # build on the metarig (replace existing rings on the built sides)
         try:
             mo.hide_set(False)
