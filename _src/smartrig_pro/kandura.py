@@ -1451,9 +1451,10 @@ def add_sleeve_rollup(rig, props):
                 ("cuff_dist", 0.07, 0.0, 0.25,
                  "Cloth-kilt hand collision DISTANCE: how far the rim can "
                  "be pushed away from the hand"),
-                ("hand_clear", 0.6, 0.0, 1.0,
-                 "Sleeve END retreats up the forearm when the wrist bends "
-                 "so the cuff never intersects the hand (0 = off)")):
+                ("hand_clear", 0.0, 0.0, 1.0,
+                 "OPTIONAL: sleeve END retreats up the forearm on EXTREME "
+                 "wrist bends only (default 0 = the cuff stays put; the "
+                 "anti-penetration layer already stops clipping)")):
             mpb[key] = float(val)
             try:
                 ui = mpb.id_properties_ui(key)
@@ -1570,7 +1571,8 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(d3, "rz", rig, 'ROTZ', "ORG-hand." + side, "")
                 _kanr_var(d3, "hc", rig, 'PROP', mn, "hand_clear")
                 _kanr_var(d3, "t", rig, 'LOC', mn, "")
-                d3.expression = ("hc*0.06*min(1.6, abs(rx) + abs(rz))"
+                # thresholded: nothing below ~50 deg combined wrist bend
+                d3.expression = ("hc*0.08*max(0.0, abs(rx) + abs(rz) - 0.9)"
                                  "*max(0.0, 1.0 - t/%.4f)" % max(1e-4, Lf))
             rig.data.bones[hn].hide = True
             rank += 1
