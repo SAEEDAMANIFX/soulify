@@ -1868,6 +1868,11 @@ def add_kandura_antipen(rig, props):
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     remove_kandura_antipen(rig)
+    # professional default: Preserve Volume (dual quaternion) on the
+    # kandura skinning - verified identical with the gather system
+    for mm in ob.modifiers:
+        if mm.type == 'ARMATURE':
+            mm.use_deform_preserve_volume = True
     vg = (ob.vertex_groups.get("SR_KanAntiPen")
           or ob.vertex_groups.new(name="SR_KanAntiPen"))
     vg.add([v.index for v in ob.data.vertices], 1.0, 'REPLACE')
