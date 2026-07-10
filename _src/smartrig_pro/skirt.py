@@ -1652,13 +1652,12 @@ def add_skirt_follow_body(rig, props):
             fade = max(0.05, 0.45 * max(0.05, kneez - hemz))
             vgf = (sk.vertex_groups.get("SR_SitFollow")
                    or sk.vertex_groups.new(name="SR_SitFollow"))
-            # CLOTH-AWARE cling: Surface Deform has no cloth logic - at 1.0
-            # it wraps the fabric INTO every crevice like a wetsuit. Real
-            # cloth clings only where it already sits NEAR the body (the
-            # fitted seat/lap) and BRIDGES the gaps elsewhere - so the
-            # cling weight also falls off with the vertex's REST distance
-            # from the body surface (< 2.5cm = full, > 9cm = none).
-            bwi2 = body.matrix_world.inverted()
+            # PART-OF-THE-BODY mode (Saeed's spec): at Follow Body 1.0
+            # the ENTIRE waist-down fabric moves as if it were skinned to
+            # the BODY bones - the Surface Deform (rest offsets preserved)
+            # IS that skinning, so the mask is FULL below the waist. All
+            # waist-down bone automation fades out with the same slider
+            # (their drivers multiply by 1-fb), no competition.
             for v in sk.data.vertices:
                 z = (mws @ v.co).z
                 if sum(g.weight for g in v.groups
@@ -1668,19 +1667,8 @@ def add_skirt_follow_body(rig, props):
                     w = 0.0                     # torso: rig handles it
                 elif z > topz - 0.04:
                     w = (topz + 0.06 - z) / 0.10
-                elif z > kneez:
-                    w = 1.0                     # lap/seat zone
                 else:
-                    w = max(0.0, 1.0 - (kneez - z) / fade)
-                if w > 1e-3:
-                    ok2, loc2, _n2, _i2 = body.closest_point_on_mesh(
-                        bwi2 @ (mws @ v.co), distance=0.5)
-                    if ok2:
-                        d2 = ((bwi2 @ (mws @ v.co)) - loc2).length
-                        # wide falloff: the LAP panel hangs 5-15cm off the
-                        # thighs at rest yet MUST rest on them when seated
-                        # (SD preserves the rest offset, so cling != glue)
-                        w *= max(0.0, min(1.0, 1.0 - (d2 - 0.05) / 0.13))
+                    w = 1.0                     # ALL waist-down fabric
                 if w > 1e-3:
                     vgf.add([v.index], min(1.0, w), 'REPLACE')
                 else:
@@ -2617,6 +2605,14 @@ def add_skirt_collision(rig, props, h=None):
         t = v.targets[0]; t.id_type = 'OBJECT'; t.id = rig
         t.data_path = 'pose.bones["SKC_dt.%02d.00"]["%s"]' % (ci, key)
 
+    def _fvar(drv, nm):
+        # Follow Body value: at 1.0 the garment is PART OF THE BODY -
+        # every waist-down bone automation must fade to ZERO (Saeed)
+        v = drv.variables.new(); v.name = nm; v.type = 'SINGLE_PROP'
+        t = v.targets[0]; t.id_type = 'SCENE'
+        t.id = bpy.context.scene
+        t.data_path = "smartrig.skirt_follow_body"
+
     n = 0
     for ci, rws in colrows.items():
         nseg = max(1, len(rws))
@@ -2686,6 +2682,7 @@ def add_skirt_collision(rig, props, h=None):
             _mvar(drv, "spread", "collide_spread"); _mvar(drv, "col", "collide")
             _mvar(drv, "dd", "collide_dist"); _mvar(drv, "ddf", "collide_dist_falloff")
             _mvar(drv, "lf", "leg_follow")
+            _fvar(drv, "fb")
             # base clearance (ddf) is a CONSTANT outward push applied even at rest,
             # so the panels always sit slightly off the legs (stops static
             # penetration); the second term is the leg-movement swing on top.
@@ -2695,6 +2692,7 @@ def add_skirt_collision(rig, props, h=None):
             drv.expression = (
                 "%.4f*(0.18*ddf+min(1.2,(%.4f*eL+%.4f*eR)*%.4f))*(dd/0.12)"
                 "*min(1.5,spread)*col*max(0.0,1.0-lf*min(1.0,%.4f*eL+%.4f*eR))"
+                "*max(0.0,1.0-fb)"
                 % (sgn * AMP / nseg, wL, wR, 0.75 * _lth, wL, wR))
         n += 1
 
@@ -2733,6 +2731,7 @@ def add_skirt_collision(rig, props, h=None):
             _evar(drvh, "eL", ci, "eL")
             _evar(drvh, "eR", ci, "eR")
             _mvar(drvh, "hg", "hang")
+            _fvar(drvh, "fb")
             vph = drvh.variables.new()
             vph.name = "px"
             vph.type = 'TRANSFORMS'
@@ -2743,7 +2742,7 @@ def add_skirt_collision(rig, props, h=None):
             tph.rotation_mode = 'AUTO'
             tph.transform_space = 'WORLD_SPACE'
             drvh.expression = ("hg*max(0.0,1.0-eL-eR)"
-                               "*min(1.0,abs(px)/0.5)")
+                               "*min(1.0,abs(px)/0.5)*max(0.0,1.0-fb)")
         pbs0 = rig.pose.bones.get("SKC_shin.%02d" % ci)
         if (pbs0 is not None
                 and rig.pose.bones.get("SKC_hangS.%02d" % ci) is not None):
@@ -2757,7 +2756,8 @@ def add_skirt_collision(rig, props, h=None):
             drvh2 = conh2.driver_add("influence").driver
             drvh2.type = 'SCRIPTED'
             _mvar(drvh2, "hg", "hang")
-            drvh2.expression = "hg"
+            _fvar(drvh2, "fb")
+            drvh2.expression = "hg*max(0.0,1.0-fb)"
         for hname, tgL, tgR, gkey, kind in (
                 ("SKC_leg.%02d" % ci, "SKC_tgt.%02d.L" % ci,
                  "SKC_tgt.%02d.R" % ci, "leg_follow", 'TRACK'),
@@ -2784,7 +2784,9 @@ def add_skirt_collision(rig, props, h=None):
                 drv.type = 'SCRIPTED'
                 _evar(drv, "e", ci, "e" + sd)
                 _mvar(drv, "gv", gkey)
-                drv.expression = "gv*%.4f*e" % min(1.0, 2.2 * wgt)
+                _fvar(drv, "fb")
+                drv.expression = ("gv*%.4f*e*max(0.0,1.0-fb)"
+                                  % min(1.0, 2.2 * wgt))
     _organize_skirt_bones(rig)
     return n
 
