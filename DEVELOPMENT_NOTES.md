@@ -140,3 +140,30 @@ have NO continuous spring system.)
 - **Dynamic jiggle (spring bones)** on the skirt for secondary motion — not yet
   implemented; needs a frame-change spring handler (the Pierrick "dynamic bones"
   layer on top of leg-follow).
+
+
+## v1.83 - v1.91 (2026-07-10) - Waist-down professional automation
+
+- **Register Waist from Loop**: select an edge loop (Edit Mode) -> waist ring lands EXACTLY on it,
+  stored on the metarig (`sr_waist_loop`); Columns/Rows subdivide ON the loop, 0.00mm drift.
+  SMART bone count: mesh density can auto-raise Columns/Rows (user gets an INFO message).
+- **Leg containment**: per-column `SKC_leg` DAMPED_TRACK -> `SKC_tgt` targets riding ORG-thigh at the
+  fabric knee-ring rest point (zero rest error). Direction-gated engagement props (eL/eR) + knee-rise
+  term; cubed leg proximity; a raised/side-kicked leg never exits the cloth, walking stays calm.
+- **Gravity**: `SKC_hang` (pelvis-pitch gated) + `SKC_hangS` (below-knee, always on) root-parented
+  references - panels hang straight down instead of sticking out with pitched hips or spanning
+  taut diagonals between asymmetric knees.
+- **Follow Body = part-of-the-body mode**: Surface Deform binds to `SR_SitProxy` (body copy minus all
+  arm/hand verts - binding to the full body grabbed hand faces and spiked). Mask graph-smoothed,
+  full below the waist; EVERY waist-down automation driver multiplies by (1 - follow) -> one slider
+  crossfades bones-automation <-> pure body deform. Sitting = raise the slider.
+- **Corrective smooth**: KAN_WaistSmooth (waist->hem, sleeves excluded, tied to Cloth Smoothing
+  slider, 0.5x10 - higher settings balloon). KAN_AntiPen stays LAST: no body penetration ever.
+- **Smart modifier stack**: canonical Armature > SitFollow > Smooth > WaistSmooth > AntiPen; live
+  ERROR + Fix button when the user drops a modifier inside the stack; auto-fixed at Generate.
+- **Self-healing weights**: stale DEF-skirt grids rebuilt; torn-chest (arm weight on torso fabric)
+  and UNDER-WEIGHTED fabric (<0.6 total) auto-detected -> analytic polish at Generate. Weight-eating
+  passes now carry GEOMETRIC guards for every other fabric zone (sleeve regression lesson).
+- **Bone organization**: all SKC_* machinery -> hidden Skirt (MCH); DEF/ORG/MCH hidden; controls in
+  Skirt (Master)/(FK)/(Tweak) + Sleeves collections with Rig Layers rows. Zero orphan bones.
+- Floor system built then REMOVED per design decision (sitting handled by Follow Body instead).

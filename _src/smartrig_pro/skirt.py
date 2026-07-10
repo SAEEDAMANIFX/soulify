@@ -2333,8 +2333,15 @@ def _organize_skirt_bones(rig):
         coll.assign(b)
     for b in arm.bones:
         n = b.name
-        if n.startswith("SKC_dt") or n.startswith("SKC_jig") or n == "SKC_master":
-            reassign(b, mch)                         # SKC_master = settings holder -> hidden
+        if (n.startswith(("SKC_dt", "SKC_jig", "SKC_leg", "SKC_shin",
+                          "SKC_tgt", "SKC_hang", "SKC_floor"))
+                or n == "SKC_master"):
+            # ALL SKC helpers (dt segments, leg/shin follow hinges, thigh
+            # targets, gravity references, settings holder) = machinery
+            # the animator must never touch -> hidden Skirt (MCH). They
+            # default into the VISIBLE Torso collection otherwise (they
+            # parent under hips/root) and pollute the rig - 72 of them
+            reassign(b, mch)
         elif n.startswith("skirt_master"):
             reassign(b, master_c); col(b, *GOLD)     # real movement masters
         elif re.match(r"^" + PREFIX + r"\.\d+\.\d+$", n):
