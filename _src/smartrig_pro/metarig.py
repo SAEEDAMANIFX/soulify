@@ -825,6 +825,7 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                 if _acts:
                     extras.append("bind healed: " + ", ".join(_acts))
                 _kn.add_kandura_smooth(rg, p)
+                _kn.add_kandura_waist_smooth(rg, p)
                 if _kn.add_kandura_antipen(rg, p):
                     extras.append("kandura anti-pen")
                 # SMART ORDER: whatever the user added/re-ordered, generate

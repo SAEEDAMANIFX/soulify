@@ -1665,8 +1665,10 @@ def add_skirt_follow_body(rig, props):
                     w = 0.0                     # sleeve fabric: never
                 elif z > topz + 0.06:
                     w = 0.0                     # torso: rig handles it
-                elif z > topz - 0.04:
-                    w = (topz + 0.06 - z) / 0.10
+                elif z > topz - 0.22:
+                    # WIDE blend band: the hard 10cm seam pinched into
+                    # jagged folds where SD meets the armature zone
+                    w = (topz + 0.06 - z) / 0.28
                 else:
                     w = 1.0                     # ALL waist-down fabric
                 if w > 1e-3:
@@ -1676,6 +1678,46 @@ def add_skirt_follow_body(rig, props):
                         vgf.remove([v.index])
                     except Exception:
                         pass
+            # GRAPH-SMOOTH the mask: neighbouring verts with different
+            # blend weights bind to different body faces and land between
+            # two disagreeing targets -> jagged zigzag pinches along the
+            # waist seam. Averaging the weights over the mesh edges makes
+            # the transition continuous (same lesson as the sleeve share)
+            try:
+                nbr = {}
+                for e in sk.data.edges:
+                    a, b = e.vertices
+                    nbr.setdefault(a, []).append(b)
+                    nbr.setdefault(b, []).append(a)
+                gi = vgf.index
+                cur = {}
+                for v in sk.data.vertices:
+                    wv = 0.0
+                    for g in v.groups:
+                        if g.group == gi:
+                            wv = g.weight
+                            break
+                    cur[v.index] = wv
+                for _it in range(4):
+                    nxt = {}
+                    for vi, wv in cur.items():
+                        ns = nbr.get(vi)
+                        if not ns:
+                            nxt[vi] = wv
+                            continue
+                        avg = sum(cur[n] for n in ns) / len(ns)
+                        nxt[vi] = 0.5 * wv + 0.5 * avg
+                    cur = nxt
+                for vi, wv in cur.items():
+                    if wv > 1e-3:
+                        vgf.add([vi], min(1.0, wv), 'REPLACE')
+                    else:
+                        try:
+                            vgf.remove([vi])
+                        except Exception:
+                            pass
+            except Exception as e:
+                print("SmartRig sit mask smooth:", e)
             mod.vertex_group = "SR_SitFollow"
     except Exception as e:
         print("SmartRig sit-follow mask:", e)

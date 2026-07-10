@@ -2105,7 +2105,8 @@ def _ensure_floor_plane(props, ob):
     return pl
 
 
-_KAN_STACK = ("SK_SurfaceFollow", "KAN_Smooth", "KAN_AntiPen", "KAN_Floor")
+_KAN_STACK = ("SK_SurfaceFollow", "KAN_Smooth", "KAN_WaistSmooth",
+              "KAN_AntiPen", "KAN_Floor")
 
 
 def kandura_stack_report(ob, rig=None):
@@ -2260,12 +2261,13 @@ def remove_kandura_smooth(rig):
     for ob in bpy.data.objects:
         if ob.type != 'MESH':
             continue
-        md = ob.modifiers.get("KAN_Smooth")
-        if md is not None:
-            try:
-                ob.modifiers.remove(md); n += 1
-            except Exception:
-                pass
+        for mn in ("KAN_Smooth", "KAN_WaistSmooth"):
+            md = ob.modifiers.get(mn)
+            if md is not None:
+                try:
+                    ob.modifiers.remove(md); n += 1
+                except Exception:
+                    pass
     return n
 
 
@@ -2325,12 +2327,76 @@ def add_kandura_smooth(rig, props):
     return 1
 
 
+def add_kandura_waist_smooth(rig, props):
+    """TOPOLOGY smoothing for the WAIST AND EVERYTHING BELOW (Saeed's
+    spec): the waist seam used to crumple where Follow Body hands over to
+    the torso, and the skirt fabric keeps zigzag creases from the bone
+    grid. One Corrective Smooth masked waist-to-hem (sleeves excluded,
+    soft fade up into the torso) evens it all into clean cloth. Factor
+    follows the live Cloth Smoothing slider. Ordered after KAN_Smooth;
+    KAN_AntiPen stays LAST so smoothing can never enter the body."""
+    ob = kandura_object(bpy.context)
+    if ob is None or rig is None:
+        return 0
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    md0 = ob.modifiers.get("KAN_WaistSmooth")
+    if md0 is not None:
+        ob.modifiers.remove(md0)
+    skb = [b for b in rig.data.bones if b.name.startswith("DEF-skirt.")]
+    if not skb:
+        return 0
+    rwm = rig.matrix_world
+    topz = max((rwm @ b.head_local).z for b in skb)
+    mw = ob.matrix_world
+    kan_idx = {g.index for g in ob.vertex_groups
+               if g.name.startswith(("DEF-kan_sleeve", "DEF-kan_cuff"))}
+    vg = (ob.vertex_groups.get("SR_WaistBlend")
+          or ob.vertex_groups.new(name="SR_WaistBlend"))
+    n = 0
+    for v in ob.data.vertices:
+        z = (mw @ v.co).z
+        if sum(g.weight for g in v.groups if g.group in kan_idx) > 0.2:
+            w = 0.0                         # not the sleeves
+        elif z > topz + 0.12:
+            w = 0.0
+        elif z > topz:
+            w = 1.0 - (z - topz) / 0.12     # fade up into the torso
+        else:
+            w = 1.0                         # WAIST AND ALL THE WAY DOWN
+        if w > 1e-3:
+            vg.add([v.index], min(1.0, w), 'REPLACE')
+            n += 1
+        else:
+            try:
+                vg.remove([v.index])
+            except Exception:
+                pass
+    if not n:
+        return 0
+    mod = ob.modifiers.new("KAN_WaistSmooth", 'CORRECTIVE_SMOOTH')
+    # CALIBRATION: factor 1.0 x 30 iterations BALLOONED the whole skirt
+    # into a pumpkin - corrective smooth inflates shapes at high settings.
+    # 0.5 x 10 evens the creases and keeps the tailored silhouette.
+    mod.factor = min(0.6, 0.5 * max(0.5, float(getattr(props,
+                                                       "kandura_smooth",
+                                                       0.65)) + 0.5))
+    mod.iterations = 10
+    mod.smooth_type = 'LENGTH_WEIGHTED'
+    mod.rest_source = 'ORCO'
+    mod.vertex_group = "SR_WaistBlend"
+    return 1
+
+
 def live_kandura_smooth(context):
     try:
         ob = kandura_object(context)
-        md = ob.modifiers.get("KAN_Smooth") if ob else None
-        if md is not None:
-            md.factor = float(context.scene.smartrig.kandura_smooth)
+        f = float(context.scene.smartrig.kandura_smooth)
+        for mn, fac in (("KAN_Smooth", f),
+                        ("KAN_WaistSmooth", min(0.6, 0.5 * (f + 0.5)))):
+            md = ob.modifiers.get(mn) if ob else None
+            if md is not None:
+                md.factor = fac
     except Exception as e:
         print("SmartRig kandura smooth tune:", e)
 
@@ -2801,6 +2867,25 @@ def ensure_kandura_bind(rig, props):
                                if g.group in ub) > 0.3:
                             n_bad += 1
                 needs = n_chest > 20 and n_bad > 0.05 * n_chest
+        if not needs:
+            # UNDER-WEIGHTED fabric (total deform << 1) crumples into
+            # jagged pinches the moment the pose leaves rest - the waist
+            # zigzag Saeed circled measured 0.28 total weight. The polish
+            # safety net tops these up from the nearest torso anchor.
+            dmap = {g.index: (gn2 in dbones)
+                    for g in ob.vertex_groups
+                    for gn2 in (g.name,)}
+            low = tot2 = 0
+            step2 = max(1, len(ob.data.vertices) // 400)
+            for i2, v in enumerate(ob.data.vertices):
+                if i2 % step2:
+                    continue
+                tot2 += 1
+                wsum2 = sum(g.weight for g in v.groups
+                            if dmap.get(g.group))
+                if wsum2 < 0.6:
+                    low += 1
+            needs = tot2 > 0 and low > 0.04 * tot2
         if needs:
             nd7, nf7 = polish_sleeve_weights(ob, rig)
             acts.append("bind auto-polished (%d verts)" % nf7)
