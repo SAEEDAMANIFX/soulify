@@ -1201,6 +1201,7 @@ def remove_sleeve_rollup(rig):
     doomed = tuple(n for n in rig.data.bones.keys()
                    if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
                                     "KANC_root.", "KANC_dt.", "KANF_dt.",
+                                    "KANO_ref.",
                                     ROLLUP_MASTER + ".")))
     if not doomed and not restore:
         return
@@ -1306,7 +1307,7 @@ def add_sleeve_rollup(rig, props):
             d.normalize()
             hb = eb.new("KANR_dt.%s.%02d" % (side, k))
             hb.head = joints[k].copy()
-            hb.tail = joints[k] + d * 0.025      # local +Y = up the sleeve
+            hb.tail = joints[k] + d * 0.04       # local +Y = up the sleeve
             hb.use_deform = False
             op = tb.parent
             orig_parent[twn] = op.name if op else ""
@@ -1335,6 +1336,15 @@ def add_sleeve_rollup(rig, props):
             orig_parent[ctl0.name] = ctl0.parent.name if ctl0.parent else ""
             ctl0.use_connect = False
             ctl0.parent = fj
+        # orientation reference for the rolled stack: +Y points UP the
+        # upper arm (same convention as the KANR helpers), rides ORG-00
+        o00 = eb.get("ORG-%s.%s.00" % (BONE_SLEEVE, side))
+        if o00 is not None:
+            ko = eb.new("KANO_ref." + side)
+            ko.head = joints[1].copy()
+            ko.tail = joints[1] + (joints[0] - joints[1]).normalized() * 0.04
+            ko.use_deform = False
+            ko.parent = o00
         # roll-up master: at the cuff, +Y pointing up the forearm
         d0 = (joints[ei] - joints[tipi]).normalized()
         mb = eb.new(ROLLUP_MASTER + "." + side)
@@ -1483,6 +1493,25 @@ def add_sleeve_rollup(rig, props):
                 continue
             a = arc[k]
             seg = max(1e-4, arc[k - 1] - arc[k])
+            # POSE-INDEPENDENT STACK: as this ring passes the elbow it turns
+            # to the upper-arm direction (its offset frame turns with it)
+            up_ref = rig.data.bones.get("KANO_ref." + side)
+            if up_ref is not None and Lt > Lf + 1e-4:
+                cro = hb.constraints.new('COPY_ROTATION')
+                cro.name = "KAN Roll Orient"
+                cro.target = rig; cro.subtarget = "KANO_ref." + side
+                cro.target_space = 'WORLD'; cro.owner_space = 'WORLD'
+                cro.mix_mode = 'REPLACE'
+                dro = cro.driver_add("influence").driver
+                dro.type = 'SCRIPTED'
+                _kanr_var(dro, "t", rig, 'LOC', mn, "")
+                _kanr_var(dro, "pl", rig, 'PROP', mn, "pile")
+                dro.expression = ("min(1.0, max(0.0, (t - %d*pl - %.4f)/%.4f))"
+                                  % (rank, Lf, max(1e-3, 0.5 * (Lt - Lf))))
+            # target the helper ABOVE (already reoriented) when there is one
+            hn_up = "KANR_dt.%s.%02d" % (side, k - 1)
+            if k >= 2 and rig.pose.bones.get(hn_up) is not None:
+                tgt = hn_up
             tlen = max(1e-4, rig.data.bones[tgt].length)
             con = hb.constraints.new('COPY_LOCATION')
             con.name = "KAN Roll Cascade"
@@ -1552,7 +1581,7 @@ def add_sleeve_rollup(rig, props):
                               % (ox, oz, max(1e-4, Lf)))
             rig.data.bones[dtn].hide = True
         for hn in ("KANH_dt." + side, "KANH_tgt." + side,
-                   "KANC_root." + side):
+                   "KANC_root." + side, "KANO_ref." + side):
             if rig.data.bones.get(hn):
                 rig.data.bones[hn].hide = True
         made += 1
@@ -1979,7 +2008,8 @@ def organize_sleeve_bones(rig):
     for b in rig.data.bones:
         n = b.name
         if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
-                         "KANC_dt.", "KANC_root.", "KANF_dt.")):
+                         "KANC_dt.", "KANC_root.", "KANF_dt.",
+                         "KANO_ref.")):
             for c in list(b.collections):
                 try:
                     c.unassign(b)
