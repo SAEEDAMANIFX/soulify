@@ -1435,12 +1435,10 @@ def add_sleeve_rollup(rig, props):
         cap = max(0.1, Lt - 0.07)
         for key, val, lo, hi, desc in (
                 ("roll_up", 0.0, 0.0, cap,
-                 "ROLL-UP (tashmeer): slide the sleeve up the arm - 0 = down, "
-                 "max = gathered at the top of the upper arm"),
-                ("pile", 0.02, 0.005, 0.12,
-                 "Spacing of the gathered folds (roll-up stack)"),
+                 "GATHER (tashmeer): the whole sleeve bunches up the arm - "
+                 "0 = down, max = gathered at the top of the upper arm"),
                 ("bulge", 0.05, 0.0, 1.5,
-                 "How much the gathered fabric thickens as it rolls up"),
+                 "How much the gathered fabric thickens as it bunches"),
                 ("hand_follow", 0.0, 0.0, 1.0,
                  "OPTIONAL soft follow of the hand by the sleeve END "
                  "(default 0 = pure kilt-style collision, no lifting)"),
@@ -2023,12 +2021,23 @@ def organize_sleeve_bones(rig):
     if rig is None:
         return
     ctrl = _rig_coll(rig, "Sleeves", True)
+    twc = _rig_coll(rig, "Sleeves (Tweak)", True)
     mch = _rig_coll(rig, "MCH", False)
+    try:
+        row = max((getattr(c, "rigify_ui_row", 0)
+                   for c in rig.data.collections_all), default=0)
+        if getattr(ctrl, "rigify_ui_row", 0) == 0:
+            ctrl.rigify_ui_row = row + 1
+        if getattr(twc, "rigify_ui_row", 0) == 0:
+            twc.rigify_ui_row = getattr(ctrl, "rigify_ui_row", row + 1) + 1
+    except Exception:
+        pass
     for b in rig.data.bones:
         n = b.name
         if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
                          "KANC_dt.", "KANC_root.", "KANF_dt.",
-                         "KANO_ref.", "KANA.")):
+                         "KANO_ref.", "KANA.",
+                         ROLLUP_MASTER + ".")):
             for c in list(b.collections):
                 try:
                     c.unassign(b)
@@ -2036,9 +2045,14 @@ def organize_sleeve_bones(rig):
                     pass
             mch.assign(b)
             b.hide = True
-        elif (n.startswith((BONE_SLEEVE + ".", BONE_CUFF + ".",
-                            "tweak_" + BONE_SLEEVE + ".",
-                            ROLLUP_MASTER + "."))
+        elif n.startswith("tweak_" + BONE_SLEEVE + "."):
+            for c in list(b.collections):
+                try:
+                    c.unassign(b)
+                except Exception:
+                    pass
+            twc.assign(b)
+        elif (n.startswith((BONE_SLEEVE + ".", BONE_CUFF + "."))
               and not n.startswith(("DEF-", "ORG-", "MCH-"))):
             ctrl.assign(b)
     # RIGIFY-style colours: FK green, tweaks blue, cuff ring yellow,

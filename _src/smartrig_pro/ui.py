@@ -114,7 +114,7 @@ class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
             box.label(text=label, icon='MOD_CLOTH')
             r = box.row(align=True)
             if "roll_up" in pb.keys():
-                r.prop(pb, '["roll_up"]', text="Roll-Up", slider=True)
+                r.prop(pb, '["roll_up"]', text="Gather Sleeve", slider=True)
             col = box.column(align=True)
             if "cuff_collide" in pb.keys():
                 col.prop(pb, '["cuff_collide"]', text="Hand Collide Strength",
@@ -126,10 +126,8 @@ class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
                 col.prop(pb, '["hand_clear"]', text="Hand Clearance (retreat)",
                          slider=True)
             col2 = box.column(align=True)
-            if "pile" in pb.keys():
-                col2.prop(pb, '["pile"]', text="Fold Spacing", slider=True)
             if "bulge" in pb.keys():
-                col2.prop(pb, '["bulge"]', text="Fold Thickness", slider=True)
+                col2.prop(pb, '["bulge"]', text="Gather Thickness", slider=True)
             if "hand_follow" in pb.keys():
                 col2.prop(pb, '["hand_follow"]', text="Soft Hand Follow",
                           slider=True)
@@ -143,7 +141,7 @@ class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
                         text="Body Clearance", slider=True)
                 if k_ob.modifiers.get("KAN_Smooth"):
                     bx.prop(props, "kandura_smooth",
-                            text="Fold Smoothing", slider=True)
+                            text="Cloth Smoothing", slider=True)
         except Exception:
             pass
 
