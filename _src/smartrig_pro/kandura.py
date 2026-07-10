@@ -1198,7 +1198,7 @@ def remove_sleeve_rollup(rig):
             restore[pb.name] = pb["kanr_origparent"]
     doomed = tuple(n for n in rig.data.bones.keys()
                    if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
-                                    "KANC_root.",
+                                    "KANC_root.", "KANC_dt.", "KANF_dt.",
                                     ROLLUP_MASTER + ".")))
     if not doomed and not restore:
         return
@@ -1272,6 +1272,7 @@ def add_sleeve_rollup(rig, props):
         return 0
     eb = rig.data.edit_bones
     orig_parent = {}
+    ring_dirs = {}
     for side, (joints, twmap, ei, tipi, arc, Lf) in data.items():
         # hand-follow jig: rotates the sleeve END about the last joint
         hj = eb.new("KANH_dt." + side)
@@ -1312,6 +1313,25 @@ def add_sleeve_rollup(rig, props):
             else:
                 hb.parent = op
             tb.parent = hb
+        # FOREARM FOLLOW: the sleeve chain is rooted on the UPPER ARM, so
+        # without this the below-elbow part keeps going STRAIGHT when the
+        # elbow bends (the sleeve slides OFF the arm). A hinge aligned with
+        # ORG-forearm is inserted above the first below-elbow control: it
+        # copies the forearm's WORLD rotation about the elbow -> the whole
+        # lower sleeve (controls, tweaks, rim, master) bends with the arm,
+        # FK and IK, while staying zero at rest.
+        fob = eb.get("ORG-forearm." + side)
+        ctl0 = eb.get("%s.%s.%02d" % (BONE_SLEEVE, side, ei))
+        if fob is not None and ctl0 is not None:
+            fj = eb.new("KANF_dt." + side)
+            fj.head = fob.head.copy()
+            fj.tail = fob.tail.copy()
+            fj.roll = fob.roll
+            fj.use_deform = False
+            fj.parent = ctl0.parent
+            orig_parent[ctl0.name] = ctl0.parent.name if ctl0.parent else ""
+            ctl0.use_connect = False
+            ctl0.parent = fj
         # roll-up master: at the cuff, +Y pointing up the forearm
         d0 = (joints[ei] - joints[tipi]).normalized()
         mb = eb.new(ROLLUP_MASTER + "." + side)
@@ -1330,11 +1350,38 @@ def add_sleeve_rollup(rig, props):
             cr.tail = joints[tipi] + (joints[tipi] - joints[tipi - 1]).normalized() * 0.04
             cr.use_deform = False
             cr.parent = tip_h if tip_h is not None else hj
+            # ARP CLOTH-KILT MODEL, hand edition: one compass helper per rim
+            # bone; its local +Y = radially OUTWARD from the cuff opening.
+            # The driver pushes ONLY the rim sector the hand kicks toward -
+            # the sleeve never lifts or follows the hand back.
+            axis = (joints[tipi] - joints[tipi - 1]).normalized()
+            cen = Vector((0.0, 0.0, 0.0))
+            rbs = [eb.get(n) for n in ring if eb.get(n) is not None]
+            for cb in rbs:
+                cen += cb.head
+            cen = cen / max(1, len(rbs))
+            hbn = rig.data.bones.get("ORG-hand." + side)
+            HM = hbn.matrix_local.to_3x3() if hbn is not None else None
             for n in ring:
                 cb = eb.get(n)
-                if cb is not None:
-                    orig_parent[n] = cb.parent.name if cb.parent else ""
+                if cb is None:
+                    continue
+                orig_parent[n] = cb.parent.name if cb.parent else ""
+                o = cb.head - cen
+                o = o - axis * o.dot(axis)
+                if o.length < 1e-6:
                     cb.parent = cr
+                    continue
+                o.normalize()
+                dt = eb.new("KANC_dt.%s.%s" % (side, n.rsplit(".", 1)[-1]))
+                dt.head = cb.head.copy()
+                dt.tail = cb.head + o * 0.02
+                dt.use_deform = False
+                dt.parent = cr
+                cb.parent = dt
+                if HM is not None:
+                    ring_dirs.setdefault(side, {})[dt.name] = (
+                        o.dot(HM.col[0]), o.dot(HM.col[2]))
     bpy.ops.object.mode_set(mode='OBJECT')
 
     for name, pn in orig_parent.items():
@@ -1354,8 +1401,12 @@ def add_sleeve_rollup(rig, props):
                  "Spacing of the gathered folds (roll-up stack)"),
                 ("bulge", 0.0, 0.0, 1.5,
                  "How much the gathered fabric thickens as it rolls up"),
-                ("hand_follow", 0.8, 0.0, 1.0,
-                 "How much the sleeve END follows the hand (0 = off)"),
+                ("hand_follow", 0.0, 0.0, 1.0,
+                 "OPTIONAL soft follow of the hand by the sleeve END "
+                 "(default 0 = pure kilt-style collision, no lifting)"),
+                ("cuff_collide", 1.0, 0.0, 1.0,
+                 "Cloth-kilt collision with the HAND: the rim sector the "
+                 "hand bends toward is pushed outward (never lifts)"),
                 ("hand_clear", 0.6, 0.0, 1.0,
                  "Sleeve END retreats up the forearm when the wrist bends "
                  "so the cuff never intersects the hand (0 = off)")):
@@ -1384,6 +1435,14 @@ def add_sleeve_rollup(rig, props):
                     coll.assign(rig.data.bones[mn])
                 except Exception:
                     pass
+        # forearm-follow hinge
+        fpb = rig.pose.bones.get("KANF_dt." + side)
+        if fpb is not None and rig.data.bones.get("ORG-forearm." + side):
+            cr2 = fpb.constraints.new('COPY_ROTATION')
+            cr2.target = rig; cr2.subtarget = "ORG-forearm." + side
+            cr2.target_space = 'WORLD'; cr2.owner_space = 'WORLD'
+            cr2.mix_mode = 'REPLACE'
+            rig.data.bones["KANF_dt." + side].hide = True
         # hand follow (damped track, fades out as the sleeve rolls up)
         hpb = rig.pose.bones.get("KANH_dt." + side)
         if hpb is not None and rig.data.bones.get("KANH_tgt." + side):
@@ -1450,6 +1509,20 @@ def add_sleeve_rollup(rig, props):
                 d3.expression = "hc*0.06*min(1.6, abs(rx) + abs(rz))"
             rig.data.bones[hn].hide = True
             rank += 1
+        # cloth-kilt compass: push each rim sector outward by the component
+        # of the hand's bend that points AT it (max(0,..) = outward only)
+        for dtn, (ox, oz) in ring_dirs.get(side, {}).items():
+            dpb = rig.pose.bones.get(dtn)
+            if dpb is None:
+                continue
+            drv = dpb.driver_add("location", 1).driver
+            drv.type = 'SCRIPTED'
+            _kanr_var(drv, "rx", rig, 'ROTX', "ORG-hand." + side, "")
+            _kanr_var(drv, "rz", rig, 'ROTZ', "ORG-hand." + side, "")
+            _kanr_var(drv, "cc", rig, 'PROP', mn, "cuff_collide")
+            drv.expression = ("cc*min(0.09, 0.07*max(0.0, %.4f*(-rz) + %.4f*rx))"
+                              % (ox, oz))
+            rig.data.bones[dtn].hide = True
         for hn in ("KANH_dt." + side, "KANH_tgt." + side,
                    "KANC_root." + side):
             if rig.data.bones.get(hn):
