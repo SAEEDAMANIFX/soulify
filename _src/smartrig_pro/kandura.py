@@ -1510,9 +1510,27 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(d3, "rx", rig, 'ROTX', "ORG-hand." + side, "")
                 _kanr_var(d3, "rz", rig, 'ROTZ', "ORG-hand." + side, "")
                 _kanr_var(d3, "hc", rig, 'PROP', mn, "hand_clear")
-                d3.expression = "hc*0.06*min(1.6, abs(rx) + abs(rz))"
+                _kanr_var(d3, "t", rig, 'LOC', mn, "")
+                d3.expression = ("hc*0.06*min(1.6, abs(rx) + abs(rz))"
+                                 "*max(0.0, 1.0 - t/%.4f)" % max(1e-4, Lf))
             rig.data.bones[hn].hide = True
             rank += 1
+        # rolled-edge reorientation: while the pile climbs the UPPER ARM the
+        # ring must turn to stay perpendicular to the upper-arm chain (it is
+        # parented in the forearm frame) -> blend a WORLD copy-rotation from
+        # the first upper-arm sleeve bone as t passes the elbow.
+        crpb = rig.pose.bones.get("KANC_root." + side)
+        up_org = rig.data.bones.get("ORG-%s.%s.00" % (BONE_SLEEVE, side))
+        if crpb is not None and up_org is not None and Lt > Lf + 1e-4:
+            cro = crpb.constraints.new('COPY_ROTATION')
+            cro.target = rig; cro.subtarget = up_org.name
+            cro.target_space = 'WORLD'; cro.owner_space = 'WORLD'
+            cro.mix_mode = 'REPLACE'
+            drv = cro.driver_add("influence").driver
+            drv.type = 'SCRIPTED'
+            _kanr_var(drv, "t", rig, 'LOC', mn, "")
+            drv.expression = ("min(1.0, max(0.0, (t - %.4f)/%.4f))"
+                              % (Lf, max(1e-3, 0.5 * (Lt - Lf))))
         # cloth-kilt compass: push each rim sector outward by the component
         # of the hand's bend that points AT it (max(0,..) = outward only)
         for dtn, (ox, oz) in ring_dirs.get(side, {}).items():
@@ -1525,8 +1543,10 @@ def add_sleeve_rollup(rig, props):
             _kanr_var(drv, "rz", rig, 'ROTZ', "ORG-hand." + side, "")
             _kanr_var(drv, "cc", rig, 'PROP', mn, "cuff_collide")
             _kanr_var(drv, "cd", rig, 'PROP', mn, "cuff_dist")
+            _kanr_var(drv, "t", rig, 'LOC', mn, "")
             drv.expression = ("cc*min(cd*1.3, cd*max(0.0, %.4f*(-rz) + %.4f*rx))"
-                              % (ox, oz))
+                              "*max(0.0, 1.0 - t/%.4f)"
+                              % (ox, oz, max(1e-4, Lf)))
             rig.data.bones[dtn].hide = True
         for hn in ("KANH_dt." + side, "KANH_tgt." + side,
                    "KANC_root." + side):
