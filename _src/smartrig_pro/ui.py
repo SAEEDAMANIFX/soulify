@@ -128,6 +128,9 @@ class SMARTRIG_PT_sleeve_item(bpy.types.Panel):
             col2 = box.column(align=True)
             if "bulge" in pb.keys():
                 col2.prop(pb, '["bulge"]', text="Gather Thickness", slider=True)
+            if "inflate" in pb.keys():
+                col2.prop(pb, '["inflate"]', text="Push Out (inflate)",
+                          slider=True)
             if "hand_follow" in pb.keys():
                 col2.prop(pb, '["hand_follow"]', text="Soft Hand Follow",
                           slider=True)

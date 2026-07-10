@@ -1439,6 +1439,9 @@ def add_sleeve_rollup(rig, props):
                  "0 = down, max = gathered at the top of the upper arm"),
                 ("bulge", 0.05, 0.0, 1.5,
                  "How much the gathered fabric thickens as it bunches"),
+                ("inflate", 0.0, 0.0, 1.0,
+                 "FREE control: push the sleeve fabric radially OUTWARD "
+                 "from the arm (extra clearance, works at any gather)"),
                 ("hand_follow", 0.0, 0.0, 1.0,
                  "OPTIONAL soft follow of the hand by the sleeve END "
                  "(default 0 = pure kilt-style collision, no lifting)"),
@@ -1549,7 +1552,8 @@ def add_sleeve_rollup(rig, props):
                 d2.type = 'SCRIPTED'
                 _kanr_var(d2, "t", rig, 'LOC', mn, "")
                 _kanr_var(d2, "bg", rig, 'PROP', mn, "bulge")
-                d2.expression = ("1.0 + bg*min(1.0, t/%.4f)"
+                _kanr_var(d2, "inf", rig, 'PROP', mn, "inflate")
+                d2.expression = ("1.0 + inf + bg*min(1.0, t/%.4f)"
                                  % max(1e-3, Lt - 0.07))
             # HAND CLEARANCE: the sleeve END retreats up the forearm when
             # the wrist bends, so the cuff opening NEVER eats into the hand
