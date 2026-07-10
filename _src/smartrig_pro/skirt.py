@@ -2505,6 +2505,21 @@ def add_skirt_collision(rig, props, h=None):
                 sn.use_deform = False
                 sn.parent = segk.parent
                 segk.parent = sn
+                # below-knee GRAVITY reference: root-parented, same rest
+                # orientation -> the fabric below the knee always TRIES to
+                # hang straight down (zero rest error); the shin-follow
+                # overrides it only where a leg actually engages. Without
+                # it the centre-front columns blended BOTH legs' aims and
+                # stretched a taut diagonal slab between a raised knee and
+                # a lowered one (kneeling pose - rejected look)
+                hs = eb.new("SKC_hangS.%02d" % ci)
+                hs.head = sn.head.copy()
+                hs.tail = sn.tail.copy()
+                hs.roll = sn.roll
+                hs.use_deform = False
+                rt2 = eb.get("root")
+                if rt2 is not None:
+                    hs.parent = rt2
     # master control bone holding the 4 live collision settings (ARP c_kilt_master)
     cen = Vector((0.0, 0.0, 0.0))
     for _r, (_ro, _hm, _hd) in cols.items():
@@ -2729,6 +2744,20 @@ def add_skirt_collision(rig, props, h=None):
             tph.transform_space = 'WORLD_SPACE'
             drvh.expression = ("hg*max(0.0,1.0-eL-eR)"
                                "*min(1.0,abs(px)/0.5)")
+        pbs0 = rig.pose.bones.get("SKC_shin.%02d" % ci)
+        if (pbs0 is not None
+                and rig.pose.bones.get("SKC_hangS.%02d" % ci) is not None):
+            conh2 = pbs0.constraints.new('COPY_ROTATION')
+            conh2.name = "SK_LEGFOLLOW_HANGS"
+            conh2.target = rig
+            conh2.subtarget = "SKC_hangS.%02d" % ci
+            conh2.target_space = 'WORLD'
+            conh2.owner_space = 'WORLD'
+            conh2.mix_mode = 'REPLACE'
+            drvh2 = conh2.driver_add("influence").driver
+            drvh2.type = 'SCRIPTED'
+            _mvar(drvh2, "hg", "hang")
+            drvh2.expression = "hg"
         for hname, tgL, tgR, gkey, kind in (
                 ("SKC_leg.%02d" % ci, "SKC_tgt.%02d.L" % ci,
                  "SKC_tgt.%02d.R" % ci, "leg_follow", 'TRACK'),
