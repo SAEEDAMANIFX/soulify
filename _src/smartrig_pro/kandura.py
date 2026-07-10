@@ -549,6 +549,28 @@ def _flush_edit_mode():
         pass
 
 
+def _stored_waist_ring(mo, cols, anchor0=None, anchor1=None):
+    """Ring-0 points resampled from the REGISTERED waist loop (or None).
+    anchor0/anchor1 = the current column-0/1 top points: the loop start is
+    rotated onto anchor0 and the winding flipped to match anchor1, so a
+    count change subdivides ON the loop without swapping columns."""
+    stored = mo.get("sr_waist_loop")
+    if stored is None or len(stored) < 9:
+        return None
+    lp = [Vector(stored[i:i + 3]) for i in range(0, len(stored), 3)]
+    if anchor0 is not None:
+        k = min(range(len(lp)),
+                key=lambda i: (lp[i] - anchor0).length_squared)
+        lp = lp[k:] + lp[:k]
+    ring = _resample_ring_arc(lp, cols)
+    if ring is None or anchor1 is None or len(ring) < 3:
+        return ring
+    if ((ring[1] - anchor1).length_squared
+            > (ring[-1] - anchor1).length_squared):
+        ring = [ring[0]] + ring[:0:-1]      # flip winding, keep the anchor
+    return ring
+
+
 def add_waist_bones(context):
     """Emit a Columns x Rows skirt grid around the lower half of the garment
     (rough bounding-ellipse placement — the user refines it manually).
@@ -587,6 +609,13 @@ def add_waist_bones(context):
     if old is not None:
         new_cols = _regrid_columns(old, cols, rpz, knee_z)
         if new_cols is not None:
+            # REGISTERED LOOP: the waist ring ALWAYS lands exactly on the
+            # stored loop - count changes subdivide ON it, never drift
+            ring0 = _stored_waist_ring(mo, cols, new_cols[0][0],
+                                       new_cols[1][0] if cols > 1 else None)
+            if ring0 is not None:
+                for j in range(cols):
+                    new_cols[j][0] = ring0[j]
             grid = [(c, pts) for c, pts in enumerate(new_cols)]
         else:
             old = None
@@ -599,6 +628,10 @@ def add_waist_bones(context):
         gz0, gz1 = zs[0], zs[-1]
         gh = max(1e-6, gz1 - gz0)
         wz = _waist_z(cos, gz0, gh)
+        # REGISTERED LOOP: the grid TOP starts exactly on the stored loop
+        ring0 = _stored_waist_ring(mo, cols)
+        if ring0 is not None:
+            wz = sum(p.z for p in ring0) / len(ring0)
         # sleeves would inflate the rings sideways - drop them for the layout
         cos = _drop_sleeve_verts(mo, cos)
         lower = [p for p in cos if p.z <= wz + 1e-4]
@@ -620,12 +653,23 @@ def add_waist_bones(context):
         else:
             ring_zs = [wz + (hem_z - wz) * r / rows for r in range(rows + 1)]
         rings = [_ring_ellipse(cos, z, band, lower) for z in ring_zs]
+        r0c = None
+        if ring0 is not None:
+            r0c = (sum(p.x for p in ring0) / cols,
+                   sum(p.y for p in ring0) / cols)
         for c in range(cols):
-            ang = front + 2.0 * math.pi * c / cols
+            if r0c is not None:
+                # column azimuth = its registered loop point's azimuth, so
+                # the columns descend in line with the loop, top ring exact
+                ang = math.atan2(ring0[c].y - r0c[1], ring0[c].x - r0c[0])
+            else:
+                ang = front + 2.0 * math.pi * c / cols
             ca, sa = math.cos(ang), math.sin(ang)
             pts = []
             for (cx, cy, rx, ry), z in zip(rings, ring_zs):
                 pts.append(Vector((cx + rx * ca, cy + ry * sa, z)))
+            if ring0 is not None:
+                pts[0] = ring0[c].copy()
             grid.append((c, pts))
 
     _sk._emit_chains(mo, grid, rows)
@@ -1568,7 +1612,9 @@ def add_sleeve_rollup(rig, props):
                 dro = cro.driver_add("influence").driver
                 dro.type = 'SCRIPTED'
                 _kanr_var(dro, "t", rig, 'LOC', mn, "")
-                _kanr_var(dro, "pl", rig, 'PROP', mn, "pile")
+                # NO "pl" var here: the pile prop was removed in the gather
+                # redesign - a variable pointing at a deleted prop makes the
+                # WHOLE driver invalid (orient constraints froze silently)
                 sig_o = min(0.1, 0.065 / max(1e-3, Lt))
                 dro.expression = ("min(1.0, max(0.0, (max(%.4f, t + %.4f)"
                                   " - %.4f)/%.4f))"
@@ -2256,6 +2302,52 @@ class SMARTRIG_OT_kandura_cuffs_register(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_kandura_waist_register(bpy.types.Operator):
+    bl_idname = "smartrig.kandura_waist_register"
+    bl_label = "Register Waist from Loop"
+    bl_description = ("PRECISE waist placement: select an edge LOOP around "
+                      "the kandura (Edit Mode, e.g. the waist seam), then "
+                      "press this - the waist ring bones are REGISTERED "
+                      "exactly on that loop and the grid rebuilds from it "
+                      "down to the hem. Changing Columns/Rows afterwards "
+                      "subdivides ON the registered loop (REAL-TIME, the "
+                      "placement never drifts)")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = kandura_object(context)
+        return (ob is not None and ob.mode == 'EDIT'
+                and _metarig() is not None)
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        ob = kandura_object(context)
+        mo = _metarig()
+        pts = _selected_loop_points(ob)
+        if pts is None or len(pts) < 4:
+            self.report({'ERROR'},
+                        "Select a closed edge LOOP around the kandura first "
+                        "(Alt+Click a horizontal edge at the waist)")
+            return {'CANCELLED'}
+        bpy.ops.object.mode_set(mode='OBJECT')
+        mwi = mo.matrix_world.inverted()
+        pts = [mwi @ p for p in pts]
+        # STORE the loop on the metarig: Columns/Rows rebuild from IT forever
+        mo["sr_waist_loop"] = [c for pt in pts for c in pt]
+        ok, res = add_waist_bones(context)
+        if not ok:
+            self.report({'ERROR'}, res)
+            return {'CANCELLED'}
+        _enter_metarig_edit(context, select_names=res)
+        self.report({'INFO'},
+                    "Waist REGISTERED on the loop (%d columns x %d rows). "
+                    "Columns/Rows now subdivide ON this loop exactly."
+                    % (int(props.kandura_columns),
+                       2 * int(props.kandura_rows)))
+        return {'FINISHED'}
+
+
 def ensure_kandura_bind(rig, props):
     """SELF-HEALING bind. Whatever the user deleted, Generate puts the
     kandura back into a working state - it DETECTS the scenario:
@@ -2393,7 +2485,8 @@ def remove_kandura_bones(mo):
             n += 1
     bpy.ops.object.mode_set(mode='OBJECT')
     if kandura_skirt:
-        for key in ("sr_skirt_kind", "sr_skirt_method", "sr_skirt_cols_built"):
+        for key in ("sr_skirt_kind", "sr_skirt_method", "sr_skirt_cols_built",
+                    "sr_waist_loop"):
             if key in mo:
                 del mo[key]
     if "sr_kandura" in mo:
@@ -2476,6 +2569,7 @@ classes = (SMARTRIG_OT_kandura_add_waist,
            SMARTRIG_OT_kandura_add_cuffs,
            SMARTRIG_OT_kandura_align_now,
            SMARTRIG_OT_kandura_mirror_now,
+           SMARTRIG_OT_kandura_waist_register,
            SMARTRIG_OT_kandura_remove)
 
 

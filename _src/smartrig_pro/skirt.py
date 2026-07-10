@@ -907,7 +907,7 @@ def remove_skirt_collision(rig):
     restore = {}
     for pb in rig.pose.bones:
         for c in list(pb.constraints):
-            if c.name.startswith(("SK_FLOOR", "SK_FOLLOW", "SK_LIMIT", "SK_DT", "SK_RIDE")):
+            if c.name.startswith(("SK_FLOOR", "SK_FOLLOW", "SK_LIMIT", "SK_DT", "SK_RIDE", "SK_LEGFOLLOW")):
                 pb.constraints.remove(c); n += 1
         if "sk_origparent" in pb:
             restore[pb.name] = str(pb["sk_origparent"])
@@ -1081,6 +1081,9 @@ def add_skirt_masters(rig, props):
     rad = max(0.02, sum(math.hypot(p.x - cx, p.y - cy) for p in heads) / len(heads))
 
     def col_top(ci, root):
+        lg = "SKC_leg.%02d" % ci          # leg-follow hinge sits at the top
+        if rig.data.bones.get(lg):
+            return lg
         dt = "SKC_dt.%02d.00" % ci
         return dt if rig.data.bones.get(dt) else root
 
@@ -2260,6 +2263,49 @@ def add_skirt_collision(rig, props, h=None):
     for ci in colrows:
         colrows[ci].sort()
 
+    # ---- LEG-FOLLOW pre-pass (sitting automation): per-column leg weight,
+    # knee-row index and the ORG leg bones whose rotation the fabric copies ----
+    rw0 = rig.matrix_world
+    _heads0 = {}
+    for ci, rws in colrows.items():
+        b0 = rig.data.bones.get(rws[0][1])
+        if b0 is not None:
+            _heads0[ci] = rw0 @ b0.head_local
+    _cx0 = sum(p.x for p in _heads0.values()) / max(1, len(_heads0))
+    _cy0 = sum(p.y for p in _heads0.values()) / max(1, len(_heads0))
+
+    def _org(nm):
+        o = "ORG-" + nm.split("DEF-")[-1]
+        return o if rig.data.bones.get(o) else (nm if rig.data.bones.get(nm)
+                                                else None)
+    _thLn, _thRn = _org(thigh_L), _org(thigh_R)
+    _shLn = _org(thigh_L.replace("thigh", "shin"))
+    _shRn = _org(thigh_R.replace("thigh", "shin"))
+    if _shLn is None or _shRn is None:
+        _shLn = _shRn = None
+    _pL0 = rw0 @ rig.data.bones[thigh_L].head_local
+    _pR0 = rw0 @ rig.data.bones[thigh_R].head_local
+    _lth = max(0.05, rig.data.bones[thigh_L].length)
+    _kneez = (rig.data.bones[_shLn].head_local.z if _shLn else None)
+    legw = {}
+    for ci, rws in colrows.items():
+        if ci not in _heads0:
+            continue
+        rh0 = _heads0[ci]
+        dL0 = math.hypot(rh0.x - _pL0.x, rh0.y - _pL0.y)
+        dR0 = math.hypot(rh0.x - _pR0.x, rh0.y - _pR0.y)
+        # CUBED proximity: a panel clearly on one side follows ONLY its leg
+        # (linear weights made the whole front ride a single raised knee)
+        wL0 = dR0 ** 3 / (dL0 ** 3 + dR0 ** 3 + 1e-9)
+        kr = None
+        if _kneez is not None and len(rws) >= 2:
+            zz = [(abs(rig.data.bones[bn].head_local.z - _kneez)
+                   if rig.data.bones.get(bn) else 9e9) for _rr, bn in rws]
+            kr = int(min(range(len(zz)), key=lambda i: zz[i]))
+            if kr < 1 or zz[kr] > 0.25:
+                kr = None
+        legw[ci] = (wL0, kr)
+
     if not _edit_rig(rig):
         return -1
     eb = rig.data.edit_bones
@@ -2279,6 +2325,38 @@ def add_skirt_collision(rig, props, h=None):
                 seg.parent = op
             rcb.parent = seg        # each row rides its own dt segment
             prev = seg
+    # ---- LEG-FOLLOW hinge helpers: SKC_leg.<ci> = orientation COPY of the
+    # dominant thigh placed AT THE COLUMN ROOT (the waist ring stays pinned
+    # while the panel hinges with the leg - the KANF forearm-hinge pattern);
+    # SKC_shin.<ci> = the same for the shin at the KNEE ring, so below-knee
+    # fabric re-verticalises when seated instead of pointing the hem up ----
+    for ci, rws in colrows.items():
+        lw = legw.get(ci)
+        if lw is None:
+            continue
+        wL0, kr = lw
+        sd0 = "L" if wL0 >= 0.5 else "R"
+        th = eb.get((_thLn if sd0 == "L" else _thRn) or "")
+        seg0 = eb.get("SKC_dt.%02d.00" % ci)
+        if th is not None and seg0 is not None:
+            lg = eb.new("SKC_leg.%02d" % ci)
+            lg.head = seg0.head.copy()
+            lg.tail = lg.head + (th.tail - th.head)
+            lg.roll = th.roll
+            lg.use_deform = False
+            lg.parent = seg0.parent
+            seg0.parent = lg
+        if kr is not None and _shLn is not None:
+            sh = eb.get(_shLn if sd0 == "L" else _shRn)
+            segk = eb.get("SKC_dt.%02d.%02d" % (ci, rws[kr][0]))
+            if sh is not None and segk is not None:
+                sn = eb.new("SKC_shin.%02d" % ci)
+                sn.head = segk.head.copy()
+                sn.tail = sn.head + (sh.tail - sh.head)
+                sn.roll = sh.roll
+                sn.use_deform = False
+                sn.parent = segk.parent
+                segk.parent = sn
     # master control bone holding the 4 live collision settings (ARP c_kilt_master)
     cen = Vector((0.0, 0.0, 0.0))
     for _r, (_ro, _hm, _hd) in cols.items():
@@ -2308,7 +2386,11 @@ def add_skirt_collision(rig, props, h=None):
                  "Enable leg collision (0 = off, 1 = on)"),
                 ("collide_dist", dist, 0.0, 0.6, "Clearance kept between the skirt and the legs"),
                 ("collide_dist_falloff", falloff, 0.0, 1.0, "Base clearance kept even at rest"),
-                ("collide_spread", spread, 0.0, 2.0, "How many columns around each leg are pushed"))
+                ("collide_spread", spread, 0.0, 2.0, "How many columns around each leg are pushed"),
+                ("leg_follow", 1.0, 0.0, 1.0,
+                 "SITTING automation: panels facing a moving leg HINGE with the thigh"),
+                ("shin_follow", 1.0, 0.0, 1.0,
+                 "Below the knee the fabric follows the SHIN (hangs down when seated)"))
         for key, val, lo, hi, desc in spec:
             mpb[key] = float(val)
             try:
@@ -2357,6 +2439,11 @@ def add_skirt_collision(rig, props, h=None):
         t = v.targets[0]; t.id = rig; t.bone_target = bone
         t.transform_type = axis; t.transform_space = 'WORLD_SPACE'
 
+    def _evar(drv, nm, ci, key):
+        v = drv.variables.new(); v.name = nm; v.type = 'SINGLE_PROP'
+        t = v.targets[0]; t.id_type = 'OBJECT'; t.id = rig
+        t.data_path = 'pose.bones["SKC_dt.%02d.00"]["%s"]' % (ci, key)
+
     n = 0
     for ci, rws in colrows.items():
         nseg = max(1, len(rws))
@@ -2371,9 +2458,26 @@ def add_skirt_collision(rig, props, h=None):
         dL = math.hypot(rh.x - pL.x, rh.y - pL.y)
         dR = math.hypot(rh.x - pR.x, rh.y - pR.y)
         wL = dR / (dL + dR + 1e-5); wR = dL / (dL + dR + 1e-5)
-        rdxL, rdyL = rdxy["L"]; rdxR, rdyR = rdxy["R"]
-        compassL = "((kxL-hxL-(%.4f))*%.4f+(kyL-hyL-(%.4f))*%.4f)" % (rdxL, oxn, rdyL, oyn)
-        compassR = "((kxR-hxR-(%.4f))*%.4f+(kyR-hyR-(%.4f))*%.4f)" % (rdxR, oxn, rdyR, oyn)
+        # per-column normalised leg ENGAGEMENT (0..1): how much each knee
+        # ACTUALLY swings toward this column. Stored as driven custom props
+        # (eL/eR) on the column's top dt bone and referenced from the swing
+        # + leg-follow drivers - keeps every expression under Blender's
+        # 256-char driver limit (inlining it truncates -> SyntaxError).
+        pb0 = rig.pose.bones.get("SKC_dt.%02d.00" % ci)
+        if pb0 is not None:
+            for ekey, esd in (("eL", "L"), ("eR", "R")):
+                pb0[ekey] = 0.0
+                dre = pb0.driver_add('["%s"]' % ekey).driver
+                dre.type = 'SCRIPTED'
+                _locvar(dre, "kx", knee[esd], 'LOC_X')
+                _locvar(dre, "ky", knee[esd], 'LOC_Y')
+                _locvar(dre, "hx", hipb[esd], 'LOC_X')
+                _locvar(dre, "hy", hipb[esd], 'LOC_Y')
+                erdx, erdy = rdxy[esd]
+                dre.expression = (
+                    "min(1.0,max(0.0,((kx-hx-(%.4f))*(%.4f)"
+                    "+(ky-hy-(%.4f))*(%.4f))/%.4f))"
+                    % (erdx, oxn, erdy, oyn, 0.75 * _lth))
         # the total swing (AMP) is SPLIT across the row segments and accumulates
         # down the chain -> a smooth progressive bend toward the hem (cloth-like).
         for rr, bn in rws:
@@ -2391,19 +2495,58 @@ def add_skirt_collision(rig, props, h=None):
                 idx = 2; sgn = -1.0 if dotX > 0 else 1.0
             drv = seg.driver_add("rotation_euler", idx).driver
             drv.type = 'SCRIPTED'
-            _locvar(drv, "kxL", knee["L"], 'LOC_X'); _locvar(drv, "kyL", knee["L"], 'LOC_Y')
-            _locvar(drv, "hxL", hipb["L"], 'LOC_X'); _locvar(drv, "hyL", hipb["L"], 'LOC_Y')
-            _locvar(drv, "kxR", knee["R"], 'LOC_X'); _locvar(drv, "kyR", knee["R"], 'LOC_Y')
-            _locvar(drv, "hxR", hipb["R"], 'LOC_X'); _locvar(drv, "hyR", hipb["R"], 'LOC_Y')
+            _evar(drv, "eL", ci, "eL"); _evar(drv, "eR", ci, "eR")
             _mvar(drv, "spread", "collide_spread"); _mvar(drv, "col", "collide")
             _mvar(drv, "dd", "collide_dist"); _mvar(drv, "ddf", "collide_dist_falloff")
+            _mvar(drv, "lf", "leg_follow")
             # base clearance (ddf) is a CONSTANT outward push applied even at rest,
             # so the panels always sit slightly off the legs (stops static
             # penetration); the second term is the leg-movement swing on top.
+            # The swing FADES OUT as the LEG-FOLLOW hinge engages (big moves
+            # like SITTING are handled by riding the leg, not by swinging -
+            # without the fade the capped swing explodes at 90 deg poses).
             drv.expression = (
-                "%.4f*(0.18*ddf + min(1.2,max(0.0,%.4f*%s+%.4f*%s)))*(dd/0.12)*min(1.5,spread)*col"
-                % (sgn * AMP / nseg, wL, compassL, wR, compassR))
+                "%.4f*(0.18*ddf+min(1.2,(%.4f*eL+%.4f*eR)*%.4f))*(dd/0.12)"
+                "*min(1.5,spread)*col*max(0.0,1.0-lf*min(1.0,%.4f*eL+%.4f*eR))"
+                % (sgn * AMP / nseg, wL, wR, 0.75 * _lth, wL, wR))
         n += 1
+
+    # ---- LEG-FOLLOW constraints: COPY_ROTATION (WORLD) from the ORG leg
+    # bones; influence = leg-proximity weight x how much the knee ACTUALLY
+    # swings toward THIS column (direction-aware: sitting fires the front
+    # panels, a side kick the side panels, a back kick the back ones; at
+    # rest the delta is zero so nothing moves) ----
+    for ci, rws in colrows.items():
+        lw = legw.get(ci)
+        if lw is None or ci not in _heads0:
+            continue
+        wL0, kr = lw
+        rh0 = _heads0[ci]
+        ox = rh0.x - _cx0; oy = rh0.y - _cy0
+        ol = math.hypot(ox, oy) or 1.0
+        oxn2 = ox / ol; oyn2 = oy / ol
+        rn = 0.75 * _lth
+        for hname, tgL, tgR, gkey in (
+                ("SKC_leg.%02d" % ci, _thLn, _thRn, "leg_follow"),
+                ("SKC_shin.%02d" % ci, _shLn, _shRn, "shin_follow")):
+            pbh = rig.pose.bones.get(hname)
+            if pbh is None or tgL is None:
+                continue
+            for sd, tgt, wgt in (("L", tgL, wL0), ("R", tgR, 1.0 - wL0)):
+                if wgt < 0.02:
+                    continue
+                con = pbh.constraints.new('COPY_ROTATION')
+                con.name = "SK_LEGFOLLOW_" + sd
+                con.target = rig
+                con.subtarget = tgt
+                con.target_space = 'WORLD'
+                con.owner_space = 'WORLD'
+                con.mix_mode = 'REPLACE'
+                drv = con.driver_add("influence").driver
+                drv.type = 'SCRIPTED'
+                _evar(drv, "e", ci, "e" + sd)
+                _mvar(drv, "gv", gkey)
+                drv.expression = "gv*%.4f*e" % min(1.0, 1.6 * wgt)
     _organize_skirt_bones(rig)
     return n
 

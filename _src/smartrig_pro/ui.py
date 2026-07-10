@@ -738,6 +738,10 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 _ow = bw.operator("smartrig.kandura_remove", text="",
                                   icon='TRASH')
                 _ow.part = 'WAIST'
+                rw_ = st.row(align=True); rw_.scale_y = 1.2
+                rw_.operator("smartrig.kandura_waist_register",
+                             text="Register from Loop (Edit Mode)",
+                             icon='SNAP_EDGE')
                 # ---- Sleeves ----
                 st.separator()
                 st.label(text="Sleeves:", icon='BONE_DATA')
@@ -1688,6 +1692,11 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
                 col.prop(mpb, '["collide"]', text="Collide", slider=True)
                 col.prop(mpb, '["collide_dist"]', text="Swing", slider=True)
                 col.prop(mpb, '["collide_spread"]', text="Strength", slider=True)
+                if "leg_follow" in mpb:
+                    col.prop(mpb, '["leg_follow"]', text="Leg Follow (sit)",
+                             slider=True)
+                    col.prop(mpb, '["shin_follow"]', text="Shin Follow",
+                             slider=True)
                 col.prop(context.scene.smartrig, "skirt_collide_falloff",
                          text="Push Out (flare)", slider=True)
             except Exception:
