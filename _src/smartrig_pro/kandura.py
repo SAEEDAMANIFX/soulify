@@ -2241,6 +2241,121 @@ class SMARTRIG_OT_kandura_cuffs_register(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def ensure_kandura_bind(rig, props):
+    """SELF-HEALING bind. Whatever the user deleted, Generate puts the
+    kandura back into a working state - it DETECTS the scenario:
+      1. Armature modifier deleted        -> re-add it (top of the stack)
+      2. modifier targets nothing/old rig -> retarget the generated rig
+      3. Preserve Volume off              -> on
+      4. mesh has NO deform weights at all-> automatic weights bind
+      5. sleeve/cuff weights missing or stale (re-registered rings, new
+         counts, wiped groups)            -> analytic rebuild (polish)
+    Returns the list of repairs performed (empty = all was healthy)."""
+    ob = kandura_object(bpy.context)
+    if ob is None or rig is None or ob.type != 'MESH':
+        return []
+    # NEVER treat the BODY (or any non-garment mesh) as the kandura: the
+    # healing only ever touches the garment object itself
+    body = getattr(props, "target_mesh", None)
+    if body is not None and (ob is body or ob.data is body.data):
+        print("SmartRig kandura bind: kandura_object IS the body - skipped")
+        return []
+    acts = []
+    if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    # --- 1/2/3: the armature modifier ---
+    am = None
+    for mm in ob.modifiers:
+        if mm.type == 'ARMATURE':
+            am = mm
+            break
+    if am is None:
+        am = ob.modifiers.new("Armature", 'ARMATURE')
+        acts.append("armature modifier re-added")
+        try:
+            win = bpy.context.window
+            area = next((a for a in win.screen.areas if a.type == 'VIEW_3D'),
+                        None) if win else None
+            region = (next((r for r in area.regions if r.type == 'WINDOW'),
+                           None) if area else None)
+            ov = {"object": ob, "active_object": ob}
+            if win: ov["window"] = win
+            if area: ov["area"] = area
+            if region: ov["region"] = region
+            with bpy.context.temp_override(**ov):
+                bpy.ops.object.modifier_move_to_index(
+                    modifier=am.name, index=0)
+        except Exception as e:
+            print("SmartRig kandura bind reorder:", e)
+    if am.object is not rig:
+        am.object = rig
+        acts.append("rig retargeted")
+    if not am.use_deform_preserve_volume:
+        am.use_deform_preserve_volume = True
+    # --- DUPLICATES: extra armature modifiers = double deformation ---
+    arms = [mm for mm in ob.modifiers if mm.type == 'ARMATURE']
+    for extra in arms[1:]:
+        ob.modifiers.remove(extra)
+        acts.append("duplicate armature removed")
+    # duplicated KAN_ modifiers (manual Ctrl+D copies: KAN_Smooth.001 ...)
+    for mm in list(ob.modifiers):
+        for base_n in ("KAN_Smooth", "KAN_AntiPen"):
+            if mm.name.startswith(base_n) and mm.name != base_n:
+                ob.modifiers.remove(mm)
+                acts.append("duplicate %s removed" % base_n)
+                break
+    # duplicated vertex groups (DEF-xxx.001 copies of real bone groups)
+    for g in list(ob.vertex_groups):
+        n = g.name
+        if n.endswith((".001", ".002", ".003")) and n[:-4] in {
+                b.name for b in rig.data.bones}:
+            ob.vertex_groups.remove(g)
+            acts.append("duplicate group removed")
+    # --- 4: any deform weights at all? ---
+    dbones = {b.name for b in rig.data.bones if b.use_deform}
+    gidx = {g.index: g.name for g in ob.vertex_groups}
+    n_weighted = 0
+    step = max(1, len(ob.data.vertices) // 300)
+    for i, v in enumerate(ob.data.vertices):
+        if i % step:
+            continue
+        if any(g.weight > 0.05 and gidx.get(g.group) in dbones
+               for g in v.groups):
+            n_weighted += 1
+    if n_weighted < 5:
+        try:
+            bpy.ops.object.select_all(action='DESELECT')
+            ob.select_set(True)
+            rig.select_set(True)
+            bpy.context.view_layer.objects.active = rig
+            rig.hide_set(False)
+            bpy.ops.object.parent_set(type='ARMATURE_AUTO')
+            # parent_set may add ANOTHER armature modifier - keep ONE
+            arms = [m for m in ob.modifiers if m.type == 'ARMATURE']
+            for extra in arms[1:]:
+                ob.modifiers.remove(extra)
+            arms[0].object = rig
+            arms[0].use_deform_preserve_volume = True
+            acts.append("automatic weights (fresh mesh)")
+        except Exception as e:
+            print("SmartRig kandura auto-bind:", e)
+    # --- 5: sleeve/cuff weights present for EVERY current kan bone? ---
+    need = [n for n in dbones
+            if n.startswith(("DEF-%s." % BONE_SLEEVE, "DEF-%s." % BONE_CUFF))]
+    gnames = {g.name for g in ob.vertex_groups}
+    missing = [n for n in need if n not in gnames]
+    kan_idx = {g.index for g in ob.vertex_groups
+               if g.name.startswith(("DEF-%s." % BONE_SLEEVE,
+                                     "DEF-%s." % BONE_CUFF))}
+    n_kan = sum(1 for v in ob.data.vertices
+                if any(g.group in kan_idx and g.weight > 0.05
+                       for g in v.groups)) if kan_idx else 0
+    if need and (missing or n_kan < 50):
+        nd, nf = polish_sleeve_weights(ob, rig)
+        acts.append("sleeve weights rebuilt (%d verts)" % nf)
+    return acts
+
+
 def remove_kandura_bones(mo):
     """Delete every bone the kandura module created from the metarig."""
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
