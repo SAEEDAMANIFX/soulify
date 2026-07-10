@@ -572,7 +572,7 @@ class SmartRigProps(PropertyGroup):
         "sleeve END (wrist opening). REAL-TIME: rebuilds the rings "
         "keeping the placed shape")
     kandura_smooth: FloatProperty(
-        name="Fold Smoothing", default=0.5, min=0.0, max=1.0,
+        name="Fold Smoothing", default=0.65, min=0.0, max=1.0,
         update=_kandura_smooth_update,
         description="Corrective-smooth strength on the SLEEVE fabric: "
         "evens the rolled-up folds into clean rounds (LIVE)")

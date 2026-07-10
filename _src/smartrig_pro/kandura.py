@@ -1424,7 +1424,7 @@ def add_sleeve_rollup(rig, props):
                  "max = gathered at the top of the upper arm"),
                 ("pile", 0.02, 0.005, 0.12,
                  "Spacing of the gathered folds (roll-up stack)"),
-                ("bulge", 0.18, 0.0, 1.5,
+                ("bulge", 0.05, 0.0, 1.5,
                  "How much the gathered fabric thickens as it rolls up"),
                 ("hand_follow", 0.0, 0.0, 1.0,
                  "OPTIONAL soft follow of the hand by the sleeve END "
@@ -1534,7 +1534,7 @@ def add_sleeve_rollup(rig, props):
                 _kanr_var(d2, "bg", rig, 'PROP', mn, "bulge")
                 _kanr_var(d2, "pl", rig, 'PROP', mn, "pile")
                 d2.expression = ("1.0 + bg*%.2f*min(1.0, max(0.0, t - %.4f)"
-                                 "/max(0.02, pl))" % (1.0 + 0.55 * rank, a))
+                                 "/max(0.02, pl))" % (min(2.0, 1.0 + 0.25 * rank), a))
             # HAND CLEARANCE: the sleeve END retreats up the forearm when
             # the wrist bends, so the cuff opening NEVER eats into the hand
             if k == tipi and rig.data.bones.get("ORG-hand." + side):
@@ -1553,6 +1553,21 @@ def add_sleeve_rollup(rig, props):
         # parented in the forearm frame) -> blend a WORLD copy-rotation from
         # the first upper-arm sleeve bone as t passes the elbow.
         crpb = rig.pose.bones.get("KANC_root." + side)
+        if crpb is not None:
+            # the wrist opening gets SWALLOWED by the roll: shrink the rim
+            # ring as the sleeve rolls up so it tucks inside the band
+            for idx in (0, 1, 2):
+                dsc = crpb.driver_add("scale", idx).driver
+                dsc.type = 'SCRIPTED'
+                _kanr_var(dsc, "t", rig, 'LOC', mn, "")
+                dsc.expression = ("1.0 - 0.7*min(1.0, t/%.4f)"
+                                  % max(1e-3, 0.5 * Lf))
+            # and TUCK it INSIDE the roll (up-chain, behind the outer layer)
+            dtk = crpb.driver_add("location", 1).driver
+            dtk.type = 'SCRIPTED'
+            _kanr_var(dtk, "t", rig, 'LOC', mn, "")
+            dtk.expression = ("-0.035*min(1.0, t/%.4f)"
+                              % max(1e-3, 0.5 * Lf))
         up_org = rig.data.bones.get("ORG-upper_arm." + side)
         if crpb is not None and up_org is not None and Lt > Lf + 1e-4:
             cro = crpb.constraints.new('COPY_ROTATION')
@@ -1927,8 +1942,8 @@ def add_kandura_smooth(rig, props):
         w = sum(g.weight for g in v.groups if g.group in kan_idx)
         vg.add([v.index], min(1.0, w), 'REPLACE')
     mod = ob.modifiers.new("KAN_Smooth", 'CORRECTIVE_SMOOTH')
-    mod.factor = float(getattr(props, "kandura_smooth", 0.5))
-    mod.iterations = 10
+    mod.factor = float(getattr(props, "kandura_smooth", 0.65))
+    mod.iterations = 14
     mod.smooth_type = 'LENGTH_WEIGHTED'
     mod.rest_source = 'ORCO'
     mod.vertex_group = "SR_SleeveSmooth"
