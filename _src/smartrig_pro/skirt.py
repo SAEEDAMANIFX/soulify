@@ -1543,7 +1543,49 @@ def add_skirt_follow_body(rig, props):
     mod = sk.modifiers.get("SK_SurfaceFollow")
     if mod is None:
         mod = sk.modifiers.new("SK_SurfaceFollow", 'SURFACE_DEFORM')
-    mod.target = body
+    # BIND TO AN ARM-FREE BODY PROXY: at rest the hands hang right beside
+    # the thighs, so lap fabric verts bound to the NEAREST body face grab
+    # HAND/FOREARM faces - the moment the arms pose, those verts snap
+    # toward the hands (the spike cone Saeed screenshotted). The proxy is
+    # the body minus every arm-weighted vert, rigged by the same armature.
+    prox = bpy.data.objects.get("SR_SitProxy")
+    if prox is not None:
+        try:
+            bpy.data.objects.remove(prox, do_unlink=True)
+        except Exception:
+            prox = None
+    try:
+        import bmesh
+        prox = body.copy()
+        prox.data = body.data.copy()
+        prox.name = "SR_SitProxy"
+        prox.data.name = "SR_SitProxy"
+        bpy.context.scene.collection.objects.link(prox)
+        for mm in list(prox.modifiers):
+            if mm.type != 'ARMATURE':
+                prox.modifiers.remove(mm)
+        arm_gi = {g.index for g in prox.vertex_groups
+                  if g.name.startswith(("DEF-upper_arm", "DEF-forearm",
+                                        "DEF-hand", "DEF-f_", "DEF-thumb",
+                                        "DEF-palm"))}
+        bm = bmesh.new()
+        bm.from_mesh(prox.data)
+        dv = bm.verts.layers.deform.active
+        doomed = []
+        if dv is not None:
+            for v in bm.verts:
+                w = sum(wv for gi, wv in v[dv].items() if gi in arm_gi)
+                if w > 0.3:
+                    doomed.append(v)
+        if doomed:
+            bmesh.ops.delete(bm, geom=doomed, context='VERTS')
+        bm.to_mesh(prox.data)
+        bm.free()
+        prox.hide_render = True
+        mod.target = prox
+    except Exception as e:
+        print("SmartRig sit proxy:", e)
+        mod.target = body
     mod.strength = 0.0
     # bind (skirt active, object mode, body visible)
     bpy.ops.object.select_all(action='DESELECT')
@@ -1582,6 +1624,12 @@ def add_skirt_follow_body(rig, props):
             bpy.ops.object.surfacedeform_bind(modifier="SK_SurfaceFollow")
     except Exception as e:
         print("SmartRig surface-deform bind:", e)
+    prox2 = bpy.data.objects.get("SR_SitProxy")
+    if prox2 is not None:
+        try:
+            prox2.hide_set(True)
+        except Exception:
+            pass
 
     # PROFESSIONAL MASK: the surface-follow clings the LAP/SEAT zone only -
     # full strength waist->knee, fading toward the hem, ZERO on the torso
@@ -1641,6 +1689,12 @@ def remove_skirt_follow_body(rig):
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     n = 0
+    _prox = bpy.data.objects.get("SR_SitProxy")
+    if _prox is not None:
+        try:
+            bpy.data.objects.remove(_prox, do_unlink=True)
+        except Exception:
+            pass
     # remove the Surface Deform modifier (+ its driver) from any mesh that has it
     for ob in bpy.data.objects:
         if ob.type != 'MESH':
@@ -2424,20 +2478,6 @@ def add_skirt_collision(rig, props, h=None):
                 sn.use_deform = False
                 sn.parent = segk.parent
                 segk.parent = sn
-    # ---- BONE-LEVEL FLOOR: the column chain CRUMPLES above the ground
-    # instead of passing through it (the mesh clamp alone irons the hem
-    # outward into a rounded lip lying ON the floor - rejected look) ----
-    _gz = None
-    try:
-        from . import kandura as _kn
-        _gz = _kn._ground_z(props)
-    except Exception:
-        _gz = None
-    if _gz is not None:
-        fb = eb.new("SKC_floor")
-        fb.head = Vector((_cx0, _cy0, _gz))
-        fb.tail = fb.head + Vector((0.0, 0.0, 0.1))
-        fb.use_deform = False
     # master control bone holding the 4 live collision settings (ARP c_kilt_master)
     cen = Vector((0.0, 0.0, 0.0))
     for _r, (_ro, _hm, _hd) in cols.items():
@@ -2654,23 +2694,6 @@ def add_skirt_collision(rig, props, h=None):
                 _evar(drv, "e", ci, "e" + sd)
                 _mvar(drv, "gv", gkey)
                 drv.expression = "gv*%.4f*e" % min(1.0, 2.2 * wgt)
-    # bone-level floor constraints (see SKC_floor above): every row below
-    # the root stops at the ground plane, so deep sits stack the fabric
-    if _gz is not None and rig.pose.bones.get("SKC_floor") is not None:
-        for ci, rws in colrows.items():
-            for rr, bn in rws:
-                if rr == 0:
-                    continue
-                seg = rig.pose.bones.get("SKC_dt.%02d.%02d" % (ci, rr))
-                if seg is None:
-                    continue
-                con = seg.constraints.new('FLOOR')
-                con.name = "SK_FLOOR_G"
-                con.target = rig
-                con.subtarget = "SKC_floor"
-                con.floor_location = 'FLOOR_Z'
-                con.use_rotation = False
-                con.offset = 0.0
     _organize_skirt_bones(rig)
     return n
 

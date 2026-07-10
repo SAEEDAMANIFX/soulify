@@ -2134,7 +2134,6 @@ def kandura_stack_report(ob, rig=None):
                 probs.append("'%s' sits INSIDE the cloth stack" % m.name)
     if rig is not None:
         for flag, mn, lbl in (("kan_antipen", "KAN_AntiPen", "Anti-Pen"),
-                              ("kan_floor", "KAN_Floor", "Floor"),
                               ("sk_follow", "SK_SurfaceFollow", "Sit Follow")):
             if rig.get(flag) and mn not in names:
                 probs.append("%s layer was deleted (re-Generate heals it)"

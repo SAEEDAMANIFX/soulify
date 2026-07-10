@@ -827,8 +827,6 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                 _kn.add_kandura_smooth(rg, p)
                 if _kn.add_kandura_antipen(rg, p):
                     extras.append("kandura anti-pen")
-                if _kn.add_kandura_floor(rg, p):
-                    extras.append("floor")
                 # SMART ORDER: whatever the user added/re-ordered, generate
                 # restores the professional stack automatically
                 if _kn.fix_kandura_stack(_kn.kandura_object(context)):

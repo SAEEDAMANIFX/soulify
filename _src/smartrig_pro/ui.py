@@ -1770,14 +1770,6 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
                 w = fb.box(); w.alert = True
                 w.label(text="A modifier is above Follow!", icon='ERROR')
                 w.operator("smartrig.skirt_follow", text="Re-bind (fix order)", icon='FILE_REFRESH')
-        # ---- Floor (ground clamp) ----
-        _kf = next((o for o in bpy.data.objects if o.type == 'MESH'
-                    and o.modifiers.get("KAN_Floor")), None)
-        if _kf is not None:
-            fg = layout.column(align=True)
-            fg.label(text="Floor (ground)", icon='AXIS_TOP')
-            fg.prop(context.scene.smartrig, "kandura_floor_offset",
-                    text="Floor Clearance", slider=True)
         # ---- Anti-Penetration (Shrinkwrap Outside) ----
         amod = skirt.antipen_modifier(context)
         if amod is not None:
