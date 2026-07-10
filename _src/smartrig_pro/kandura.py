@@ -825,6 +825,7 @@ def add_sleeve_bones(context):
     mo["sr_sleeve_up"] = n_up
     mo["sr_sleeve_lo"] = n_lo
     mo["sr_kandura"] = True
+    ensure_sleeve_collections(mo)
     return True, made
 
 
@@ -1101,6 +1102,7 @@ def add_cuff_bones(context):
             except Exception:
                 pass
     mo["sr_kandura"] = True
+    ensure_sleeve_collections(mo)
     return True, made
 
 
@@ -1554,6 +1556,7 @@ def add_sleeve_rollup(rig, props):
             if rig.data.bones.get(hn):
                 rig.data.bones[hn].hide = True
         made += 1
+    organize_sleeve_bones(rig)
     rig["kan_rollup"] = 1 if made else 0
     return made
 
@@ -1934,6 +1937,61 @@ def live_kandura_smooth(context):
             md.factor = float(context.scene.smartrig.kandura_smooth)
     except Exception as e:
         print("SmartRig kandura smooth tune:", e)
+
+
+def ensure_sleeve_collections(mo):
+    """METARIG: put kan_sleeve/kan_cuff bones in a 'Sleeves' bone collection
+    with a Rigify UI row -> the generated rig gets a 'Sleeves' button in the
+    Rig Layers panel (N-panel > Item), like Torso/Fingers."""
+    if mo is None:
+        return
+    bc = mo.data.collections
+    coll = bc.get("Sleeves") or bc.new("Sleeves")
+    try:
+        if getattr(coll, "rigify_ui_row", 0) == 0:
+            rows = [getattr(c, "rigify_ui_row", 0) for c in bc]
+            coll.rigify_ui_row = max(rows) + 1 if rows else 1
+    except Exception:
+        pass
+    for b in mo.data.bones:
+        if b.name.startswith((BONE_SLEEVE + ".", BONE_CUFF + ".")):
+            try:
+                coll.assign(b)
+            except Exception:
+                pass
+
+
+def _rig_coll(rig, name, visible=True):
+    c = rig.data.collections.get(name)
+    if c is None:
+        c = rig.data.collections.new(name)
+        c.is_visible = visible
+    return c
+
+
+def organize_sleeve_bones(rig):
+    """GENERATED RIG: controls (FK, tweaks, masters, cuff ring) -> 'Sleeves'
+    collection; every KAN mechanism helper -> hidden 'MCH' collection."""
+    if rig is None:
+        return
+    ctrl = _rig_coll(rig, "Sleeves", True)
+    mch = _rig_coll(rig, "MCH", False)
+    for b in rig.data.bones:
+        n = b.name
+        if n.startswith(("KANR_dt.", "KANH_dt.", "KANH_tgt.",
+                         "KANC_dt.", "KANC_root.", "KANF_dt.")):
+            for c in list(b.collections):
+                try:
+                    c.unassign(b)
+                except Exception:
+                    pass
+            mch.assign(b)
+            b.hide = True
+        elif (n.startswith((BONE_SLEEVE + ".", BONE_CUFF + ".",
+                            "tweak_" + BONE_SLEEVE + ".",
+                            ROLLUP_MASTER + "."))
+              and not n.startswith(("DEF-", "ORG-", "MCH-"))):
+            ctrl.assign(b)
 
 
 def remove_kandura_bones(mo):
