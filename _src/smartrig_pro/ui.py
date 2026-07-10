@@ -769,6 +769,10 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 bf = st.row(align=True); bf.scale_y = 1.5
                 bf.operator("smartrig.kandura_add_cuffs",
                             text="Add Cuff Bones", icon='ADD')
+                rl = st.row(align=True); rl.scale_y = 1.2
+                rl.operator("smartrig.kandura_cuffs_register",
+                            text="Register from Loop (Edit Mode)",
+                            icon='SNAP_EDGE')
                 _of = bf.operator("smartrig.kandura_remove", text="",
                                   icon='TRASH')
                 _of.part = 'CUFF'

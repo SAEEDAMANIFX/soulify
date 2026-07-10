@@ -2090,6 +2090,149 @@ def organize_sleeve_bones(rig):
                 break
 
 
+def _selected_loop_points(ob):
+    """Ordered points of the SELECTED edge loop on the garment (Edit Mode),
+    in world space. Returns None unless a usable loop (>= 3 verts)."""
+    import bmesh
+    bm = bmesh.from_edit_mesh(ob.data)
+    bm.verts.ensure_lookup_table()
+    sel = [v for v in bm.verts if v.select]
+    if len(sel) < 3:
+        return None
+    sset = {v.index for v in sel}
+    adj = {i: [] for i in sset}
+    for e in bm.edges:
+        a, b = e.verts[0].index, e.verts[1].index
+        if a in sset and b in sset:
+            adj[a].append(b)
+            adj[b].append(a)
+    start = sel[0].index
+    order = [start]
+    prev, cur = None, start
+    for _ in range(len(sel) * 2):
+        nxt = [n for n in adj.get(cur, []) if n != prev]
+        if not nxt:
+            break
+        prev, cur = cur, nxt[0]
+        if cur == start:
+            break
+        order.append(cur)
+    if len(order) < 3:
+        return None
+    mw = ob.matrix_world
+    lut = {v.index: v for v in sel}
+    return [(mw @ lut[i].co).copy() for i in order if i in lut]
+
+
+class SMARTRIG_OT_kandura_cuffs_register(bpy.types.Operator):
+    bl_idname = "smartrig.kandura_cuffs_register"
+    bl_label = "Register Cuffs from Loop"
+    bl_description = ("PRECISE cuff placement: select an edge LOOP on the "
+                      "kandura sleeve (Edit Mode, e.g. the cuff opening or a "
+                      "seam ring), then press this - the cuff ring bones are "
+                      "REGISTERED exactly on that loop. Raising the Bones "
+                      "count afterwards subdivides ON the registered loop "
+                      "(REAL-TIME, keeps the shape). Mirror: ON builds the "
+                      "other side too")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = kandura_object(context)
+        return (ob is not None and ob.mode == 'EDIT'
+                and _metarig() is not None)
+
+    def execute(self, context):
+        import math
+        props = context.scene.smartrig
+        ob = kandura_object(context)
+        mo = _metarig()
+        pts = _selected_loop_points(ob)
+        if pts is None:
+            self.report({'ERROR'},
+                        "Select a closed edge LOOP on the sleeve first "
+                        "(Alt+Click an edge of the cuff)")
+            return {'CANCELLED'}
+        n = max(3, int(props.kandura_cuff_count))
+        bpy.ops.object.mode_set(mode='OBJECT')
+        mwi = mo.matrix_world.inverted()
+        pts = [mwi @ p for p in pts]
+        heads = _resample_ring_arc(pts, n)
+        if heads is None:
+            self.report({'ERROR'}, "Could not resample the selected loop")
+            return {'CANCELLED'}
+        cen = Vector((0.0, 0.0, 0.0))
+        for h in heads:
+            cen += h
+        cen /= len(heads)
+        # loop plane normal (Newell), oriented DOWN the arm (away from elbow)
+        axis = Vector((0.0, 0.0, 0.0))
+        for i in range(len(heads)):
+            a = heads[i] - cen
+            b = heads[(i + 1) % len(heads)] - cen
+            axis += a.cross(b)
+        if axis.length < 1e-9:
+            axis = Vector((1.0, 0.0, 0.0))
+        axis.normalize()
+        side = "L" if cen.x >= 0.0 else "R"
+        fa = _bone_seg(mo, ["forearm." + side])
+        if fa is not None and axis.dot(cen - fa[0]) < 0.0:
+            axis = -axis
+        per = sum((heads[(i + 1) % len(heads)] - heads[i]).length
+                  for i in range(len(heads)))
+        blen = max(0.015, 0.5 * per / max(1, n))
+        rings = {side: [[h, h + axis * blen] for h in heads]}
+        if props.kandura_mirror:
+            oside = "R" if side == "L" else "L"
+            rings[oside] = [[Vector((-h.x, h.y, h.z)),
+                             Vector((-(h + axis * blen).x, (h + axis * blen).y,
+                                     (h + axis * blen).z))] for h in heads]
+        # build on the metarig (replace existing rings on the built sides)
+        try:
+            mo.hide_set(False)
+        except Exception:
+            pass
+        mo.hide_viewport = False
+        bpy.ops.object.select_all(action='DESELECT')
+        mo.select_set(True)
+        bpy.context.view_layer.objects.active = mo
+        bpy.ops.object.mode_set(mode='EDIT')
+        eb = mo.data.edit_bones
+        for sd in rings:
+            for b in [b for b in eb
+                      if b.name.startswith("%s.%s." % (BONE_CUFF, sd))]:
+                eb.remove(b)
+        made = []
+        for sd, ring in rings.items():
+            parent = (eb.get("hand." + sd) or eb.get("forearm." + sd))
+            for k, (head, tail) in enumerate(ring):
+                name = "%s.%s.%02d" % (BONE_CUFF, sd, k)
+                b = eb.new(name)
+                b.head = head
+                b.tail = tail
+                if parent is not None:
+                    b.parent = parent
+                    b.use_connect = False
+                made.append(name)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        for name in made:
+            pb = mo.pose.bones.get(name)
+            if pb is not None:
+                try:
+                    pb.rigify_type = "basic.super_copy"
+                    pb.rigify_parameters.make_deform = True
+                except Exception:
+                    pass
+        mo["sr_kandura"] = True
+        ensure_sleeve_collections(mo)
+        _enter_metarig_edit(context, select_names=made)
+        self.report({'INFO'},
+                    "Cuffs REGISTERED on the loop (%d bones%s). Raise the "
+                    "count to subdivide on the same loop."
+                    % (len(made), " + mirrored" if props.kandura_mirror else ""))
+        return {'FINISHED'}
+
+
 def remove_kandura_bones(mo):
     """Delete every bone the kandura module created from the metarig."""
     if bpy.context.object and bpy.context.object.mode != 'OBJECT':
@@ -2190,6 +2333,7 @@ class SMARTRIG_OT_kandura_remove(bpy.types.Operator):
 classes = (SMARTRIG_OT_kandura_add_waist,
            SMARTRIG_OT_kandura_add_sleeves,
            SMARTRIG_OT_kandura_polish_weights,
+           SMARTRIG_OT_kandura_cuffs_register,
            SMARTRIG_OT_kandura_add_collar,
            SMARTRIG_OT_kandura_add_cuffs,
            SMARTRIG_OT_kandura_align_now,
