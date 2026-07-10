@@ -1713,6 +1713,9 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
                              slider=True)
                     col.prop(mpb, '["shin_follow"]', text="Shin Follow",
                              slider=True)
+                if "hang" in mpb:
+                    col.prop(mpb, '["hang"]', text="Hang (gravity)",
+                             slider=True)
                 col.prop(context.scene.smartrig, "skirt_collide_falloff",
                          text="Push Out (flare)", slider=True)
             except Exception:

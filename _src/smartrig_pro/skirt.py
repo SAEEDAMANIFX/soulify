@@ -2453,6 +2453,17 @@ def add_skirt_collision(rig, props, h=None):
                 lg.use_deform = False
                 lg.parent = seg0.parent
                 seg0.parent = lg
+                # GRAVITY-HANG reference: same rest orientation, parented
+                # to the rig ROOT (never inherits pelvis pitch). In a deep
+                # crouch the hips rotate forward and the BACK columns used
+                # to stick out with them as a taut cone - real cloth HANGS
+                hg = eb.new("SKC_hang.%02d" % ci)
+                hg.head = seg0.head.copy()
+                hg.tail = aim.copy()
+                hg.use_deform = False
+                rt = eb.get("root")
+                if rt is not None:
+                    hg.parent = rt
                 # per-leg TARGETS riding the thighs, placed exactly ON the
                 # aim point at rest -> damped track = ZERO rest error; when
                 # the thigh lifts, the target carries the rest clearance
@@ -2515,7 +2526,11 @@ def add_skirt_collision(rig, props, h=None):
                  "Body) slider on top"),
                 ("shin_follow", 1.0, 0.0, 1.0,
                  "Below the knee the fabric re-verticalises / follows the "
-                 "shin (pairs with Leg Follow)"))
+                 "shin (pairs with Leg Follow)"),
+                ("hang", 1.0, 0.0, 1.0,
+                 "GRAVITY: panels not riding a leg keep hanging DOWN when "
+                 "the pelvis pitches (deep sit/crouch) instead of sticking "
+                 "out backwards with the hips"))
         for key, val, lo, hi, desc in spec:
             mpb[key] = float(val)
             try:
@@ -2667,6 +2682,37 @@ def add_skirt_collision(rig, props, h=None):
         ol = math.hypot(ox, oy) or 1.0
         oxn2 = ox / ol; oyn2 = oy / ol
         rn = 0.75 * _lth
+        # GRAVITY HANG (first in the stack, the leg tracks override it):
+        # influence = hang x (1 - engagement) x pelvis-pitch amount, so
+        # walking and region masters are untouched, but a pitched pelvis
+        # (deep sit) lets the un-engaged panels keep hanging straight down
+        pbl0 = rig.pose.bones.get("SKC_leg.%02d" % ci)
+        hips_par = rig.data.bones.get("ORG-spine")
+        if (pbl0 is not None and hips_par is not None
+                and rig.pose.bones.get("SKC_hang.%02d" % ci) is not None):
+            conh = pbl0.constraints.new('COPY_ROTATION')
+            conh.name = "SK_LEGFOLLOW_HANG"
+            conh.target = rig
+            conh.subtarget = "SKC_hang.%02d" % ci
+            conh.target_space = 'WORLD'
+            conh.owner_space = 'WORLD'
+            conh.mix_mode = 'REPLACE'
+            drvh = conh.driver_add("influence").driver
+            drvh.type = 'SCRIPTED'
+            _evar(drvh, "eL", ci, "eL")
+            _evar(drvh, "eR", ci, "eR")
+            _mvar(drvh, "hg", "hang")
+            vph = drvh.variables.new()
+            vph.name = "px"
+            vph.type = 'TRANSFORMS'
+            tph = vph.targets[0]
+            tph.id = rig
+            tph.bone_target = "ORG-spine"
+            tph.transform_type = 'ROT_X'
+            tph.rotation_mode = 'AUTO'
+            tph.transform_space = 'WORLD_SPACE'
+            drvh.expression = ("hg*max(0.0,1.0-eL-eR)"
+                               "*min(1.0,abs(px)/0.5)")
         for hname, tgL, tgR, gkey, kind in (
                 ("SKC_leg.%02d" % ci, "SKC_tgt.%02d.L" % ci,
                  "SKC_tgt.%02d.R" % ci, "leg_follow", 'TRACK'),
