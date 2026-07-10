@@ -829,6 +829,10 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
                     extras.append("kandura anti-pen")
                 if _kn.add_kandura_floor(rg, p):
                     extras.append("floor")
+                # SMART ORDER: whatever the user added/re-ordered, generate
+                # restores the professional stack automatically
+                if _kn.fix_kandura_stack(_kn.kandura_object(context)):
+                    extras.append("modifier order fixed")
         except Exception as e:
             print("SmartRig kandura sleeve extras failed:", e)
         # safety net: no bone left without a collection (so Rig Layers can hide all)

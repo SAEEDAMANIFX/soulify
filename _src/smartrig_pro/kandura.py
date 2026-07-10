@@ -2105,6 +2105,96 @@ def _ensure_floor_plane(props, ob):
     return pl
 
 
+_KAN_STACK = ("SK_SurfaceFollow", "KAN_Smooth", "KAN_AntiPen", "KAN_Floor")
+
+
+def kandura_stack_report(ob, rig=None):
+    """[] if the garment modifier order is professional, else problems.
+    Canonical: Armature -> Sit Follow -> Corrective Smooth -> Anti-Pen ->
+    Floor -> user modifiers (Subsurf/Solidify/...) BELOW, so user additions
+    never break the binds or the clamps."""
+    if ob is None:
+        return []
+    mods = list(ob.modifiers)
+    names = [m.name for m in mods]
+    probs = []
+    ai = next((i for i, m in enumerate(mods) if m.type == 'ARMATURE'), None)
+    if ai is None:
+        probs.append("no Armature modifier (mesh unbound)")
+    elif ai != 0:
+        probs.append("Armature must be FIRST")
+    order = [names.index(n) for n in _KAN_STACK if n in names]
+    if order != sorted(order):
+        probs.append("cloth layers are shuffled")
+    if order:
+        last = max(order)
+        known = set(_KAN_STACK)
+        for i, m in enumerate(mods[:last]):
+            if m.name not in known and m.type != 'ARMATURE':
+                probs.append("'%s' sits INSIDE the cloth stack" % m.name)
+    if rig is not None:
+        for flag, mn, lbl in (("kan_antipen", "KAN_AntiPen", "Anti-Pen"),
+                              ("kan_floor", "KAN_Floor", "Floor"),
+                              ("sk_follow", "SK_SurfaceFollow", "Sit Follow")):
+            if rig.get(flag) and mn not in names:
+                probs.append("%s layer was deleted (re-Generate heals it)"
+                             % lbl)
+    return probs
+
+
+def fix_kandura_stack(ob):
+    """Re-order to the canonical stack; returns number of moves."""
+    if ob is None:
+        return 0
+    names = [m.name for m in ob.modifiers]
+    arm = next((m.name for m in ob.modifiers if m.type == 'ARMATURE'), None)
+    desired = ([arm] if arm else []) + [n for n in _KAN_STACK if n in names]
+    if not desired:
+        return 0
+    win = bpy.context.window
+    area = next((a for a in win.screen.areas if a.type == 'VIEW_3D'),
+                None) if win else None
+    region = (next((r for r in area.regions if r.type == 'WINDOW'), None)
+              if area else None)
+    ov = {"object": ob, "active_object": ob}
+    if win: ov["window"] = win
+    if area: ov["area"] = area
+    if region: ov["region"] = region
+    moves = 0
+    try:
+        with bpy.context.temp_override(**ov):
+            for idx, nm in enumerate(desired):
+                cur = [m.name for m in ob.modifiers].index(nm)
+                if cur != idx:
+                    bpy.ops.object.modifier_move_to_index(modifier=nm,
+                                                          index=idx)
+                    moves += 1
+    except Exception as e:
+        print("SmartRig fix stack:", e)
+    return moves
+
+
+class SMARTRIG_OT_kandura_fix_mods(bpy.types.Operator):
+    bl_idname = "smartrig.kandura_fix_mods"
+    bl_label = "Fix Garment Modifier Order"
+    bl_description = ("Re-order the kandura modifier stack to the "
+                      "professional layout: Armature > Sit Follow > "
+                      "Corrective Smooth > Anti-Penetration > Floor > "
+                      "your extra modifiers below")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return kandura_object(context) is not None
+
+    def execute(self, context):
+        n = fix_kandura_stack(kandura_object(context))
+        self.report({'INFO'},
+                    "Modifier order fixed (%d moved)" % n if n
+                    else "Modifier order already correct")
+        return {'FINISHED'}
+
+
 def remove_kandura_floor(rig):
     n = 0
     for ob in bpy.data.objects:
@@ -2488,6 +2578,26 @@ class SMARTRIG_OT_kandura_waist_register(bpy.types.Operator):
         pts = [mwi @ p for p in pts]
         # STORE the loop on the metarig: Columns/Rows rebuild from IT forever
         mo["sr_waist_loop"] = [c for pt in pts for c in pt]
+        # SMART BONE COUNT: if the mesh is dense enough that MORE bones give
+        # smoother animation, raise Columns/Rows automatically + tell the
+        # user. Columns from the loop resolution (>=3 loop verts per bone),
+        # rows-per-zone from the lengthwise loop count under the waist.
+        smart_msg = ""
+        n_loop = len(pts)
+        rec_cols = max(int(props.kandura_columns), min(16, n_loop // 3))
+        wz0 = sum(p.z for p in pts) / n_loop
+        cos_all = _garment_coords(ob)
+        n_below = sum(1 for p in cos_all if p.z < wz0)
+        loops_est = int(n_below / max(1, n_loop))
+        rec_rpz = max(int(props.kandura_rows), min(4, max(1, loops_est // 5)))
+        if (rec_cols > int(props.kandura_columns)
+                or rec_rpz > int(props.kandura_rows)):
+            smart_msg = (" SMART: mesh supports more bones - raised to "
+                         "%d columns x %d rows/zone for smoother animation "
+                         "(loop has %d verts, ~%d lengthwise loops)."
+                         % (rec_cols, rec_rpz, n_loop, loops_est))
+            props.kandura_columns = rec_cols
+            props.kandura_rows = rec_rpz
         ok, res = add_waist_bones(context)
         if not ok:
             self.report({'ERROR'}, res)
@@ -2495,9 +2605,9 @@ class SMARTRIG_OT_kandura_waist_register(bpy.types.Operator):
         _enter_metarig_edit(context, select_names=res)
         self.report({'INFO'},
                     "Waist REGISTERED on the loop (%d columns x %d rows). "
-                    "Columns/Rows now subdivide ON this loop exactly."
+                    "Columns/Rows now subdivide ON this loop exactly.%s"
                     % (int(props.kandura_columns),
-                       2 * int(props.kandura_rows)))
+                       2 * int(props.kandura_rows), smart_msg))
         return {'FINISHED'}
 
 
@@ -2805,6 +2915,7 @@ classes = (SMARTRIG_OT_kandura_add_waist,
            SMARTRIG_OT_kandura_align_now,
            SMARTRIG_OT_kandura_mirror_now,
            SMARTRIG_OT_kandura_waist_register,
+           SMARTRIG_OT_kandura_fix_mods,
            SMARTRIG_OT_kandura_remove)
 
 

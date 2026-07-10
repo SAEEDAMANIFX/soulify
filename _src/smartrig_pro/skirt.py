@@ -1583,6 +1583,50 @@ def add_skirt_follow_body(rig, props):
     except Exception as e:
         print("SmartRig surface-deform bind:", e)
 
+    # PROFESSIONAL MASK: the surface-follow clings the LAP/SEAT zone only -
+    # full strength waist->knee, fading toward the hem, ZERO on the torso
+    # and sleeves (they already follow the rig; whole-mesh follow warped
+    # the hem and fought the sleeve automation).
+    try:
+        skb = [b for b in rig.data.bones if b.name.startswith("DEF-skirt.")]
+        shb = (rig.data.bones.get("ORG-shin.L")
+               or rig.data.bones.get("DEF-shin.L"))
+        if skb and shb is not None:
+            rwm = rig.matrix_world
+            topz = max((rwm @ b.head_local).z for b in skb)
+            kneez = (rwm @ shb.head_local).z
+            mws = sk.matrix_world
+            kan_idx = {g.index for g in sk.vertex_groups
+                       if g.name.startswith(("DEF-kan_sleeve",
+                                             "DEF-kan_cuff"))}
+            zs_all = [(mws @ v.co).z for v in sk.data.vertices]
+            hemz = min(zs_all)
+            fade = max(0.05, 0.45 * max(0.05, kneez - hemz))
+            vgf = (sk.vertex_groups.get("SR_SitFollow")
+                   or sk.vertex_groups.new(name="SR_SitFollow"))
+            for v in sk.data.vertices:
+                z = (mws @ v.co).z
+                if sum(g.weight for g in v.groups
+                       if g.group in kan_idx) > 0.2:
+                    w = 0.0                     # sleeve fabric: never
+                elif z > topz + 0.06:
+                    w = 0.0                     # torso: rig handles it
+                elif z > topz - 0.04:
+                    w = (topz + 0.06 - z) / 0.10
+                elif z > kneez:
+                    w = 1.0                     # lap/seat: full cling
+                else:
+                    w = max(0.0, 1.0 - (kneez - z) / fade)
+                if w > 1e-3:
+                    vgf.add([v.index], min(1.0, w), 'REPLACE')
+                else:
+                    try:
+                        vgf.remove([v.index])
+                    except Exception:
+                        pass
+            mod.vertex_group = "SR_SitFollow"
+    except Exception as e:
+        print("SmartRig sit-follow mask:", e)
     # the modifier STRENGTH is the live "Follow Body" value (drawn directly in the
     # panels - keyframeable, immediate, no driver/trust dependency).
     mod.strength = float(getattr(props, "skirt_follow_body", 0.0))

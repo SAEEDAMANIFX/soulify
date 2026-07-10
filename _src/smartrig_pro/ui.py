@@ -1683,6 +1683,22 @@ class SMARTRIG_PT_skirt_item(bpy.types.Panel):
         if rig is None:
             return
         skirt_iv = icons.get('skirt')
+        # SMART STACK GUARD: warn the user LIVE when the garment modifier
+        # order is wrong (e.g. they added a Subsurf inside the cloth stack)
+        try:
+            from . import kandura as _kn
+            _obk = _kn.kandura_object(context)
+            _probs = _kn.kandura_stack_report(_obk, rig) if _obk else []
+        except Exception:
+            _probs = []
+        if _probs:
+            wb = layout.box()
+            wb.alert = True
+            wb.label(text="Garment modifier stack problem:", icon='ERROR')
+            for _pr in _probs[:3]:
+                wb.label(text=_pr)
+            wb.operator("smartrig.kandura_fix_mods",
+                        text="Fix Modifier Order", icon='FILE_REFRESH')
         mpb = rig.pose.bones.get("SKC_master")
         # ---- Leg Collision (driven by the SKC_master bone props) ----
         if mpb is not None and "collide" in mpb:
