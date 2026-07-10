@@ -1425,7 +1425,8 @@ def add_sleeve_rollup(rig, props):
         con.use_min_x = con.use_max_x = True
         con.use_min_z = con.use_max_z = True
         con.use_min_y = con.use_max_y = True
-        con.min_y = 0.0; con.max_y = Lt
+        con.min_y = 0.0
+        con.max_y = max(0.1, Lt - 0.07)   # stop BELOW the armpit seam
         con.owner_space = 'LOCAL'; con.use_transform_limit = True
         try:
             mpb.custom_shape = _sk._ensure_master_widget()
@@ -1562,16 +1563,18 @@ def add_sleeve_rollup(rig, props):
 # ====================================================================
 
 def polish_sleeve_weights(ob, rig):
-    """PROFESSIONAL sleeve binding pass. The generic bind leaves part of the
-    sleeve fabric weighted to the BODY arm bones (upper_arm/forearm/hand) -
-    those verts stay behind when the sleeve chain rolls up or the cuff
-    follows the hand => tearing. This pass:
-      1. deletes DEAD vertex groups (no bone of that name on the rig),
-      2. on every vert that carries kan_sleeve/kan_cuff weight, transfers
-         the body-ARM share to the NEAREST kan_sleeve/kan_cuff bone,
-      3. graph-smooths the kan weights inside the sleeve (keeps the torso
-         blend at the shoulder seam untouched).
-    Returns (n_dead_groups, n_verts_fixed)."""
+    """PROFESSIONAL sleeve binding = full ANALYTIC REBUILD (deterministic,
+    same quality on any character). For every vert of the sleeve TUBE
+    (near the chain AND wrapping around the arm - the normal points away
+    from the chain axis, which keeps the torso-side fabric out):
+      - kan_sleeve weights = smooth linear partition along the tube over
+        the bone centres (perfect transitions -> clean roll-up folds),
+      - the last 4 cm blend into the 2 nearest kan_cuff ring bones,
+      - the first 10 cm ramp into DEF-shoulder (seam blend),
+      - any kan weight found OUTSIDE the tube is returned to the nearest
+        torso anchor. Dead vertex groups are removed, and verts left with
+        < 0.9 total deform weight are topped up from the nearest anchor.
+    Returns (n_dead_groups, n_verts_rebuilt)."""
     if ob is None or rig is None:
         return 0, 0
     bones = set(rig.data.bones.keys())
@@ -1580,109 +1583,164 @@ def polish_sleeve_weights(ob, rig):
     for g in dead:
         ob.vertex_groups.remove(g)
 
-    rw = rig.matrix_world
     mw = ob.matrix_world
-    fixed = 0
-    for side in ("L", "R"):
-        kan_named = [b.name for b in rig.data.bones
-                     if b.use_deform
-                     and (b.name.startswith("DEF-%s.%s." % (BONE_SLEEVE, side))
-                          or b.name.startswith("DEF-%s.%s." % (BONE_CUFF, side)))]
-        if not kan_named:
-            continue
-        segs = []
-        for n in kan_named:
-            b = rig.data.bones[n]
-            segs.append((n, rw @ b.head_local, rw @ b.tail_local))
-        arm_named = [n for n in (
-            "DEF-upper_arm.%s" % side, "DEF-upper_arm.%s.001" % side,
-            "DEF-forearm.%s" % side, "DEF-forearm.%s.001" % side,
-            "DEF-hand.%s" % side) if n in bones]
-        gi = {g.name: g.index for g in ob.vertex_groups}
-        kan_idx = {gi[n] for n in kan_named if n in gi}
-        arm_idx = {gi[n] for n in arm_named if n in gi}
-        if not kan_idx:
-            continue
+    rw = rig.matrix_world
+    nmat = mw.to_3x3().inverted().transposed()
 
-        def _nearest(pt):
-            best, bn = 1e18, None
-            for n, a, b in segs:
+    def d_seg(p, a, b):
+        ab = b - a
+        L2 = ab.length_squared
+        t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L2))
+        return (a + ab * t - p).length
+
+    rebuilt = 0
+    for side in ("L", "R"):
+        import re as _re
+        pat = _re.compile(r"^DEF-%s\.%s\.(\d+)$" % (BONE_SLEEVE, side))
+        chain = {}
+        for b in rig.data.bones:
+            m = pat.match(b.name)
+            if m:
+                chain[int(m.group(1))] = b
+        if not chain or set(chain) != set(range(len(chain))):
+            continue
+        N = len(chain)
+        J = [rw @ chain[k].head_local.copy() for k in range(N)]
+        J.append(rw @ chain[N - 1].tail_local.copy())
+        segs = [(J[i], J[i + 1]) for i in range(N)]
+        seglen = [(b - a).length for a, b in segs]
+        arc0 = [sum(seglen[:i]) for i in range(N + 1)]
+        total = arc0[-1]
+        if total < 1e-4:
+            continue
+        axis0 = (J[1] - J[0]).normalized()
+        names = [chain[k].name for k in range(N)]
+        gs = {n: (ob.vertex_groups.get(n) or ob.vertex_groups.new(name=n))
+              for n in names}
+        cuffn = [b.name for b in rig.data.bones
+                 if b.name.startswith("DEF-%s.%s." % (BONE_CUFF, side))]
+        cuffh = {n: rw @ rig.data.bones[n].head_local.copy() for n in cuffn}
+        gc = {n: (ob.vertex_groups.get(n) or ob.vertex_groups.new(name=n))
+              for n in cuffn}
+        centres = [(arc0[k] + arc0[k + 1]) * 0.5 for k in range(N)]
+        gi_all = {g.index: g.name for g in ob.vertex_groups}
+        kan_idx = {g.index for g in ob.vertex_groups
+                   if ("kan_sleeve.%s" % side) in g.name
+                   or ("kan_cuff.%s" % side) in g.name}
+        rad = 0.055 * total + 0.07     # capture radius scales with the arm
+
+        for v in ob.data.vertices:
+            p = mw @ v.co
+            best = (1e18, 0, 0.0)
+            for i2, (a, b) in enumerate(segs):
                 ab = b - a
                 L2 = ab.length_squared
-                t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (pt - a).dot(ab) / L2))
-                d = (a + ab * t - pt).length_squared
-                if d < best:
-                    best, bn = d, n
-            return bn
-
-        sleeve_verts = []
-        for v in ob.data.vertices:
-            wk = sum(g.weight for g in v.groups if g.group in kan_idx)
-            if wk <= 0.02:
-                continue
-            sleeve_verts.append(v.index)
-            wa = sum(g.weight for g in v.groups if g.group in arm_idx)
-            if wa <= 1e-4:
-                continue
-            tgt = _nearest(mw @ v.co)
-            if tgt is None:
-                continue
-            for idx in arm_idx:
-                try:
-                    ob.vertex_groups[idx].remove([v.index])
-                except Exception:
-                    pass
-            ob.vertex_groups[tgt].add([v.index], wa, 'ADD')
-            fixed += 1
-
-        # graph smoothing of the kan groups INSIDE the sleeve only: keeps
-        # the shoulder-seam torso blend, evens the roll-up transitions
-        sv = set(sleeve_verts)
-        nbr = {i: [] for i in sv}
-        for e in ob.data.edges:
-            a, b = e.vertices
-            if a in sv and b in sv:
-                nbr[a].append(b)
-                nbr[b].append(a)
-        gnames = [n for n in kan_named if n in gi]
-        for _ in range(2):
-            cur = {}
-            for n in gnames:
-                g = ob.vertex_groups[n]
-                col = {}
-                for i in sv:
+                t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, (p - a).dot(ab) / L2))
+                d = (a + ab * t - p).length
+                if d < best[0]:
+                    best = (d, i2, t)
+            d, i2, t = best
+            a, b = segs[i2]
+            cp = a + (b - a) * t
+            s = arc0[i2] + seglen[i2] * t
+            if i2 == 0 and t <= 0.0:
+                s = (p - J[0]).dot(axis0)
+            wn = (nmat @ v.normal).normalized()
+            radial = p - cp
+            dot = wn.dot(radial.normalized()) if radial.length > 1e-6 else 1.0
+            has_kan = any(g.group in kan_idx and g.weight > 1e-4
+                          for g in v.groups)
+            member = (d < rad and s > -0.03
+                      and (dot > 0.15 or s > 0.3 * total))
+            if member:
+                rebuilt += 1
+                sc_ = max(0.0, min(total, s))
+                w = [0.0] * N
+                if sc_ <= centres[0]:
+                    w[0] = 1.0
+                elif sc_ >= centres[-1]:
+                    w[N - 1] = 1.0
+                else:
+                    for k in range(N - 1):
+                        if centres[k] <= sc_ <= centres[k + 1]:
+                            f = (sc_ - centres[k]) / (centres[k + 1] - centres[k])
+                            w[k] = 1.0 - f
+                            w[k + 1] = f
+                            break
+                cw = (max(0.0, 1.0 - (total - sc_) / 0.04) if cuffn else 0.0)
+                kan_share = min(1.0, max(0.0, (s - 0.01) / 0.10))
+                for g in list(v.groups):
                     try:
-                        col[i] = g.weight(i)
-                    except RuntimeError:
-                        col[i] = 0.0
-                cur[n] = col
-            for n in gnames:
-                g = ob.vertex_groups[n]
-                col = cur[n]
-                for i in sv:
-                    ns = nbr[i]
-                    if not ns:
-                        continue
-                    w = 0.5 * col[i] + 0.5 * sum(col[j] for j in ns) / len(ns)
-                    # rescale so the vert's total kan share is preserved
-                    g.add([i], w, 'REPLACE')
-            # renormalise the kan share per vert (torso share untouched)
-            for i in sv:
-                v = ob.data.vertices[i]
-                wk = sum(gg.weight for gg in v.groups if gg.group in
-                         {gi[n] for n in gnames})
-                tot = sum(gg.weight for gg in v.groups)
-                free = max(0.0, 1.0 - (tot - wk))
-                if wk > 1e-6 and abs(wk - free) > 1e-4:
-                    s = free / wk
-                    for n in gnames:
+                        ob.vertex_groups[gi_all[g.group]].remove([v.index])
+                    except Exception:
+                        pass
+                chain_share = kan_share * (1.0 - cw)
+                for k in range(N):
+                    if w[k] > 1e-4:
+                        gs[names[k]].add([v.index], w[k] * chain_share, 'REPLACE')
+                if cw > 1e-4:
+                    ds = sorted(((cuffh[n] - p).length, n) for n in cuffn)[:2]
+                    tot_inv = sum(1.0 / max(1e-5, dd) for dd, _ in ds)
+                    for dd, n in ds:
+                        gc[n].add([v.index],
+                                  kan_share * cw * (1.0 / max(1e-5, dd)) / tot_inv,
+                                  'REPLACE')
+                if kan_share < 0.999:
+                    shn = "DEF-shoulder.%s" % side
+                    shg = (ob.vertex_groups.get(shn)
+                           or ob.vertex_groups.new(name=shn))
+                    shg.add([v.index], 1.0 - kan_share, 'REPLACE')
+            elif has_kan:
+                freed = 0.0
+                for g in list(v.groups):
+                    if g.group in kan_idx:
+                        freed += g.weight
                         try:
-                            w0 = ob.vertex_groups[n].weight(i)
+                            ob.vertex_groups[gi_all[g.group]].remove([v.index])
+                        except Exception:
+                            pass
+                if freed > 1e-4:
+                    cands = [n for n in ("DEF-shoulder.%s" % side,
+                                         "DEF-breast.%s" % side,
+                                         "DEF-spine.003", "DEF-spine.002",
+                                         "DEF-spine.001")
+                             if rig.data.bones.get(n)]
+                    if cands:
+                        cb = min(cands, key=lambda n: d_seg(
+                            p, rw @ rig.data.bones[n].head_local.copy(),
+                            rw @ rig.data.bones[n].tail_local.copy()))
+                        g2 = (ob.vertex_groups.get(cb)
+                              or ob.vertex_groups.new(name=cb))
+                        try:
+                            cur = g2.weight(v.index)
                         except RuntimeError:
-                            continue
-                        ob.vertex_groups[n].add([i], w0 * s, 'REPLACE')
+                            cur = 0.0
+                        g2.add([v.index], cur + freed, 'REPLACE')
+
+    # safety net: no vert left under-weighted anywhere on the garment
+    gi_all = {g.index: g.name for g in ob.vertex_groups}
+    anchors = [n for n in bones
+               if rig.data.bones[n].use_deform
+               and n.startswith(("DEF-spine", "DEF-shoulder", "DEF-breast",
+                                 "DEF-pelvis", "DEF-neck", "DEF-head"))]
+    asegs = {n: (rw @ rig.data.bones[n].head_local.copy(),
+                 rw @ rig.data.bones[n].tail_local.copy()) for n in anchors}
+    for v in ob.data.vertices:
+        wsum = sum(g.weight for g in v.groups
+                   if gi_all[g.group] in bones
+                   and rig.data.bones[gi_all[g.group]].use_deform)
+        if wsum >= 0.9 or not anchors:
+            continue
+        p = mw @ v.co
+        cb = min(anchors, key=lambda n: d_seg(p, *asegs[n]))
+        g2 = ob.vertex_groups.get(cb) or ob.vertex_groups.new(name=cb)
+        try:
+            cur = g2.weight(v.index)
+        except RuntimeError:
+            cur = 0.0
+        g2.add([v.index], cur + (1.0 - wsum), 'REPLACE')
     ob.data.update()
-    return n_dead, fixed
+    return n_dead, rebuilt
 
 
 class SMARTRIG_OT_kandura_polish_weights(bpy.types.Operator):
