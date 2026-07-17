@@ -687,6 +687,13 @@ class SmartRigProps(PropertyGroup):
         description="Hair mesh - rigid-bound to the head bone at bind")
     skin_tongue: PointerProperty(name="Tongue", type=bpy.types.Object, poll=_mesh_poll,
         description="Tongue mesh (rigid to the jaw bone, else the head)")
+    face_storm_full: BoolProperty(
+        name="Full Storm Face", default=True,
+        description="Build the COMPLETE Storm face system (538 bones: "
+                    "ribbon eyelids + auto-blink, micro lips + zipper, "
+                    "brow/cheek strips, teeth, tongue, jawline, lattices, "
+                    "drivers) retargeted onto this character. Off = the "
+                    "simple 42-control layout")
     face_lip_ctls: IntProperty(name="Lip Controls", default=2, min=1, max=4,
                                description="Extra lip controls PER SIDE per lip "
                                            "(between the center and the corner). "

@@ -141,6 +141,10 @@ def _valid_eye(ob, body, top_z, hgt):
     characters keep their origin at the world zero."""
     if ob is None or ob.type != 'MESH' or ob is body:
         return False
+    # NEVER our own helpers/widgets (the eyelid RIBBON once passed as an
+    # eyeball and scattered the whole face build)
+    if ob.name.startswith(("HLP-SR-", "WGT", "SR_")) or ob.get("sr_wgt"):
+        return False
     if ob.name not in bpy.context.scene.objects:
         return False
     try:
@@ -2114,6 +2118,7 @@ class SMARTRIG_OT_face_build_base(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.smartrig
+        storm_info = None
         try:
             if context.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
@@ -2128,28 +2133,48 @@ class SMARTRIG_OT_face_build_base(bpy.types.Operator):
             parent_name = None if standalone else _head_parent_name(rig)
             if standalone:
                 parent_name = "head"
-            nc = build_controls(props, context, rig, parent_name, ipd, P_jaw)
-            local_weights(props, context, rig)
+            # ---- FULL Storm face (v2.0): the complete Storm control /
+            # ribbon / lattice / driver system, retargeted by RBF ----
+            if bool(getattr(props, "face_storm_full", True)):
+                try:
+                    import sys as _sys
+                    from . import storm_face as _sf
+                    if _sf.spec_available():
+                        storm_info = _sf.build_full(
+                            _sys.modules[__name__], props, context)
+                        nc = storm_info["bones"]
+                except Exception as _e:
+                    import traceback
+                    traceback.print_exc()
+                    self.report({'WARNING'},
+                                "Storm face failed (%s) - using the "
+                                "simple layout" % _e)
+                    storm_info = None
+            if storm_info is None:
+                nc = build_controls(props, context, rig, parent_name, ipd,
+                                    P_jaw)
+                local_weights(props, context, rig)
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
         # character-proportional widget sizes (Storm numbers explode on
         # other heads)
-        try:
-            nw = normalize_widget_sizes(rig, ipd)
-            if nw:
-                print("Soulify: normalized %d face widget sizes" % nw)
-        except Exception as _e:
-            print("Soulify widget normalize failed:", _e)
-        try:
-            separate_lip_widgets(rig, ipd)
-        except Exception as _e:
-            print("Soulify lip widget separation failed:", _e)
-        try:
-            no = organize_face_layers(rig)
-            print("Soulify: organized %d face bones into Rig Layers" % no)
-        except Exception as _e:
-            print("Soulify face layers failed:", _e)
+        if storm_info is None:
+            try:
+                nw = normalize_widget_sizes(rig, ipd)
+                if nw:
+                    print("Soulify: normalized %d face widget sizes" % nw)
+            except Exception as _e:
+                print("Soulify widget normalize failed:", _e)
+            try:
+                separate_lip_widgets(rig, ipd)
+            except Exception as _e:
+                print("Soulify lip widget separation failed:", _e)
+            try:
+                no = organize_face_layers(rig)
+                print("Soulify: organized %d face bones into Rig Layers" % no)
+            except Exception as _e:
+                print("Soulify face layers failed:", _e)
         # RIG VIEW: the tools disappear, the animator rig is what you see
         try:
             from . import markers as _mk2
@@ -2168,9 +2193,18 @@ class SMARTRIG_OT_face_build_base(bpy.types.Operator):
             pass
         where = "standalone rig '%s'" % rig.name if standalone else \
                 "rig '%s'" % rig.name
-        self.report({'INFO'}, "Face rig built on %s - %d jaw verts, %d "
-                    "Storm controls. CTL-Jaw = mouth, MSTR-Eye_target = look"
-                    % (where, nj, nc))
+        if storm_info is not None:
+            self.report({'INFO'},
+                        "FULL Storm face on %s: %d bones, %d constraints, "
+                        "%d drivers, %d lattices, %s"
+                        % (where, storm_info["bones"],
+                           storm_info["constraints"], storm_info["drivers"],
+                           storm_info["lattice_mods"],
+                           ", ".join(storm_info["parts"]) or "no extra parts"))
+        else:
+            self.report({'INFO'}, "Face rig built on %s - %d jaw verts, %d "
+                        "Storm controls. CTL-Jaw = mouth, MSTR-Eye_target = "
+                        "look" % (where, nj, nc))
         return {'FINISHED'}
 
 
