@@ -587,6 +587,15 @@ def markers_from_grid(body):
         "face_ear.L": [float(v) for v in ear],
     }
     place_markers(L, max(ipd, 0.02))
+    # the NET is the visible UI in the FaceIt flow - the anchor markers are
+    # derived data for Build, keep them hidden (the glow overlay skips hidden)
+    for nm in ALL_LM:
+        o = bpy.data.objects.get(nm)
+        if o is not None:
+            try:
+                o.hide_set(True)
+            except Exception:
+                pass
     return ipd
 
 
