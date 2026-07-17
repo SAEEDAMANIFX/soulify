@@ -505,9 +505,11 @@ def _make_grid_object(pts, ipd_hint):
     return ob
 
 
-def flat_grid_pts(chin_pos, scale, y0):
-    """FACE_TEMPLATE laid out FLAT (XZ plane at depth y0), FaceIt-style."""
-    return [[u * scale, y0, chin_pos.z + v * scale]
+def flat_grid_pts(chin_pos, scale, y0, scale_z=None):
+    """FACE_TEMPLATE laid out FLAT (XZ plane at depth y0), FaceIt-style.
+    scale = WIDTH, scale_z = HEIGHT (defaults to scale = uniform)."""
+    sz = scale if scale_z is None else scale_z
+    return [[u * scale, y0, chin_pos.z + v * sz]
             for u, v in FACE_TEMPLATE.values()]
 
 
@@ -1694,7 +1696,8 @@ class SMARTRIG_OT_face_place(bpy.types.Operator):
         self.y0 = float(head[:, 1].min()) - 0.01 * hgt   # just in front
         self.z_guess = top - 0.12 * hgt
         half_w = float(np.percentile(np.abs(head[:, 0]), 98))
-        self.scale = max(half_w / 0.79, 1e-4)
+        self.scale = max(half_w / 0.79, 1e-4)      # width
+        self.scale_z = self.scale                  # height (FaceIt: separate)
         self.chin = Vector((0.0, self.y0, self.z_guess))
         pts = flat_grid_pts(self.chin, self.scale, self.y0)
         self.ob = _make_grid_object(pts, 0.84 * self.scale)
@@ -1709,7 +1712,7 @@ class SMARTRIG_OT_face_place(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _rebuild(self):
-        pts = flat_grid_pts(self.chin, self.scale, self.y0)
+        pts = flat_grid_pts(self.chin, self.scale, self.y0, self.scale_z)
         for i, p in enumerate(pts):
             self.ob.data.vertices[i].co = Vector(p)
         self.ob.data.update()
@@ -1725,15 +1728,27 @@ class SMARTRIG_OT_face_place(bpy.types.Operator):
                 if self.stage == 'PLACE':
                     self.chin = Vector((0.0, self.y0, p.z))
                 else:
+                    # FaceIt: WIDTH and HEIGHT follow the mouse separately -
+                    # aim at the top-side corner of the head
                     self.scale = max(abs(p.x) / 0.79, 1e-4)
+                    self.scale_z = max((p.z - self.chin.z) / 1.44, 1e-4)
+                    try:
+                        context.area.header_text_set(
+                            "Face Markers  -  Width %.3f   Height %.3f   "
+                            "(aim at the TOP-SIDE of the head, CLICK to "
+                            "confirm, Esc: cancel)"
+                            % (2 * 0.79 * self.scale, 1.51 * self.scale_z))
+                    except Exception:
+                        pass
                 self._rebuild()
             return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             if self.stage == 'PLACE':
                 self.stage = 'SCALE'
                 context.area.header_text_set(
-                    "Face Markers  -  move the mouse to the SIDE of the face "
-                    "to match the WIDTH, then CLICK   (Esc: cancel)")
+                    "Face Markers  -  move the mouse to the TOP-SIDE of the "
+                    "head: horizontal = WIDTH, vertical = HEIGHT, then CLICK "
+                    "  (Esc: cancel)")
                 return {'RUNNING_MODAL'}
             # confirmed: drop into Edit Mode on the flat net (front stays locked)
             self._finish(context)
