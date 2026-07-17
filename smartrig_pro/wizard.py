@@ -197,7 +197,6 @@ def _draw_fingers(region, rv3d):
     from . import fingers_manual as _fm
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
-    col = (0.3, 1.0, 0.45)
     m = max(_marker_mult(), 1.0)
     for part in ("palm", "hand", "foot"):
         for side in ("L", "R"):
@@ -206,6 +205,9 @@ def _draw_fingers(region, rv3d):
             except Exception:
                 continue
             for _fn, chain in chains.items():
+                # each digit gets its OWN colour (thumb red, index orange,
+                # middle yellow, ring green, pinky blue - same as the empties)
+                col = _fm.color_for(_fn)
                 pts2 = []
                 for o in chain:
                     try:

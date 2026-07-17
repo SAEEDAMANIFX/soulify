@@ -814,6 +814,19 @@ def _guide_finish(context):
     lock_front_view(context, False)
     for a in context.window.screen.areas:
         a.tag_redraw()
+    # AUTO-BUILD: finishing the guided markers builds the metarig and drops
+    # straight into Bone EDIT MODE (the Build operator does both + AI fingers).
+    # Deferred via a timer: we are still inside the modal's event handling.
+    req = ("spine_root", "neck", "head_top", "shoulder.L", "wrist.L",
+           "ankle.L", "hip.L")
+    if all(get_marker(n) is not None for n in req):
+        def _auto_build():
+            try:
+                bpy.ops.smartrig.build_metarig()
+            except Exception as e:
+                print("Soulify auto-build after markers failed:", e)
+            return None
+        bpy.app.timers.register(_auto_build, first_interval=0.1)
 
 
 # ---- shared continuous click-placement (used by Let's Rig and the Resume button) --
