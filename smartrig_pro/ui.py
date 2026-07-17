@@ -547,14 +547,20 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                              icon='CHECKMARK')
         col = ob_box.column(align=True)
         col.prop(props, "target_mesh", text="Main", icon='USER')
-        col.prop(props, "skin_eye_l", text="Eye L", icon='HIDE_OFF')
-        col.prop(props, "skin_eye_r", text="Eye R", icon='HIDE_OFF')
-        col.prop(props, "skin_teeth_up", text="Teeth Up", icon='TRIA_UP_BAR')
-        col.prop(props, "skin_teeth_low", text="Teeth Low", icon='TRIA_DOWN_BAR')
-        col.prop(props, "skin_tongue", text="Tongue", icon='META_CAPSULE')
-        col.prop(props, "skin_brows", text="Brows", icon='CURVE_PATH')
-        col.prop(props, "skin_lashes", text="Eyelashes", icon='CURVE_NCURVE')
-        col.prop(props, "skin_hair", text="Hair", icon='OUTLINER_OB_CURVES')
+        for _attr, _lbl, _icn, _part in (
+                ("skin_eye_l", "Eye L", 'HIDE_OFF', 'EYE_L'),
+                ("skin_eye_r", "Eye R", 'HIDE_OFF', 'EYE_R'),
+                ("skin_teeth_up", "Teeth Up", 'TRIA_UP_BAR', 'TEETH_UP'),
+                ("skin_teeth_low", "Teeth Low", 'TRIA_DOWN_BAR', 'TEETH_LOW'),
+                ("skin_tongue", "Tongue", 'META_CAPSULE', 'TONGUE'),
+                ("skin_brows", "Brows", 'CURVE_PATH', 'BROWS'),
+                ("skin_lashes", "Eyelashes", 'CURVE_NCURVE', 'LASHES'),
+                ("skin_hair", "Hair", 'OUTLINER_OB_CURVES', 'HAIR')):
+            _r = col.row(align=True)
+            _r.prop(props, _attr, text=_lbl, icon=_icn)
+            _op = _r.operator("smartrig.face_register_slot", text="",
+                              icon='RESTRICT_SELECT_OFF')
+            _op.part = _part
 
         # ---- Step 1: FaceIt-style guided placement (Saeed's video) ----
         has_grid1 = bpy.data.objects.get(_fc.GRID_NAME) is not None

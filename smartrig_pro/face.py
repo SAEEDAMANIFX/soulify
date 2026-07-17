@@ -1569,6 +1569,13 @@ FACE_PART_VG = {
     'BROWS': "SR_brows", 'LASHES': "SR_lashes",
     'TEETH_UP': "SR_teeth_up", 'TEETH_LOW': "SR_teeth_low",
     'TONGUE': "SR_tongue", 'EYE_L': "SR_eye_l", 'EYE_R': "SR_eye_r",
+    'HAIR': "SR_hair",
+}
+FACE_PART_SLOT = {
+    'EYE_L': "skin_eye_l", 'EYE_R': "skin_eye_r",
+    'TEETH_UP': "skin_teeth_up", 'TEETH_LOW': "skin_teeth_low",
+    'TONGUE': "skin_tongue", 'BROWS': "skin_brows",
+    'LASHES': "skin_lashes", 'HAIR': "skin_hair",
 }
 
 
@@ -1586,7 +1593,7 @@ class SMARTRIG_OT_face_register_part(bpy.types.Operator):
         items=(('BROWS', "Brows", ""), ('LASHES', "Eyelashes", ""),
                ('TEETH_UP', "Teeth Up", ""), ('TEETH_LOW', "Teeth Low", ""),
                ('TONGUE', "Tongue", ""), ('EYE_L', "Eye L", ""),
-               ('EYE_R', "Eye R", "")),
+               ('EYE_R', "Eye R", ""), ('HAIR', "Hair", "")),
         default='BROWS')
 
     @classmethod
@@ -1616,6 +1623,47 @@ class SMARTRIG_OT_face_register_part(bpy.types.Operator):
         self.report({'INFO'}, "%s registered: %d vertices on '%s' (vertex "
                     "group %s)" % (self.part.title().replace("_", " "),
                                    len(idx), ob.name, vg_name))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_face_register_slot(bpy.types.Operator):
+    bl_idname = "smartrig.face_register_slot"
+    bl_label = "Register"
+    bl_description = ("Register THIS part from what you have selected - "
+                      "works both ways, your choice:\n"
+                      "- Object Mode: the selected mesh object goes into "
+                      "this slot\n"
+                      "- Edit Mode: the selected VERTICES are registered as "
+                      "this part (for parts merged into the face mesh)")
+    bl_options = {'REGISTER', 'UNDO'}
+    part: bpy.props.EnumProperty(
+        items=[(k, k.title().replace("_", " "), "") for k in FACE_PART_SLOT],
+        default='EYE_L')
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        label = self.part.title().replace("_", " ")
+        # ---- Edit Mode: vertex-selection registration (merged parts) ----
+        if context.mode == 'EDIT_MESH':
+            try:
+                return bpy.ops.smartrig.face_register_part(part=self.part)
+            except Exception as e:
+                self.report({'ERROR'}, str(e))
+                return {'CANCELLED'}
+        # ---- Object Mode: selected object -> this slot ----
+        body = getattr(props, "target_mesh", None)
+        cand = [o for o in context.selected_objects
+                if o.type == 'MESH' and o is not body
+                and not o.name.startswith(("WGT", "WGTS", "SR_"))
+                and o.name in context.view_layer.objects]
+        ao = context.active_object
+        ob = ao if (ao in cand) else (cand[0] if cand else None)
+        if ob is None:
+            self.report({'ERROR'}, "Select the part's mesh object first "
+                        "(or its vertices in Edit Mode)")
+            return {'CANCELLED'}
+        setattr(props, FACE_PART_SLOT[self.part], ob)
+        self.report({'INFO'}, "%s registered: %s" % (label, ob.name))
         return {'FINISHED'}
 
 
@@ -2125,6 +2173,7 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
 
 CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_objects_detect,
            SMARTRIG_OT_face_register_selected, SMARTRIG_OT_face_register_part,
+           SMARTRIG_OT_face_register_slot,
            SMARTRIG_OT_face_place,
            SMARTRIG_OT_face_project, SMARTRIG_OT_face_template,
            SMARTRIG_OT_toggle_bones,
