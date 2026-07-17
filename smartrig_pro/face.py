@@ -2417,6 +2417,44 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _ensure_selectable(context, ob):
+    """Make `ob` selectable NO MATTER how it was hidden: un-exclude and
+    un-hide every layer collection that contains it, link it to the scene
+    root if it is in no view-layer collection at all, and clear object-level
+    hiding.  (Build hides helpers with hide_viewport / collection tricks -
+    'not in View Layer' crashes came from selecting without this.)"""
+    def _walk(lc):
+        hits = []
+        try:
+            if ob.name in lc.collection.objects:
+                hits.append(lc)
+        except Exception:
+            pass
+        for ch in lc.children:
+            hits.extend(_walk(ch))
+        return hits
+
+    hits = _walk(context.view_layer.layer_collection)
+    for lc in hits:
+        try:
+            lc.exclude = False
+            lc.hide_viewport = False
+            lc.collection.hide_viewport = False
+        except Exception:
+            pass
+    if ob.name not in context.view_layer.objects:
+        try:
+            context.scene.collection.objects.link(ob)
+        except Exception:
+            pass
+    ob.hide_viewport = False
+    try:
+        ob.hide_set(False)
+    except Exception:
+        pass
+    context.view_layer.update()
+
+
 class SMARTRIG_OT_face_back_to_edit(bpy.types.Operator):
     bl_idname = "smartrig.face_back_to_edit"
     bl_label = "Back to Edit Landmarks"
@@ -2430,7 +2468,7 @@ class SMARTRIG_OT_face_back_to_edit(bpy.types.Operator):
 
     def execute(self, context):
         g = bpy.data.objects.get(GRID_NAME)
-        g.hide_set(False)
+        _ensure_selectable(context, g)
         set_rigs_hidden(True)
         if context.mode != 'OBJECT':
             try:
