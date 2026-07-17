@@ -31,59 +31,116 @@ GRID_NAME = "SR_FaceGrid"
 # shows the .R side live). Every vertex is a future bone joint - FaceIt-style:
 # the layout density at lips/eyes/brows is what makes expressions & visemes
 # possible later. Center chain first, then the .L side.
-GRID_IDX = {
-    "chin_bot": 0, "chin": 1, "chin_top": 2,
-    "lip_B": 3, "lip_T": 4, "nose_base": 5, "nose_tip": 6,
-    "nose_bridge": 7, "brow_c": 8, "forehead_c": 9,
-    "jaw_low.L": 10, "jaw_mid.L": 11, "ear_low.L": 12,
-    "temple.L": 13, "forehead_side.L": 14,
-    "lip_T.L": 15, "mouth_corner.L": 16, "lip_B.L": 17,
-    "nose_side.L": 18, "cheek_up.L": 19, "cheek_low.L": 20,
-    "eye_in.L": 21, "lid_T_in.L": 22, "lid_T.L": 23, "lid_T_out.L": 24,
-    "eye_out.L": 25, "lid_B_out.L": 26, "lid_B.L": 27, "lid_B_in.L": 28,
-    "brow_in.L": 29, "brow_mid.L": 30, "brow_out.L": 31,
-    # ---- dense FaceIt-style additions (v1.99.15, Saeed's reference) ----
-    "lip_T_in": 32, "lip_B_in": 33,                  # inner lip loop (center)
-    "philtrum": 34, "forehead_mid": 35, "nose_bridge_lo": 36,
-    "jaw_a.L": 37, "jaw_b.L": 38, "jaw_c.L": 39,     # denser jawline
-    "socket_in.L": 40, "socket_T_in.L": 41, "socket_T.L": 42,
-    "socket_T_out.L": 43, "socket_out.L": 44, "socket_B_out.L": 45,
-    "socket_B.L": 46, "socket_B_in.L": 47,           # outer eye-socket ring
-    "brow_in_mid.L": 48, "brow_out_mid.L": 49,       # 5-point brow arc
-    "nostril.L": 50, "nose_bridge_side.L": 51,
-    "cheek_mid.L": 52, "cheek_out.L": 53, "nasolabial.L": 54,
-    "lip_T_b.L": 55, "lip_B_b.L": 56,                # outer lip arcs x2
-    "lip_T_in.L": 57, "lip_B_in.L": 58, "mouth_corner_in.L": 59,
-    "forehead_lo.L": 60, "temple_lo.L": 61,
+# Clean FaceIt-style half-face template (v1.99.16, rebuilt from Saeed's
+# reference video). Coordinates in FACE UNITS: chin=(0,0), brow line v~1.0,
+# +u = .L side. Placed FLAT first (like FaceIt), edited in a locked front
+# view, then PROJECTED onto the head. Loops + short struts only - no long
+# crossing diagonals (the v1.99.15 net read as spaghetti).
+FACE_TEMPLATE = {
+    # center column
+    "chin_bot": (0, -0.07), "chin": (0, 0.0), "chin_top": (0, 0.09),
+    "lip_B": (0, 0.17), "lip_B_in": (0, 0.225), "lip_T_in": (0, 0.27),
+    "lip_T": (0, 0.33), "nose_base": (0, 0.42), "nose_tip": (0, 0.52),
+    "nose_dorsum": (0, 0.66), "nose_bridge": (0, 0.80), "brow_c": (0, 0.98),
+    "forehead_mid": (0, 1.22), "forehead_c": (0, 1.44),
+    # face outline
+    "jaw_low.L": (0.30, 0.02), "jaw_mid.L": (0.55, 0.20),
+    "jaw_up.L": (0.70, 0.45), "ear_low.L": (0.78, 0.66),
+    "temple.L": (0.79, 0.98), "forehead_side.L": (0.58, 1.30),
+    "forehead_top.L": (0.30, 1.43),
+    # brow arc (5)
+    "brow_in.L": (0.13, 1.00), "brow_in_mid.L": (0.27, 1.06),
+    "brow_mid.L": (0.41, 1.09), "brow_out_mid.L": (0.54, 1.05),
+    "brow_out.L": (0.65, 0.96),
+    # eyelid ring (8)
+    "eye_in.L": (0.245, 0.82), "lid_T_in.L": (0.31, 0.874),
+    "lid_T.L": (0.40, 0.888), "lid_T_out.L": (0.49, 0.874),
+    "eye_out.L": (0.555, 0.82), "lid_B_out.L": (0.49, 0.766),
+    "lid_B.L": (0.40, 0.752), "lid_B_in.L": (0.31, 0.766),
+    # eye socket ring (8)
+    "socket_in.L": (0.175, 0.82), "socket_T_in.L": (0.265, 0.922),
+    "socket_T.L": (0.40, 0.948), "socket_T_out.L": (0.535, 0.922),
+    "socket_out.L": (0.625, 0.82), "socket_B_out.L": (0.535, 0.718),
+    "socket_B.L": (0.40, 0.692), "socket_B_in.L": (0.265, 0.718),
+    # nose side
+    "nose_side.L": (0.115, 0.55), "nostril.L": (0.075, 0.44),
+    # cheeks + smile line
+    "cheek_up.L": (0.40, 0.56), "cheek_mid.L": (0.33, 0.45),
+    "cheek_low.L": (0.27, 0.33), "cheek_out.L": (0.585, 0.52),
+    "nasolabial.L": (0.175, 0.50),
+    # lips outer + inner
+    "lip_T.L": (0.085, 0.315), "lip_T_b.L": (0.16, 0.275),
+    "mouth_corner.L": (0.225, 0.20), "lip_B_b.L": (0.16, 0.155),
+    "lip_B.L": (0.085, 0.16),
+    "lip_T_in.L": (0.095, 0.258), "lip_B_in.L": (0.095, 0.232),
+    "mouth_corner_in.L": (0.185, 0.212),
+    # chin side + forehead column
+    "chin_side.L": (0.13, 0.03), "forehead_lo.L": (0.29, 1.23),
 }
-GRID_EDGES = [
-    (0, 1), (1, 2), (2, 3),                              # chin chain
-    (3, 17), (17, 56), (56, 16),                         # outer lip bottom
-    (4, 15), (15, 55), (55, 16),                         # outer lip top
-    (4, 32), (32, 57), (57, 59), (59, 58), (58, 33), (3, 33),   # inner lip loop
-    (16, 59),                                            # corner -> inner corner
-    (4, 34), (34, 5), (5, 6), (6, 36), (36, 7),          # philtrum + nose dorsum
-    (7, 8), (8, 35), (35, 9),                            # glabella -> forehead
-    (0, 37), (37, 10), (10, 38), (38, 11), (11, 39), (39, 12),  # jawline
-    (12, 13), (13, 14), (14, 9),                         # face outline top
-    (6, 18), (18, 50), (50, 5),                          # nostril triangle
-    (7, 51), (51, 40),                                   # bridge side -> socket
-    (18, 54), (54, 16),                                  # nasolabial fold
-    (18, 19), (19, 52), (52, 20), (20, 16),              # cheek column
-    (19, 53), (53, 12),                                  # cheek -> ear
-    (21, 22), (22, 23), (23, 24), (24, 25),              # eyelid ring top
-    (25, 26), (26, 27), (27, 28), (28, 21),              # eyelid ring bottom
-    (40, 41), (41, 42), (42, 43), (43, 44),              # socket ring top
-    (44, 45), (45, 46), (46, 47), (47, 40),              # socket ring bottom
-    (21, 40), (23, 42), (25, 44), (27, 46),              # lid -> socket spokes
-    (46, 19),                                            # socket -> cheek
-    (44, 61), (61, 13),                                  # eye corner -> temple
-    (8, 29), (29, 48), (48, 30), (30, 49), (49, 31), (31, 13),  # 5-pt brow arc
-    (30, 42), (31, 44),                                  # brow -> socket
-    (30, 60), (60, 9), (60, 14),                         # forehead column
+GRID_IDX = {n: i for i, n in enumerate(FACE_TEMPLATE)}
+_TE = [
+    # outline
+    ("chin_bot", "jaw_low.L"), ("jaw_low.L", "jaw_mid.L"),
+    ("jaw_mid.L", "jaw_up.L"), ("jaw_up.L", "ear_low.L"),
+    ("ear_low.L", "temple.L"), ("temple.L", "forehead_side.L"),
+    ("forehead_side.L", "forehead_top.L"), ("forehead_top.L", "forehead_c"),
+    # center column
+    ("chin_bot", "chin"), ("chin", "chin_top"), ("chin_top", "lip_B"),
+    ("lip_T", "nose_base"), ("nose_base", "nose_tip"),
+    ("nose_tip", "nose_dorsum"), ("nose_dorsum", "nose_bridge"),
+    ("nose_bridge", "brow_c"), ("brow_c", "forehead_mid"),
+    ("forehead_mid", "forehead_c"),
+    # outer lip ring
+    ("lip_T", "lip_T.L"), ("lip_T.L", "lip_T_b.L"),
+    ("lip_T_b.L", "mouth_corner.L"),
+    ("lip_B", "lip_B.L"), ("lip_B.L", "lip_B_b.L"),
+    ("lip_B_b.L", "mouth_corner.L"),
+    # inner lip ring + struts
+    ("lip_T_in", "lip_T_in.L"), ("lip_T_in.L", "mouth_corner_in.L"),
+    ("lip_B_in", "lip_B_in.L"), ("lip_B_in.L", "mouth_corner_in.L"),
+    ("lip_T", "lip_T_in"), ("lip_B", "lip_B_in"),
+    ("mouth_corner.L", "mouth_corner_in.L"),
+    # chin side / marionette
+    ("chin_top", "chin_side.L"), ("chin_side.L", "jaw_low.L"),
+    ("mouth_corner.L", "chin_side.L"),
+    # nose wing
+    ("nose_tip", "nose_side.L"), ("nose_side.L", "nostril.L"),
+    ("nostril.L", "nose_base"),
+    # smile line
+    ("nose_side.L", "nasolabial.L"), ("nasolabial.L", "cheek_low.L"),
+    ("cheek_low.L", "mouth_corner.L"),
+    # cheek columns
+    ("socket_B.L", "cheek_up.L"), ("cheek_up.L", "cheek_mid.L"),
+    ("cheek_mid.L", "cheek_low.L"),
+    ("socket_B_out.L", "cheek_out.L"), ("cheek_out.L", "jaw_up.L"),
+    # eyelid ring
+    ("eye_in.L", "lid_T_in.L"), ("lid_T_in.L", "lid_T.L"),
+    ("lid_T.L", "lid_T_out.L"), ("lid_T_out.L", "eye_out.L"),
+    ("eye_out.L", "lid_B_out.L"), ("lid_B_out.L", "lid_B.L"),
+    ("lid_B.L", "lid_B_in.L"), ("lid_B_in.L", "eye_in.L"),
+    # socket ring
+    ("socket_in.L", "socket_T_in.L"), ("socket_T_in.L", "socket_T.L"),
+    ("socket_T.L", "socket_T_out.L"), ("socket_T_out.L", "socket_out.L"),
+    ("socket_out.L", "socket_B_out.L"), ("socket_B_out.L", "socket_B.L"),
+    ("socket_B.L", "socket_B_in.L"), ("socket_B_in.L", "socket_in.L"),
+    # lid -> socket spokes
+    ("eye_in.L", "socket_in.L"), ("lid_T.L", "socket_T.L"),
+    ("eye_out.L", "socket_out.L"), ("lid_B.L", "socket_B.L"),
+    # bridge
+    ("socket_in.L", "nose_bridge"),
+    # brow arc
+    ("brow_c", "brow_in.L"), ("brow_in.L", "brow_in_mid.L"),
+    ("brow_in_mid.L", "brow_mid.L"), ("brow_mid.L", "brow_out_mid.L"),
+    ("brow_out_mid.L", "brow_out.L"), ("brow_out.L", "temple.L"),
+    # forehead column
+    ("brow_in_mid.L", "forehead_lo.L"), ("forehead_lo.L", "forehead_top.L"),
+    ("forehead_mid", "forehead_lo.L"),
 ]
-# grid verts projected with a RADIAL ray (skull sides); the rest use FRONT +Y
-GRID_RADIAL = {10, 11, 12, 13, 14, 37, 38, 39, 53, 61}
+GRID_EDGES = [(GRID_IDX[a], GRID_IDX[b]) for a, b in _TE]
+# outline verts projected RADIALLY from the skull axis; the rest frontally
+GRID_RADIAL = {GRID_IDX[n] for n in
+               ("jaw_low.L", "jaw_mid.L", "jaw_up.L", "ear_low.L",
+                "temple.L", "forehead_side.L", "cheek_out.L")}
 
 # landmark -> (role) ; .L markers get a mirrored, constraint-driven .R twin
 CENTER_LM = ["face_nose", "face_lip_up", "face_lip_low", "face_chin"]
@@ -382,6 +439,8 @@ def place_markers(L, ipd):
     """(Re)create the face marker empties. .R twins mirror .L live."""
     coll = _marker_coll()
     for ob in list(coll.objects):
+        if ob.name == GRID_NAME:        # never wipe the landmark net
+            continue
         bpy.data.objects.remove(ob, do_unlink=True)
 
     def mk(name, co, role):
@@ -443,147 +502,8 @@ def _lm_ref(name):
 
 
 # ------------------------------------------------------------------ face grid
-def build_face_grid(props, context):
-    """Generate the detailed landmark grid from the anchor markers and project
-    every vertex onto the head surface. The user refines it in Edit Mode
-    (mirror modifier keeps it symmetric). Every vertex = a future bone joint
-    for the lips / eyelids / brows modules."""
-    body = getattr(props, "target_mesh", None) or context.active_object
-    if body is None or body.type != 'MESH':
-        raise RuntimeError("Pick the character mesh first")
-
-    eyeL = _lm("face_eye.L")
-    eyeR = _lm("face_eye.R")
-    nose = _lm("face_nose")
-    lip_up = _lm("face_lip_up")
-    lip_low = _lm("face_lip_low")
-    chin = _lm("face_chin")
-    corner = _lm("face_mouth_corner.L")
-    brow = _lm("face_brow.L")
-    jawp = _lm("face_jaw.L")
-    ipd = float(np.linalg.norm(eyeL - eyeR))
-    xe, ze = float(eyeL[0]), float(eyeL[2])
-    yf = float(min(nose[1], lip_up[1], chin[1]))          # face front depth
-
-    def V(x, z, y=None):
-        return [float(x), float(y if y is not None else yf), float(z)]
-
-    chin_bot_z = float(chin[2]) - 0.20 * ipd
-    chin_top_z = 0.5 * (float(chin[2]) + float(lip_low[2]))
-    we, he = 0.42 * ipd, 0.20 * ipd                       # eye ring radii
-    pts = [None] * len(GRID_IDX)
-    pts[0] = V(0, chin_bot_z)
-    pts[1] = [0.0, float(chin[1]), float(chin[2])]
-    pts[2] = V(0, chin_top_z)
-    pts[3] = [0.0, float(lip_low[1]), float(lip_low[2])]
-    pts[4] = [0.0, float(lip_up[1]), float(lip_up[2])]
-    pts[5] = V(0, 0.5 * (float(nose[2]) + float(lip_up[2])))
-    pts[6] = [0.0, float(nose[1]), float(nose[2])]
-    pts[7] = V(0, ze)
-    pts[8] = V(0, float(brow[2]) + 0.05 * ipd)
-    pts[9] = V(0, float(brow[2]) + 1.0 * ipd)
-    cb = np.array([0.0, float(chin[1]) + 0.1 * ipd, chin_bot_z])
-    for i, t in ((10, 0.45), (11, 0.75), (12, 1.0)):      # jawline -> ear
-        p = cb + (jawp - cb) * t
-        pts[i] = [float(p[0]), float(p[1]), float(p[2])]
-    pts[13] = [float(0.95 * jawp[0]), float(jawp[1]), ze + 0.55 * ipd]
-    pts[14] = [float(0.60 * jawp[0]), float(jawp[1]), float(brow[2]) + 0.9 * ipd]
-    pts[15] = V(0.55 * float(corner[0]),
-                0.35 * float(corner[2]) + 0.65 * float(lip_up[2]))
-    pts[16] = [float(corner[0]), float(corner[1]), float(corner[2])]
-    pts[17] = V(0.55 * float(corner[0]),
-                0.35 * float(corner[2]) + 0.65 * float(lip_low[2]))
-    pts[18] = V(0.28 * ipd, float(nose[2]) + 0.05 * ipd)
-    pts[19] = V(xe + 0.35 * ipd, ze - 0.55 * ipd)
-    pts[20] = V(float(corner[0]) + 0.35 * ipd, float(corner[2]) + 0.10 * ipd)
-    ring = ((21, -we, 0.0), (22, -0.6 * we, +0.8 * he), (23, 0.0, +he),
-            (24, +0.6 * we, +0.8 * he), (25, +we, 0.0),
-            (26, +0.6 * we, -0.8 * he), (27, 0.0, -he), (28, -0.6 * we, -0.8 * he))
-    for i, dx, dz in ring:
-        pts[i] = V(xe + dx, ze + dz)
-    pts[29] = V(max(0.18 * ipd, xe - 0.45 * ipd), float(brow[2]) - 0.02 * ipd)
-    pts[30] = [float(brow[0]), float(brow[1]), float(brow[2])]
-    pts[31] = V(xe + 0.55 * ipd, float(brow[2]) - 0.12 * ipd)
-
-    # ---- dense FaceIt-style additions (indices 32+) ----
-    up_z, low_z = float(lip_up[2]), float(lip_low[2])
-    mouth_line = 0.5 * (up_z + low_z)
-    cx = float(corner[0])
-    pts[32] = V(0, 0.75 * up_z + 0.25 * low_z)           # inner lip top (c)
-    pts[33] = V(0, 0.25 * up_z + 0.75 * low_z)           # inner lip bottom (c)
-    pts[34] = V(0, 0.5 * (pts[5][2] + up_z))             # philtrum
-    pts[35] = V(0, 0.5 * (pts[8][2] + pts[9][2]))        # forehead mid row
-    pts[36] = V(0, 0.5 * (pts[6][2] + pts[7][2]))        # nose dorsum mid
-    for i, t in ((37, 0.225), (38, 0.60), (39, 0.875)):  # denser jawline
-        p = cb + (jawp - cb) * t
-        pts[i] = [float(p[0]), float(p[1]), float(p[2])]
-    ws, hs = 0.60 * ipd, 0.36 * ipd                      # eye SOCKET ring
-    sock = ((40, -ws, 0.0), (41, -0.6 * ws, +0.8 * hs), (42, 0.0, +hs),
-            (43, +0.6 * ws, +0.8 * hs), (44, +ws, 0.0),
-            (45, +0.6 * ws, -0.8 * hs), (46, 0.0, -hs), (47, -0.6 * ws, -0.8 * hs))
-    for i, dx, dz in sock:
-        pts[i] = V(xe + dx, ze + dz)
-    pts[48] = V(0.5 * (pts[29][0] + pts[30][0]),
-                0.5 * (pts[29][2] + pts[30][2]) + 0.03 * ipd)
-    pts[49] = V(0.5 * (pts[30][0] + pts[31][0]),
-                0.5 * (pts[30][2] + pts[31][2]) + 0.02 * ipd)
-    pts[50] = V(0.16 * ipd, float(nose[2]) - 0.10 * ipd)             # nostril
-    pts[51] = V(0.15 * ipd, ze - 0.18 * ipd)             # nose bridge side
-    pts[52] = V(0.5 * (pts[19][0] + pts[20][0]), 0.5 * (pts[19][2] + pts[20][2]))
-    pts[53] = [0.55 * pts[19][0] + 0.45 * pts[12][0],
-               0.55 * pts[19][1] + 0.45 * pts[12][1],
-               0.55 * pts[19][2] + 0.45 * pts[12][2]]    # cheek -> ear (radial)
-    pts[54] = V(0.5 * (pts[18][0] + cx) + 0.04 * ipd,
-                0.5 * (pts[18][2] + float(corner[2])))   # nasolabial
-    pts[55] = V(0.5 * (pts[15][0] + cx), 0.5 * (pts[15][2] + float(corner[2])))
-    pts[56] = V(0.5 * (pts[17][0] + cx), 0.5 * (pts[17][2] + float(corner[2])))
-    pts[57] = V(0.55 * cx, 0.5 * (pts[32][2] + mouth_line))   # inner top .L
-    pts[58] = V(0.55 * cx, 0.5 * (pts[33][2] + mouth_line))   # inner bottom .L
-    pts[59] = V(cx - 0.12 * ipd, mouth_line)             # inner mouth corner
-    pts[60] = V(0.55 * float(brow[0]), float(brow[2]) + 0.55 * ipd)  # forehead col
-    pts[61] = [0.85 * pts[13][0], pts[13][1], ze + 0.25 * ipd]       # temple low
-
-    # ---- project onto the head surface ----
-    Minv = body.matrix_world.inverted()
-    M3 = Minv.to_3x3()
-    yc = float(jawp[1]) + 0.2 * ipd                       # skull axis depth
-    head_r = max(abs(float(jawp[0])) * 2.5, 2.0 * ipd)
-    missed = 0
-    for i, p in enumerate(pts):
-        if i in GRID_RADIAL:
-            d = Vector((p[0], p[1] - yc, 0.0))
-            if d.length < 1e-6:
-                continue
-            d.normalize()
-            o = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
-            dr = -d
-        else:
-            o = Vector((p[0], p[1] - 6.0 * ipd, p[2]))
-            dr = Vector((0.0, 1.0, 0.0))
-        hit, loc, _n, _i = body.ray_cast(Minv @ o, (M3 @ dr).normalized())
-        if not hit:
-            # FRONT ray missed (forehead / socket points curve past the
-            # silhouette): retry RADIALLY from the skull axis
-            d = Vector((p[0], p[1] - yc, 0.0))
-            if d.length > 1e-6:
-                d.normalize()
-                o2 = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
-                hit, loc, _n, _i = body.ray_cast(Minv @ o2,
-                                                 (M3 @ (-d)).normalized())
-        if not hit:
-            # last resort: snap to the closest surface point - a grid vertex
-            # must NEVER be left floating in mid air
-            ok2, loc2, _n2, _i2 = body.closest_point_on_mesh(
-                Minv @ Vector((p[0], p[1], p[2])))
-            if ok2:
-                hit, loc = True, loc2
-        if hit:
-            wp = body.matrix_world @ loc
-            pts[i] = [wp.x, wp.y, wp.z]
-        else:
-            missed += 1
-
-    # ---- (re)create the grid object ----
+def _make_grid_object(pts, ipd_hint):
+    """(Re)create SR_FaceGrid from world-space pts (FACE_TEMPLATE order)."""
     old = bpy.data.objects.get(GRID_NAME)
     if old is not None:
         bpy.data.objects.remove(old, do_unlink=True)
@@ -598,11 +518,111 @@ def build_face_grid(props, context):
     mod = ob.modifiers.new("Mirror", 'MIRROR')
     mod.use_axis = (True, False, False)
     mod.use_clip = True
-    mod.merge_threshold = 0.001 * max(ipd, 0.01)
+    mod.merge_threshold = 0.001 * max(ipd_hint, 0.01)
     ob.show_in_front = True
     ob.display_type = 'WIRE'
     ob.color = (1.0, 0.55, 0.1, 1.0)
-    ob.lock_scale = (False, False, False)
+    return ob
+
+
+def flat_grid_pts(chin_pos, scale, y0):
+    """FACE_TEMPLATE laid out FLAT (XZ plane at depth y0), FaceIt-style."""
+    return [[u * scale, y0, chin_pos.z + v * scale]
+            for u, v in FACE_TEMPLATE.values()]
+
+
+def project_grid(body, ob):
+    """Snap every grid vertex onto the head: front ray -> radial ray ->
+    closest surface point (a vertex must NEVER stay floating)."""
+    co = utils.read_rest_coords(body)
+    mw = ob.matrix_world
+    pts = [list(mw @ v.co) for v in ob.data.vertices]
+    zs = [p[2] for p in pts]
+    z_lo = min(zs)
+    head = co[co[:, 2] > z_lo - 0.02]
+    if len(head) < 8:
+        raise RuntimeError("No head geometry at the grid height")
+    yc = float(np.median(head[:, 1]))
+    head_r = max(float(np.abs(head[:, 0]).max()) * 2.0, 0.1)
+    Minv = body.matrix_world.inverted()
+    M3 = Minv.to_3x3()
+    y_front = float(head[:, 1].min())
+    missed = 0
+    for i, p in enumerate(pts):
+        if i in GRID_RADIAL:
+            d = Vector((p[0], p[1] - yc, 0.0))
+            if d.length < 1e-6:
+                continue
+            d.normalize()
+            o = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
+            dr = -d
+        else:
+            o = Vector((p[0], y_front - 2.0 * head_r, p[2]))
+            dr = Vector((0.0, 1.0, 0.0))
+        hit, loc, _n, _i = body.ray_cast(Minv @ o, (M3 @ dr).normalized())
+        if not hit and i not in GRID_RADIAL:
+            d = Vector((p[0], p[1] - yc, 0.0))
+            if d.length > 1e-6:
+                d.normalize()
+                o2 = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
+                hit, loc, _n, _i = body.ray_cast(Minv @ o2,
+                                                 (M3 @ (-d)).normalized())
+        if not hit:
+            ok2, loc2, _n2, _i2 = body.closest_point_on_mesh(
+                Minv @ Vector((p[0], p[1], p[2])))
+            if ok2:
+                hit, loc = True, loc2
+        if hit:
+            wp = body.matrix_world @ loc
+            pts[i] = [wp.x, wp.y, wp.z]
+        else:
+            missed += 1
+    inv = mw.inverted()
+    for i, p in enumerate(pts):
+        ob.data.vertices[i].co = inv @ Vector(p)
+    ob.data.update()
+    return missed
+
+
+def markers_from_grid(body):
+    """Create/update the 14 anchor face markers FROM the projected grid, so
+    Build Face Base works exactly as before (grid is the source of truth)."""
+    gp = grid_points()
+    lids = [gp[n + ".L"] for n in ("eye_in", "lid_T_in", "lid_T", "lid_T_out",
+                                   "eye_out", "lid_B_out", "lid_B", "lid_B_in")]
+    eyeC = np.mean(np.array(lids), axis=0)
+    rx = 0.5 * float(np.linalg.norm(gp["eye_out.L"] - gp["eye_in.L"]))
+    eyeC = eyeC + np.array([0.0, 0.55 * rx, 0.0])       # push to eyeball depth
+    ipd = 2.0 * abs(float(eyeC[0]))
+    ear = 0.5 * (gp["ear_low.L"] + gp["temple.L"])
+    L = {
+        "face_nose": [float(v) for v in gp["nose_tip"]],
+        "face_lip_up": [float(v) for v in gp["lip_T"]],
+        "face_lip_low": [float(v) for v in gp["lip_B"]],
+        "face_chin": [float(v) for v in gp["chin"]],
+        "face_mouth_corner.L": [float(v) for v in gp["mouth_corner.L"]],
+        "face_brow.L": [float(v) for v in gp["brow_mid.L"]],
+        "face_eye.L": [float(v) for v in eyeC],
+        "face_jaw.L": [float(v) for v in gp["ear_low.L"]],
+        "face_ear.L": [float(v) for v in ear],
+    }
+    place_markers(L, max(ipd, 0.02))
+    return ipd
+
+
+def build_face_grid(props, context):
+    """LEGACY path (markers already exist, e.g. via face_template/face_detect):
+    lay the clean template flat from the marker anchors, then project."""
+    body = getattr(props, "target_mesh", None) or context.active_object
+    if body is None or body.type != 'MESH':
+        raise RuntimeError("Pick the character mesh first")
+    chin = _lm("face_chin")
+    eyeL = _lm("face_eye.L")
+    scale = max(float(eyeL[0]) / 0.40, 0.02)      # eye center sits at u=0.40
+    y0 = float(min(_lm("face_nose")[1], chin[1]))
+    pts = flat_grid_pts(Vector((0.0, y0, float(chin[2]))), scale, y0)
+    ob = _make_grid_object(pts, 0.42 * 2.0 * scale)
+    missed = project_grid(body, ob)
     return ob, missed
 
 
@@ -1459,6 +1479,143 @@ class SMARTRIG_OT_toggle_bones(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_face_place(bpy.types.Operator):
+    bl_idname = "smartrig.face_place"
+    bl_label = "Face Markers"
+    bl_description = ("FaceIt-style placement: the landmark net follows the "
+                      "mouse - CLICK on the CHIN, move the mouse to match the "
+                      "FACE WIDTH, click to confirm. Then refine the flat net "
+                      "in the locked front view and press Project Landmarks")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.smartrig
+        ob = getattr(props, "target_mesh", None) or context.active_object
+        return ob is not None and ob.type == 'MESH'
+
+    def _mouse_plane(self, context, event):
+        from bpy_extras import view3d_utils as v3u
+        region = context.region
+        rv3d = context.region_data
+        co = (event.mouse_region_x, event.mouse_region_y)
+        return v3u.region_2d_to_location_3d(
+            region, rv3d, co, Vector((0.0, self.y0, self.z_guess)))
+
+    def invoke(self, context, event):
+        props = context.scene.smartrig
+        self.body = getattr(props, "target_mesh", None) or context.active_object
+        if context.area is None or context.area.type != 'VIEW_3D':
+            self.report({'ERROR'}, "Run from a 3D viewport")
+            return {'CANCELLED'}
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        co = utils.read_rest_coords(self.body)
+        top = float(co[:, 2].max())
+        hgt = top - float(co[:, 2].min())
+        head = co[co[:, 2] > top - 0.15 * hgt]
+        self.y0 = float(head[:, 1].min()) - 0.01 * hgt   # just in front
+        self.z_guess = top - 0.12 * hgt
+        half_w = float(np.percentile(np.abs(head[:, 0]), 98))
+        self.scale = max(half_w / 0.79, 1e-4)
+        self.chin = Vector((0.0, self.y0, self.z_guess))
+        pts = flat_grid_pts(self.chin, self.scale, self.y0)
+        self.ob = _make_grid_object(pts, 0.84 * self.scale)
+        set_rigs_hidden(True)                            # bones out of the way
+        from . import markers as _mk
+        _mk.lock_front_view(context, True)               # FaceIt: front locked
+        self.stage = 'PLACE'
+        context.window.cursor_modal_set('CROSSHAIR')
+        context.area.header_text_set(
+            "Face Markers  -  CLICK on the CHIN   (Esc / Right-click: cancel)")
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _rebuild(self):
+        pts = flat_grid_pts(self.chin, self.scale, self.y0)
+        for i, p in enumerate(pts):
+            self.ob.data.vertices[i].co = Vector(p)
+        self.ob.data.update()
+
+    def _finish(self, context):
+        context.window.cursor_modal_restore()
+        context.area.header_text_set(None)
+
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            p = self._mouse_plane(context, event)
+            if p is not None:
+                if self.stage == 'PLACE':
+                    self.chin = Vector((0.0, self.y0, p.z))
+                else:
+                    self.scale = max(abs(p.x) / 0.79, 1e-4)
+                self._rebuild()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            if self.stage == 'PLACE':
+                self.stage = 'SCALE'
+                context.area.header_text_set(
+                    "Face Markers  -  move the mouse to the SIDE of the face "
+                    "to match the WIDTH, then CLICK   (Esc: cancel)")
+                return {'RUNNING_MODAL'}
+            # confirmed: drop into Edit Mode on the flat net (front stays locked)
+            self._finish(context)
+            bpy.ops.object.select_all(action='DESELECT')
+            self.ob.select_set(True)
+            context.view_layer.objects.active = self.ob
+            bpy.ops.object.mode_set(mode='EDIT')
+            self.report({'INFO'}, "Refine the net (G/S/R, R follows L), then "
+                        "press Project Landmarks")
+            return {'FINISHED'}
+        if event.type in ('RIGHTMOUSE', 'ESC'):
+            self._finish(context)
+            bpy.data.objects.remove(self.ob, do_unlink=True)
+            from . import markers as _mk
+            _mk.lock_front_view(context, False)
+            set_rigs_hidden(False)
+            return {'CANCELLED'}
+        return {'PASS_THROUGH'}
+
+
+class SMARTRIG_OT_face_project(bpy.types.Operator):
+    bl_idname = "smartrig.face_project"
+    bl_label = "Project Landmarks"
+    bl_description = ("Project the flat landmark net onto the head surface "
+                      "(FaceIt-style), create the anchor markers from it and "
+                      "unlock the view. Register the mouth/eye loops or Build "
+                      "Face Base next")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bpy.data.objects.get(GRID_NAME) is not None
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        body = getattr(props, "target_mesh", None) or context.active_object
+        if body is None or body.type != 'MESH':
+            self.report({'ERROR'}, "Pick the character mesh first")
+            return {'CANCELLED'}
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        ob = bpy.data.objects.get(GRID_NAME)
+        try:
+            missed = project_grid(body, ob)
+            markers_from_grid(body)
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+        from . import markers as _mk
+        _mk.lock_front_view(context, False)
+        if missed:
+            self.report({'WARNING'}, "%d point(s) could not be projected - "
+                        "move them in Edit Mode" % missed)
+        else:
+            self.report({'INFO'}, "Landmarks projected onto the face - "
+                        "register the mouth/eye loops, then Build Face Base")
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_template(bpy.types.Operator):
     bl_idname = "smartrig.face_template"
     bl_label = "Face Markers"
@@ -1691,7 +1848,8 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
         return {'FINISHED'}
 
 
-CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_template,
+CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_place,
+           SMARTRIG_OT_face_project, SMARTRIG_OT_face_template,
            SMARTRIG_OT_toggle_bones,
            SMARTRIG_OT_face_build_base,
            SMARTRIG_OT_face_grid, SMARTRIG_OT_face_loop_register,

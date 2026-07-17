@@ -519,46 +519,45 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         if rig is not None:
             built = "DEF-jaw" in rig.data.bones
 
-        # ---- Step 1: FaceIt-style marker template (Saeed: NO auto-detect) ----
+        # ---- Step 1: FaceIt-style guided placement (Saeed's video) ----
+        has_grid1 = bpy.data.objects.get(_fc.GRID_NAME) is not None
         st = _step(box, 1, "Face Markers", 'EMPTY_DATA',
-                   'done' if has_mk else 'active')
+                   'done' if has_grid1 else 'active')
         r = st.row(); r.scale_y = 1.5
-        r.operator("smartrig.face_template",
-                   text=("Reset Face Markers" if has_mk else "Face Markers"),
+        r.operator("smartrig.face_place",
+                   text=("Restart Face Markers" if has_grid1 else "Face Markers"),
                    icon='EMPTY_DATA')
-        if not has_mk:
-            st.label(text="FaceIt-style template on the head -", icon='INFO')
-            st.label(text="drag each marker onto the face.")
+        if not has_grid1:
+            st.label(text="Click the CHIN, move to match the", icon='INFO')
+            st.label(text="face WIDTH, click to confirm.")
 
-        # ---- Step 2: adjust ----
-        st = _step(box, 2, "Adjust Markers", 'EMPTY_DATA',
-                   'done' if built else ('active' if has_mk else 'todo'))
-        if has_mk and not built:
-            st.label(text="Move any glowing marker into place.", icon='MOUSE_MOVE')
-            st.label(text="The R side follows the L side.")
+        # ---- Step 2: adjust the flat net ----
+        st = _step(box, 2, "Adjust Landmarks", 'EDITMODE_HLT',
+                   'done' if has_mk or built else
+                   ('active' if has_grid1 else 'todo'))
+        if has_grid1 and not built:
+            st.label(text="Edit Mode: G/S/R the points onto", icon='MOUSE_MOVE')
+            st.label(text="lips / eyes / brows. R follows L.")
             st.operator("smartrig.face_clear", text="Remove Face Markers",
                         icon='X')
 
-        # ---- Step 3: detail grid (FaceIt-style, every vertex = a joint) ----
-        has_grid = bpy.data.objects.get(_fc.GRID_NAME) is not None
-        st = _step(box, 3, "Face Grid (detail)", 'MESH_GRID',
-                   'done' if has_grid else ('active' if has_mk and not built
-                                            else 'todo'))
-        if has_mk:
+        # ---- Step 3: project (FaceIt-style) + register loops ----
+        has_grid = has_grid1
+        st = _step(box, 3, "Project Landmarks", 'MOD_SHRINKWRAP',
+                   'done' if has_mk else ('active' if has_grid and not built
+                                          else 'todo'))
+        if has_grid:
             r = st.row(); r.scale_y = 1.5
-            r.operator("smartrig.face_grid",
-                       text=("Regenerate Face Grid" if has_grid
-                             else "Generate Face Grid"), icon='MESH_GRID')
-            if has_grid:
-                st.label(text="Refine in Edit Mode (R mirrors L).",
-                         icon='EDITMODE_HLT')
+            r.operator("smartrig.face_project",
+                       text=("Re-project Landmarks" if has_mk
+                             else "Project Landmarks"), icon='MOD_SHRINKWRAP')
+            if has_mk:
                 st.operator("smartrig.face_loop_register",
                             text="Register Selected Loop", icon='EDGESEL')
                 st.label(text="Select the mouth / eye loop on the")
                 st.label(text="body (Edit Mode), then click above.")
             else:
-                st.label(text="Lips loop, eye rings, brow arcs -", icon='INFO')
-                st.label(text="projected onto the head surface.")
+                st.label(text="Snaps the flat net onto the face.", icon='INFO')
 
         # ---- Step 4: build ----
         st = _step(box, 4, "Build Face Base", 'OUTLINER_OB_ARMATURE',
