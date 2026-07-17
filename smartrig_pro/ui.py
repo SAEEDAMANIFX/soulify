@@ -531,20 +531,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         rp.operator_menu_enum("smartrig.face_register_part", "part",
                               text="Register Selection As...",
                               icon='GROUP_VERTEX')
-        # merged-part badges (vertex groups on the main mesh)
-        if props.target_mesh is not None:
-            _vgs = props.target_mesh.vertex_groups
-            _reg = [lbl for key, lbl in (("SR_brows", "Brows"),
-                                         ("SR_lashes", "Lashes"),
-                                         ("SR_teeth_up", "TeethUp"),
-                                         ("SR_teeth_low", "TeethLow"),
-                                         ("SR_tongue", "Tongue"),
-                                         ("SR_eye_l", "EyeL"),
-                                         ("SR_eye_r", "EyeR"))
-                    if _vgs.get(key) is not None]
-            if _reg:
-                ob_box.label(text="In-mesh: " + ", ".join(_reg),
-                             icon='CHECKMARK')
+
         col = ob_box.column(align=True)
         col.prop(props, "target_mesh", text="Main", icon='USER')
         for _attr, _lbl, _icn, _part in (
@@ -557,10 +544,24 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 ("skin_lashes", "Eyelashes", 'CURVE_NCURVE', 'LASHES'),
                 ("skin_hair", "Hair", 'OUTLINER_OB_CURVES', 'HAIR')):
             _r = col.row(align=True)
-            _r.prop(props, _attr, text=_lbl, icon=_icn)
-            _op = _r.operator("smartrig.face_register_slot", text="",
-                              icon='RESTRICT_SELECT_OFF')
-            _op.part = _part
+            _vg = None
+            if getattr(props, _attr) is None and props.target_mesh is not None:
+                _vg = props.target_mesh.vertex_groups.get(
+                    _fc.FACE_PART_VG.get(_part, ""))
+            if _vg is not None:
+                # in-mesh registration: show it FILLED like a chosen object
+                _r.label(text="%s:" % _lbl, icon=_icn)
+                _bx = _r.box(); _bx.scale_y = 0.55
+                _bx.label(text="%s  ›  vertices" % props.target_mesh.name,
+                          icon='CHECKMARK')
+                _xo = _r.operator("smartrig.face_unregister_part", text="",
+                                  icon='X')
+                _xo.part = _part
+            else:
+                _r.prop(props, _attr, text=_lbl, icon=_icn)
+                _op = _r.operator("smartrig.face_register_slot", text="",
+                                  icon='RESTRICT_SELECT_OFF')
+                _op.part = _part
 
         # ---- Step 1: FaceIt-style guided placement (Saeed's video) ----
         has_grid1 = bpy.data.objects.get(_fc.GRID_NAME) is not None

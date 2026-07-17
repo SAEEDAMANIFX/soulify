@@ -1667,6 +1667,28 @@ class SMARTRIG_OT_face_register_slot(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_face_unregister_part(bpy.types.Operator):
+    bl_idname = "smartrig.face_unregister_part"
+    bl_label = "Unregister Part"
+    bl_description = "Remove this in-mesh registration (deletes its SR_* vertex group)"
+    bl_options = {'REGISTER', 'UNDO'}
+    part: bpy.props.EnumProperty(
+        items=[(k, k.title().replace("_", " "), "") for k in FACE_PART_SLOT],
+        default='BROWS')
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        body = getattr(props, "target_mesh", None)
+        if body is None:
+            return {'CANCELLED'}
+        vg = body.vertex_groups.get(FACE_PART_VG[self.part])
+        if vg is not None:
+            body.vertex_groups.remove(vg)
+            self.report({'INFO'}, "%s unregistered"
+                        % self.part.title().replace("_", " "))
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_register_selected(bpy.types.Operator):
     bl_idname = "smartrig.face_register_selected"
     bl_label = "Register Selected"
@@ -2173,7 +2195,7 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
 
 CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_objects_detect,
            SMARTRIG_OT_face_register_selected, SMARTRIG_OT_face_register_part,
-           SMARTRIG_OT_face_register_slot,
+           SMARTRIG_OT_face_register_slot, SMARTRIG_OT_face_unregister_part,
            SMARTRIG_OT_face_place,
            SMARTRIG_OT_face_project, SMARTRIG_OT_face_template,
            SMARTRIG_OT_toggle_bones,
