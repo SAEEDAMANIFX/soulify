@@ -502,6 +502,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         hd = box.row(align=True)
         hd.prop(props, "show_face", text="Face Rig (beta)", emboss=False,
                 icon=('TRIA_DOWN' if props.show_face else 'TRIA_RIGHT'))
+        hd.operator("smartrig.toggle_bones", text="", icon='HIDE_OFF')
         hd.label(text="", icon='MONKEY')
         if not props.show_face:
             return

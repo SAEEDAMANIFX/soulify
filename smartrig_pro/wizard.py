@@ -245,6 +245,54 @@ def _draw_fingers(region, rv3d):
     gpu.state.blend_set('NONE')
 
 
+def _draw_face_grid(region, rv3d):
+    """FaceIt-style net for SR_FaceGrid: a dot on every vertex + thin lines
+    along the edges, BOTH halves (evaluated mesh includes the mirror)."""
+    ob = bpy.data.objects.get("SR_FaceGrid")
+    if ob is None or not ob.visible_get():
+        return
+    try:
+        dg = bpy.context.evaluated_depsgraph_get()
+        me = ob.evaluated_get(dg).to_mesh()
+    except Exception:
+        return
+    mw = ob.matrix_world
+    pts2 = []
+    for v in me.vertices:
+        p = view3d_utils.location_3d_to_region_2d(region, rv3d, mw @ v.co)
+        pts2.append(p)
+    lines = []
+    for e in me.edges:
+        a, b = pts2[e.vertices[0]], pts2[e.vertices[1]]
+        if a and b:
+            lines.append((a.x, a.y)); lines.append((b.x, b.y))
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    if lines:
+        gpu.state.line_width_set(1.4)
+        b = batch_for_shader(shader, 'LINES', {"pos": lines})
+        shader.bind()
+        shader.uniform_float("color", (1.0, 0.62, 0.15, 0.85))
+        b.draw(shader)
+        gpu.state.line_width_set(1.0)
+    for p in pts2:
+        if not p:
+            continue
+        b = batch_for_shader(shader, 'TRI_FAN', {"pos": _circle(p.x, p.y, 4.4)})
+        shader.bind()
+        shader.uniform_float("color", (0.04, 0.04, 0.04, 0.95))
+        b.draw(shader)
+        b = batch_for_shader(shader, 'TRI_FAN', {"pos": _circle(p.x, p.y, 2.2)})
+        shader.bind()
+        shader.uniform_float("color", (1.0, 0.75, 0.25, 1.0))
+        b.draw(shader)
+    gpu.state.blend_set('NONE')
+    try:
+        ob.evaluated_get(dg).to_mesh_clear()
+    except Exception:
+        pass
+
+
 def _draw_cb():
     try:
         region = bpy.context.region
@@ -263,6 +311,7 @@ def _draw_cb():
             _draw_glow(region, rv3d)
         if has_face:
             _draw_face_labels(region, rv3d)
+        _draw_face_grid(region, rv3d)
         if has_fing:
             _draw_fingers(region, rv3d)
     except Exception:

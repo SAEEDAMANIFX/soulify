@@ -42,19 +42,48 @@ GRID_IDX = {
     "eye_in.L": 21, "lid_T_in.L": 22, "lid_T.L": 23, "lid_T_out.L": 24,
     "eye_out.L": 25, "lid_B_out.L": 26, "lid_B.L": 27, "lid_B_in.L": 28,
     "brow_in.L": 29, "brow_mid.L": 30, "brow_out.L": 31,
+    # ---- dense FaceIt-style additions (v1.99.15, Saeed's reference) ----
+    "lip_T_in": 32, "lip_B_in": 33,                  # inner lip loop (center)
+    "philtrum": 34, "forehead_mid": 35, "nose_bridge_lo": 36,
+    "jaw_a.L": 37, "jaw_b.L": 38, "jaw_c.L": 39,     # denser jawline
+    "socket_in.L": 40, "socket_T_in.L": 41, "socket_T.L": 42,
+    "socket_T_out.L": 43, "socket_out.L": 44, "socket_B_out.L": 45,
+    "socket_B.L": 46, "socket_B_in.L": 47,           # outer eye-socket ring
+    "brow_in_mid.L": 48, "brow_out_mid.L": 49,       # 5-point brow arc
+    "nostril.L": 50, "nose_bridge_side.L": 51,
+    "cheek_mid.L": 52, "cheek_out.L": 53, "nasolabial.L": 54,
+    "lip_T_b.L": 55, "lip_B_b.L": 56,                # outer lip arcs x2
+    "lip_T_in.L": 57, "lip_B_in.L": 58, "mouth_corner_in.L": 59,
+    "forehead_lo.L": 60, "temple_lo.L": 61,
 }
 GRID_EDGES = [
     (0, 1), (1, 2), (2, 3),                              # chin chain
-    (3, 17), (17, 16), (16, 15), (15, 4),                # lip loop (half)
-    (4, 5), (5, 6), (6, 7), (7, 8), (8, 9),              # nose -> forehead
-    (0, 10), (10, 11), (11, 12), (12, 13), (13, 14), (14, 9),   # face outline
-    (6, 18), (18, 19), (19, 20), (20, 16),               # nostril + cheek
-    (21, 22), (22, 23), (23, 24), (24, 25),              # eye ring top
-    (25, 26), (26, 27), (27, 28), (28, 21),              # eye ring bottom
-    (29, 30), (30, 31), (8, 29), (31, 13),               # brow arc
+    (3, 17), (17, 56), (56, 16),                         # outer lip bottom
+    (4, 15), (15, 55), (55, 16),                         # outer lip top
+    (4, 32), (32, 57), (57, 59), (59, 58), (58, 33), (3, 33),   # inner lip loop
+    (16, 59),                                            # corner -> inner corner
+    (4, 34), (34, 5), (5, 6), (6, 36), (36, 7),          # philtrum + nose dorsum
+    (7, 8), (8, 35), (35, 9),                            # glabella -> forehead
+    (0, 37), (37, 10), (10, 38), (38, 11), (11, 39), (39, 12),  # jawline
+    (12, 13), (13, 14), (14, 9),                         # face outline top
+    (6, 18), (18, 50), (50, 5),                          # nostril triangle
+    (7, 51), (51, 40),                                   # bridge side -> socket
+    (18, 54), (54, 16),                                  # nasolabial fold
+    (18, 19), (19, 52), (52, 20), (20, 16),              # cheek column
+    (19, 53), (53, 12),                                  # cheek -> ear
+    (21, 22), (22, 23), (23, 24), (24, 25),              # eyelid ring top
+    (25, 26), (26, 27), (27, 28), (28, 21),              # eyelid ring bottom
+    (40, 41), (41, 42), (42, 43), (43, 44),              # socket ring top
+    (44, 45), (45, 46), (46, 47), (47, 40),              # socket ring bottom
+    (21, 40), (23, 42), (25, 44), (27, 46),              # lid -> socket spokes
+    (46, 19),                                            # socket -> cheek
+    (44, 61), (61, 13),                                  # eye corner -> temple
+    (8, 29), (29, 48), (48, 30), (30, 49), (49, 31), (31, 13),  # 5-pt brow arc
+    (30, 42), (31, 44),                                  # brow -> socket
+    (30, 60), (60, 9), (60, 14),                         # forehead column
 ]
-# grid verts projected with a FRONT ray (+Y); the rest use a RADIAL ray
-GRID_RADIAL = {10, 11, 12, 13, 14}
+# grid verts projected with a RADIAL ray (skull sides); the rest use FRONT +Y
+GRID_RADIAL = {10, 11, 12, 13, 14, 37, 38, 39, 53, 61}
 
 # landmark -> (role) ; .L markers get a mirrored, constraint-driven .R twin
 CENTER_LM = ["face_nose", "face_lip_up", "face_lip_low", "face_chin"]
@@ -476,6 +505,44 @@ def build_face_grid(props, context):
     pts[30] = [float(brow[0]), float(brow[1]), float(brow[2])]
     pts[31] = V(xe + 0.55 * ipd, float(brow[2]) - 0.12 * ipd)
 
+    # ---- dense FaceIt-style additions (indices 32+) ----
+    up_z, low_z = float(lip_up[2]), float(lip_low[2])
+    mouth_line = 0.5 * (up_z + low_z)
+    cx = float(corner[0])
+    pts[32] = V(0, 0.75 * up_z + 0.25 * low_z)           # inner lip top (c)
+    pts[33] = V(0, 0.25 * up_z + 0.75 * low_z)           # inner lip bottom (c)
+    pts[34] = V(0, 0.5 * (pts[5][2] + up_z))             # philtrum
+    pts[35] = V(0, 0.5 * (pts[8][2] + pts[9][2]))        # forehead mid row
+    pts[36] = V(0, 0.5 * (pts[6][2] + pts[7][2]))        # nose dorsum mid
+    for i, t in ((37, 0.225), (38, 0.60), (39, 0.875)):  # denser jawline
+        p = cb + (jawp - cb) * t
+        pts[i] = [float(p[0]), float(p[1]), float(p[2])]
+    ws, hs = 0.60 * ipd, 0.36 * ipd                      # eye SOCKET ring
+    sock = ((40, -ws, 0.0), (41, -0.6 * ws, +0.8 * hs), (42, 0.0, +hs),
+            (43, +0.6 * ws, +0.8 * hs), (44, +ws, 0.0),
+            (45, +0.6 * ws, -0.8 * hs), (46, 0.0, -hs), (47, -0.6 * ws, -0.8 * hs))
+    for i, dx, dz in sock:
+        pts[i] = V(xe + dx, ze + dz)
+    pts[48] = V(0.5 * (pts[29][0] + pts[30][0]),
+                0.5 * (pts[29][2] + pts[30][2]) + 0.03 * ipd)
+    pts[49] = V(0.5 * (pts[30][0] + pts[31][0]),
+                0.5 * (pts[30][2] + pts[31][2]) + 0.02 * ipd)
+    pts[50] = V(0.16 * ipd, float(nose[2]) - 0.10 * ipd)             # nostril
+    pts[51] = V(0.15 * ipd, ze - 0.18 * ipd)             # nose bridge side
+    pts[52] = V(0.5 * (pts[19][0] + pts[20][0]), 0.5 * (pts[19][2] + pts[20][2]))
+    pts[53] = [0.55 * pts[19][0] + 0.45 * pts[12][0],
+               0.55 * pts[19][1] + 0.45 * pts[12][1],
+               0.55 * pts[19][2] + 0.45 * pts[12][2]]    # cheek -> ear (radial)
+    pts[54] = V(0.5 * (pts[18][0] + cx) + 0.04 * ipd,
+                0.5 * (pts[18][2] + float(corner[2])))   # nasolabial
+    pts[55] = V(0.5 * (pts[15][0] + cx), 0.5 * (pts[15][2] + float(corner[2])))
+    pts[56] = V(0.5 * (pts[17][0] + cx), 0.5 * (pts[17][2] + float(corner[2])))
+    pts[57] = V(0.55 * cx, 0.5 * (pts[32][2] + mouth_line))   # inner top .L
+    pts[58] = V(0.55 * cx, 0.5 * (pts[33][2] + mouth_line))   # inner bottom .L
+    pts[59] = V(cx - 0.12 * ipd, mouth_line)             # inner mouth corner
+    pts[60] = V(0.55 * float(brow[0]), float(brow[2]) + 0.55 * ipd)  # forehead col
+    pts[61] = [0.85 * pts[13][0], pts[13][1], ze + 0.25 * ipd]       # temple low
+
     # ---- project onto the head surface ----
     Minv = body.matrix_world.inverted()
     M3 = Minv.to_3x3()
@@ -494,6 +561,22 @@ def build_face_grid(props, context):
             o = Vector((p[0], p[1] - 6.0 * ipd, p[2]))
             dr = Vector((0.0, 1.0, 0.0))
         hit, loc, _n, _i = body.ray_cast(Minv @ o, (M3 @ dr).normalized())
+        if not hit:
+            # FRONT ray missed (forehead / socket points curve past the
+            # silhouette): retry RADIALLY from the skull axis
+            d = Vector((p[0], p[1] - yc, 0.0))
+            if d.length > 1e-6:
+                d.normalize()
+                o2 = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
+                hit, loc, _n, _i = body.ray_cast(Minv @ o2,
+                                                 (M3 @ (-d)).normalized())
+        if not hit:
+            # last resort: snap to the closest surface point - a grid vertex
+            # must NEVER be left floating in mid air
+            ok2, loc2, _n2, _i2 = body.closest_point_on_mesh(
+                Minv @ Vector((p[0], p[1], p[2])))
+            if ok2:
+                hit, loc = True, loc2
         if hit:
             wp = body.matrix_world @ loc
             pts[i] = [wp.x, wp.y, wp.z]
@@ -1331,6 +1414,51 @@ class SMARTRIG_OT_face_detect(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _face_rigs():
+    """Every armature the face flow cares about (metarig / generated / face)."""
+    out = []
+    for nm in ("SR_Metarig", "SR_Rig", FACE_RIG_NAME):
+        ob = bpy.data.objects.get(nm)
+        if ob is not None and ob.type == 'ARMATURE':
+            out.append(ob)
+    try:
+        from . import metarig as _mr
+        g = _mr._generated_rig()
+        if g is not None and g not in out:
+            out.append(g)
+    except Exception:
+        pass
+    return out
+
+
+def set_rigs_hidden(hide):
+    n = 0
+    for ob in _face_rigs():
+        try:
+            ob.hide_set(bool(hide)); n += 1
+        except Exception:
+            pass
+    return n
+
+
+class SMARTRIG_OT_toggle_bones(bpy.types.Operator):
+    bl_idname = "smartrig.toggle_bones"
+    bl_label = "Show / Hide Bones"
+    bl_description = ("Quickly hide or show every rig (metarig, generated "
+                      "rig, face rig) - e.g. while placing the face markers")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        rigs = _face_rigs()
+        if not rigs:
+            self.report({'INFO'}, "No rig in the scene yet")
+            return {'CANCELLED'}
+        hide = not all(ob.hide_get() for ob in rigs)
+        set_rigs_hidden(hide)
+        self.report({'INFO'}, "Bones hidden" if hide else "Bones visible")
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_template(bpy.types.Operator):
     bl_idname = "smartrig.face_template"
     bl_label = "Face Markers"
@@ -1358,9 +1486,12 @@ class SMARTRIG_OT_face_template(bpy.types.Operator):
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
         place_markers(L, ipd)
+        # the bones get in the way of the face markers: hide them now,
+        # Build Face Base brings them back automatically
+        set_rigs_hidden(True)
         self.report({'INFO'}, "Face template placed - drag each marker onto "
                     "the face (R follows L), then register the mouth/eye "
-                    "loops and Build")
+                    "loops and Build. Bones hidden (toggle in the panel)")
         return {'FINISHED'}
 
 
@@ -1398,6 +1529,7 @@ class SMARTRIG_OT_face_build_base(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
+        set_rigs_hidden(False)          # markers done - bones come back
         where = "standalone rig '%s'" % rig.name if standalone else \
                 "rig '%s'" % rig.name
         self.report({'INFO'}, "Face rig built on %s - %d jaw verts, %d "
@@ -1560,6 +1692,7 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
 
 
 CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_template,
+           SMARTRIG_OT_toggle_bones,
            SMARTRIG_OT_face_build_base,
            SMARTRIG_OT_face_grid, SMARTRIG_OT_face_loop_register,
            SMARTRIG_OT_face_clear)
