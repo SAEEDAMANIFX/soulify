@@ -170,6 +170,10 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         if props.ui_tab == 'ANIM':
             self._draw_animate(layout, context)
             return
+        if props.ui_tab == 'CHAR':
+            from . import character as _char
+            _char.draw(layout, context)
+            return
         # ===== RIG phase =====
         _rig_obj = None
         try:
@@ -651,6 +655,8 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             if built:
                 st.operator("smartrig.face_back_to_edit",
                             text="Back to Edit Landmarks", icon='LOOP_BACK')
+                st.operator("smartrig.face_start_over",
+                            text="Cancel / Start Over", icon='CANCEL')
                 st.label(text="Jaw + eye aim + ears are live.", icon='CHECKMARK')
                 st.label(text="CTL-jaw rotate X = open mouth;")
                 st.label(text="CTL-eyes = look target.")

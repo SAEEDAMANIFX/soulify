@@ -712,7 +712,13 @@ class SmartRigProps(PropertyGroup):
                 "skinning and Rigify samples",
                 'OUTLINER_OB_ARMATURE', 0),
                ('ANIM', "Animate", "Cloth dynamics, locomotion, poses and more",
-                'PLAY', 2)])
+                'PLAY', 2),
+               ('CHAR', "Character", "Name, organize, check & fix - make the "
+                "character link-ready for projects", 'USER', 3)])
+    char_name: StringProperty(
+        name="Character Name", default="",
+        description="Used for the CH-/RIG-/GEO- names when organizing the "
+                    "character for linking into projects")
     rig_sub: EnumProperty(
         name="Rig Section", default='BUILD',
         items=[('BUILD', "Build", "Markers, metarig and Rigify samples"),
