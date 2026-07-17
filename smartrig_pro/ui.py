@@ -661,6 +661,19 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         if built:
             r = st.row(); r.scale_y = 1.3
             r.operator("smartrig.organize_rig", icon='OUTLINER_COLLECTION')
+            r = st.row(); r.scale_y = 1.3
+            r.operator("smartrig.face_rig_check", icon='CHECKMARK')
+            _chk = context.scene.get("sr_rig_check")
+            if _chk:
+                import json as _json
+                _bx = st.box()
+                try:
+                    for _lbl, _val, _ok in _json.loads(_chk):
+                        _rr = _bx.row()
+                        _rr.label(text="%s - %s" % (_lbl, _val),
+                                  icon=('CHECKMARK' if _ok else 'CANCEL'))
+                except Exception:
+                    pass
             from . import expressions as _expr
             _expr.draw_panel(st, context)
 

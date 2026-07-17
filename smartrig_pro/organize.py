@@ -209,7 +209,150 @@ class SMARTRIG_OT_organize_rig(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_classes = (SMARTRIG_OT_organize_rig,)
+class SMARTRIG_OT_face_rig_check(bpy.types.Operator):
+    """Verify the rig is healthy AFTER binding, BEFORE loading expressions:
+    drives every face function (jaw, eyes, blink, lips, brows, teeth,
+    tongue...) and MEASURES the mesh response + corner accuracy.
+    Results show below the button"""
+    bl_idname = "smartrig.face_rig_check"
+    bl_label = "Rig Check (after binding)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        import json
+        from mathutils import Vector
+        from . import face as _face
+        from . import expressions as _ex
+        sc = context.scene
+        props = sc.smartrig
+        rig = _face._target_rig()
+        body = getattr(props, "target_mesh", None)
+        if rig is None or body is None:
+            self.report({'ERROR'}, "Build + bind the face rig first")
+            return {'CANCELLED'}
+        sc.frame_set(0)
+        meshes = [ob for ob in sc.objects if ob.type == 'MESH'
+                  and not ob.name.startswith(("HLP-", "WGT", "SR_", "GEO-"))
+                  and any(m.type == 'ARMATURE' and m.object is rig
+                          for m in ob.modifiers)]
+        dg = context.evaluated_depsgraph_get()
+
+        def cos(ob):
+            context.view_layer.update()
+            dg.update()
+            ev = ob.evaluated_get(dg).to_mesh()
+            c = [v.co.copy() for v in ev.vertices]
+            ob.evaluated_get(dg).to_mesh_clear()
+            return c
+
+        base = {ob.name: cos(ob) for ob in meshes}
+
+        def probe(bone, loc_arm=None, locl=None, rot=None):
+            pb = rig.pose.bones.get(bone)
+            if pb is None:
+                return None
+            old_loc = pb.location.copy()
+            old_mode = pb.rotation_mode
+            old_rot = None
+            if rot is not None:
+                pb.rotation_mode = 'XYZ'
+                old_rot = pb.rotation_euler.copy()
+                pb.rotation_euler = rot
+            if loc_arm is not None:
+                pb.location = pb.bone.matrix_local.to_3x3().inverted() \
+                    @ Vector(loc_arm)
+            if locl is not None:
+                pb.location = locl
+            mx = 0.0
+            for ob in meshes:
+                c = cos(ob)
+                b = base[ob.name]
+                if len(c) != len(b):
+                    continue
+                mx = max(mx, max((c[i] - b[i]).length for i in range(len(c))))
+            pb.location = old_loc
+            if old_rot is not None:
+                pb.rotation_euler = old_rot
+            pb.rotation_mode = old_mode
+            return mx * 1000.0
+
+        bset = rig.data.bones
+        S = 0.06
+        if bset.get("FK-Eye.L") and bset.get("FK-Eye.R"):
+            S = (bset["FK-Eye.L"].head_local
+                 - bset["FK-Eye.R"].head_local).length
+        sign = _ex._probe_jaw_sign(context, rig, body)
+
+        checks = [
+            ("Jaw opens mouth", dict(bone="CTL-Jaw",
+                                     rot=(sign * 0.35, 0, 0)), 5.0),
+            ("Eye aim (target)", dict(bone="P-Eye_target",
+                                      loc_arm=(0.3 * S, 0, 0)), 0.3),
+            ("Blink L", dict(bone="PRP-Eye_blink.L",
+                             locl=(0, -1.0 / 30.0, 0)), 1.0),
+            ("Blink R", dict(bone="PRP-Eye_blink.R",
+                             locl=(0, -1.0 / 30.0, 0)), 1.0),
+            ("Mouth corner L", dict(bone="CTL-Lips_corn.L",
+                                    loc_arm=(0, 0, 0.08 * S)), 1.0),
+            ("Mouth corner R", dict(bone="CTL-Lips_corn.R",
+                                    loc_arm=(0, 0, 0.08 * S)), 1.0),
+            ("Upper lip", dict(bone="CTL-Lips_main_upp",
+                               loc_arm=(0, 0, 0.05 * S)), 0.5),
+            ("Lower lip", dict(bone="CTL-Lips_main_low",
+                               loc_arm=(0, 0, -0.05 * S)), 0.5),
+            ("Brow inner L", dict(bone="CTL-Brow_in.L",
+                                  loc_arm=(0, 0, 0.08 * S)), 0.5),
+            ("Brow master L", dict(bone="CTL-Brow_all.L",
+                                   loc_arm=(0, 0, 0.10 * S)), 0.5),
+            ("Cheek L", dict(bone="CTL-Cheek_all.L",
+                             loc_arm=(0, 0, 0.05 * S)), 0.3),
+            ("Nose", dict(bone="MSTR-Nose", loc_arm=(0, 0, 0.04 * S)), 0.3),
+            ("Upper teeth", dict(bone="MSTR-Teeth_upp",
+                                 loc_arm=(0, 0, 0.05 * S)), 0.3),
+            ("Lower teeth", dict(bone="MSTR-Teeth_low",
+                                 loc_arm=(0, 0, 0.05 * S)), 0.3),
+            ("Tongue", dict(bone="MSTR-Tongue",
+                            loc_arm=(0, -0.05 * S, 0)), 0.3),
+        ]
+        lines = []
+        for label, kw, minmm in checks:
+            mm = probe(**kw)
+            if mm is None:
+                lines.append([label, "bone missing", False])
+            else:
+                lines.append([label, "%.1f mm" % mm, bool(mm >= minmm)])
+
+        # corner accuracy vs the registered/projected landmarks
+        try:
+            grid = bpy.data.objects.get(_face.GRID_NAME)
+            gm = grid.matrix_world
+
+            def gp(n):
+                i = _face.GRID_IDX.get(n)
+                return (gm @ grid.data.vertices[i].co) if i is not None \
+                    else None
+
+            for gname, bname, lim in (
+                    ("mouth_corner.L", "CTL-Lips_corn.L", 6.0),
+                    ("eye_out.L", "DEF-Eyelid_out.L", 6.0),
+                    ("eye_in.L", "DEF-Eyelid_in.L", 6.0)):
+                p = gp(gname)
+                db = rig.data.bones.get(bname)
+                if p is not None and db is not None:
+                    mm = ((rig.matrix_world @ db.head_local) - p).length * 1000
+                    lines.append(["Corner %s" % gname, "%.1f mm off" % mm,
+                                  bool(mm <= lim)])
+        except Exception:
+            pass
+
+        sc["sr_rig_check"] = json.dumps(lines)
+        npass = sum(1 for l in lines if l[2])
+        self.report({'INFO'} if npass == len(lines) else {'WARNING'},
+                    "Rig check: %d/%d passed" % (npass, len(lines)))
+        return {'FINISHED'}
+
+
+_classes = (SMARTRIG_OT_organize_rig, SMARTRIG_OT_face_rig_check)
 
 
 def register():
