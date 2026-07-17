@@ -1719,11 +1719,18 @@ class SMARTRIG_OT_face_grid(bpy.types.Operator):
 class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
     bl_idname = "smartrig.face_loop_register"
     bl_label = "Register Selected Loop"
-    bl_description = ("Select an edge loop on the face (Edit Mode) - the mouth "
-                      "loop or an eye-socket loop - and this snaps the markers "
-                      "and the face grid EXACTLY onto it (auto-classified), "
-                      "then rebuilds the face rig")
+    bl_description = ("Select an edge loop on the face mesh (Edit Mode, "
+                      "Alt+Click) - the MOUTH loop or an EYELID loop - and "
+                      "this snaps the landmarks EXACTLY onto it, then "
+                      "rebuilds the face rig")
     bl_options = {'REGISTER', 'UNDO'}
+    region: bpy.props.EnumProperty(
+        name="Loop",
+        items=(('AUTO', "Auto", "Classify by distance"),
+               ('MOUTH', "Mouth", "The selected loop is the mouth"),
+               ('EYE', "Eyelid", "The selected loop is an eyelid "
+                                 "(L/R by its position)")),
+        default='AUTO')
 
     @classmethod
     def poll(cls, context):
@@ -1747,13 +1754,18 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
                        for i in idx])
         cen = co.mean(axis=0)
 
-        # ---- classify: nearest of mouth / eye.L / eye.R ----
-        mouth_mid = (_lm("face_lip_up") + _lm("face_lip_low")) / 2.0
-        eyeL, eyeR = _lm("face_eye.L"), _lm("face_eye.R")
-        dists = {"mouth": np.linalg.norm(cen - mouth_mid),
-                 "eye.L": np.linalg.norm(cen - eyeL),
-                 "eye.R": np.linalg.norm(cen - eyeR)}
-        region = min(dists, key=dists.get)
+        # ---- classify: explicit from the pressed button, else by distance ----
+        if self.region == 'MOUTH':
+            region = "mouth"
+        elif self.region == 'EYE':
+            region = "eye.L" if cen[0] >= 0.0 else "eye.R"
+        else:
+            mouth_mid = (_lm("face_lip_up") + _lm("face_lip_low")) / 2.0
+            eyeL, eyeR = _lm("face_eye.L"), _lm("face_eye.R")
+            dists = {"mouth": np.linalg.norm(cen - mouth_mid),
+                     "eye.L": np.linalg.norm(cen - eyeL),
+                     "eye.R": np.linalg.norm(cen - eyeR)}
+            region = min(dists, key=dists.get)
 
         grid = bpy.data.objects.get(GRID_NAME)
 
@@ -1813,6 +1825,7 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
 
         if grid is not None:
             grid.data.update()
+            grid["sr_loop_" + region.replace(".", "_")] = True   # step ✓ badge
         # rebuild the face rig on the new landmarks
         try:
             bpy.ops.smartrig.face_build_base()

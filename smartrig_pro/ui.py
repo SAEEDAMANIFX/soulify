@@ -541,7 +541,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             st.operator("smartrig.face_clear", text="Remove Face Markers",
                         icon='X')
 
-        # ---- Step 3: project (FaceIt-style) + register loops ----
+        # ---- Step 3: project (FaceIt-style) ----
         has_grid = has_grid1
         st = _step(box, 3, "Project Landmarks", 'MOD_SHRINKWRAP',
                    'done' if has_mk else ('active' if has_grid and not built
@@ -551,16 +551,38 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             r.operator("smartrig.face_project",
                        text=("Re-project Landmarks" if has_mk
                              else "Project Landmarks"), icon='MOD_SHRINKWRAP')
-            if has_mk:
-                st.operator("smartrig.face_loop_register",
-                            text="Register Selected Loop", icon='EDGESEL')
-                st.label(text="Select the mouth / eye loop on the")
-                st.label(text="body (Edit Mode), then click above.")
-            else:
+            if not has_mk:
                 st.label(text="Snaps the flat net onto the face.", icon='INFO')
 
-        # ---- Step 4: build ----
-        st = _step(box, 4, "Build Face Base", 'OUTLINER_OB_ARMATURE',
+        # ---- Step 4: REGISTER LOOPS (mouth + eyelids) - explicit + ✓ ----
+        grid_ob = bpy.data.objects.get(_fc.GRID_NAME)
+        lm_done = bool(grid_ob and grid_ob.get("sr_loop_mouth"))
+        le_done = bool(grid_ob and grid_ob.get("sr_loop_eye_L"))
+        re_done = bool(grid_ob and grid_ob.get("sr_loop_eye_R"))
+        all_loops = lm_done and le_done and re_done
+        st = _step(box, 4, "Register Loops", 'EDGESEL',
+                   'done' if all_loops else ('active' if has_mk else 'todo'))
+        if has_mk:
+            st.label(text="On the FACE MESH: Edit Mode, then", icon='INFO')
+            st.label(text="Alt+Click the loop, then press:")
+            r = st.row(align=True); r.scale_y = 1.5
+            op = r.operator("smartrig.face_loop_register",
+                            text="Mouth Loop",
+                            icon=('CHECKMARK' if lm_done else 'EDGESEL'))
+            op.region = 'MOUTH'
+            r = st.row(align=True); r.scale_y = 1.5
+            op = r.operator("smartrig.face_loop_register",
+                            text="Eyelid Loop  (L or R)",
+                            icon=('CHECKMARK' if (le_done and re_done)
+                                  else 'EDGESEL'))
+            op.region = 'EYE'
+            rr = st.row(align=True)
+            rr.label(text="Mouth", icon='CHECKMARK' if lm_done else 'BLANK1')
+            rr.label(text="Eye.L", icon='CHECKMARK' if le_done else 'BLANK1')
+            rr.label(text="Eye.R", icon='CHECKMARK' if re_done else 'BLANK1')
+
+        # ---- Step 5: build ----
+        st = _step(box, 5, "Build Face Base", 'OUTLINER_OB_ARMATURE',
                    'done' if built else ('active' if has_mk else 'todo'))
         if has_mk:
             r = st.row(); r.scale_y = 1.7
@@ -572,8 +594,8 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 st.label(text="CTL-jaw rotate X = open mouth;")
                 st.label(text="CTL-eyes = look target.")
 
-        # ---- Step 5: coming regions ----
-        st = _step(box, 5, "Lips / Eyelids / Brows", 'OUTLINER_OB_MESH', 'todo')
+        # ---- Step 6: coming regions ----
+        st = _step(box, 6, "Lips / Eyelids / Brows", 'OUTLINER_OB_MESH', 'todo')
         st.label(text="Storm modules - coming next.", icon='TIME')
 
     def _rigify_samples(self, layout, context):
