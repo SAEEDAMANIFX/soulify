@@ -642,6 +642,8 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                        text=("Rebuild Face Base" if built else "Build Face Base"),
                        icon='OUTLINER_OB_ARMATURE')
             if built:
+                st.operator("smartrig.face_back_to_edit",
+                            text="Back to Edit Landmarks", icon='LOOP_BACK')
                 st.label(text="Jaw + eye aim + ears are live.", icon='CHECKMARK')
                 st.label(text="CTL-jaw rotate X = open mouth;")
                 st.label(text="CTL-eyes = look target.")

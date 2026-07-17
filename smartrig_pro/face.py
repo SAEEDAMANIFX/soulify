@@ -2004,7 +2004,17 @@ class SMARTRIG_OT_face_build_base(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
-        set_rigs_hidden(False)          # markers done - bones come back
+        # RIG VIEW: the tools disappear, the animator rig is what you see
+        g = bpy.data.objects.get(GRID_NAME)
+        if g is not None:
+            g.hide_set(True)                     # landmark net away
+        meta = bpy.data.objects.get("SR_Metarig")
+        if meta is not None:
+            meta.hide_set(True)                  # metarig bones away
+        try:
+            rig.hide_set(False)                  # the rig with the controls
+        except Exception:
+            pass
         where = "standalone rig '%s'" % rig.name if standalone else \
                 "rig '%s'" % rig.name
         self.report({'INFO'}, "Face rig built on %s - %d jaw verts, %d "
@@ -2183,6 +2193,38 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_face_back_to_edit(bpy.types.Operator):
+    bl_idname = "smartrig.face_back_to_edit"
+    bl_label = "Back to Edit Landmarks"
+    bl_description = ("Bring the landmark net back (bones hidden) to adjust "
+                      "it, then press Rebuild Face Base to regenerate")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bpy.data.objects.get(GRID_NAME) is not None
+
+    def execute(self, context):
+        g = bpy.data.objects.get(GRID_NAME)
+        g.hide_set(False)
+        set_rigs_hidden(True)
+        if context.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+        bpy.ops.object.select_all(action='DESELECT')
+        g.select_set(True)
+        context.view_layer.objects.active = g
+        try:
+            bpy.ops.object.mode_set(mode='EDIT')
+        except Exception:
+            pass
+        self.report({'INFO'}, "Adjust the net (G/S/R), register loops if "
+                    "needed, then Rebuild Face Base")
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_clear(bpy.types.Operator):
     bl_idname = "smartrig.face_clear"
     bl_label = "Remove Face Markers"
@@ -2220,6 +2262,7 @@ CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_objects_detect,
            SMARTRIG_OT_toggle_bones,
            SMARTRIG_OT_face_build_base,
            SMARTRIG_OT_face_grid, SMARTRIG_OT_face_loop_register,
+           SMARTRIG_OT_face_back_to_edit,
            SMARTRIG_OT_face_clear)
 
 

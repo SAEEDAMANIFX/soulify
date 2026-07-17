@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Soulify",
     "author": "Saeed",
-    "version": (1, 99, 28),
+    "version": (1, 99, 29),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar (N) > Soulify",
     "description": "Give it a soul. Fit + Rig + Animate: automatic body/garment rigging from markers + mesh geometry, garment fitting, and animation tools.",
