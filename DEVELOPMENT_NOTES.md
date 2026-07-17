@@ -167,3 +167,144 @@ have NO continuous spring system.)
 - **Bone organization**: all SKC_* machinery -> hidden Skirt (MCH); DEF/ORG/MCH hidden; controls in
   Skirt (Master)/(FK)/(Tweak) + Sleeves collections with Rig Layers rows. Zero orphan bones.
 - Floor system built then REMOVED per design decision (sitting handled by Follow Body instead).
+
+## v1.92 - v1.94.1 (2026-07-17) - Face System foundation (Storm architecture, FaceIt UX)
+
+New module `face.py` - the first slice of the design-doc Face System (section 5):
+- **UX = FaceIt, rig = Storm**: register/auto-detect meshes -> auto landmarks ->
+  user adjusts -> one-click build. The rig underneath stays LIVE (animator rig),
+  ARKit-52 / visemes will later be BAKED FROM it (not instead of it).
+- **Auto landmark detection** (`detect_landmarks`): eye centers from the eyeball
+  meshes; centerline front profile -> nose / lips / chin as descending frontness
+  maxima with banded search (chin band must start 0.45*ipd below the lips or the
+  lower lip wins); jaw pivot (TMJ) at eye_z - 0.22*D, 58% head depth; ears =
+  centroid of side-most head verts. Everything scales by IPD - no absolute units.
+- **Markers**: `SR_FaceMarkers` empties, same colored GPU glow as body markers
+  (wizard.py `_face_marker_items`, 0.55x size), .R follows .L via COPY_LOCATION
+  invert_x, center markers locked to the centerline. Labels drawn when selected.
+- **Build Face Base** (steps UI card 1-2-3): DEF-jaw (pivot->chin) + CTL-jaw
+  (roll forced local X = +world X so +X rotation opens DOWN), master-mouth
+  placeholder, master/DEF/CTL eyes (DAMPED_TRACK aim at CTL-eye targets under a
+  CTL-eyes master), DEF-ear.L/R. Attaches to the generated rig (ORG-head/DEF-head)
+  or builds standalone SR_FaceRig. Eyeballs rigid-bound (1.0 group, like ARP).
+- **Analytic mask weights** (no painting): jaw field = smoothstep band around the
+  pivot->mouth plane x back-fade x under-chin fade x LATERAL CAP at the pivots
+  (without the x-cap the neck/shoulder side verts grabbed 0.5 jaw weight)
+  x radial safety. Ears = radial falloff, own side only. On a bound rig the
+  fields are CARVED out of DEF-head (re-runnable: previous carve undone first).
+- **Verified numerically** (installed addon, not live edits): chin arc 0.056 =
+  expected 0.0559 at 18 deg, NOTHING outside the head moves (max 0.00000),
+  eyeball rotates about a FIXED center (0.027 surface / 0.000 center move),
+  ear 12mm at marker with nose/eye/other-ear at 0. L/R displacement symmetry 0.
+- **TRAP fixed**: `_facial_autodetect` picked ORPHAN eye meshes (asset-library
+  duplicates parked at the origin, not in the scene) -> landmarks collapsed to
+  z~0. `_valid_eye` now requires scene membership + head-height proximity, and
+  heals the slots. Same family as the "orphan body" trap.
+- OpenGL viewport renders do NOT capture the POST_PIXEL glow overlay - check
+  glow live in the viewport, verify placement numerically.
+
+NEXT (in order): lips module (ribbon + zipper, Storm ch.3) on master-mouth,
+eyelids (ribbon + auto-blink + follow, ch.4), brows/cheeks shape keys + GN
+weight split (ch.5-6), teeth/tongue from Asset Library, mouth correctives,
+then the expression/viseme/ARKit library + Rhubarb lipsync.
+
+## v1.95.0 (2026-07-17) - SR_FaceGrid: FaceIt-style landmark grid, auto-generated
+
+Studied the installed FaceIt extension live: its `facial_landmarks` mesh (41
+half-face verts) is a bone-placement TEMPLATE - `rigging/rig_data.py` maps every
+vertex index to head/tail of specific Rigify-face bones (lips .T/.B + corners,
+8-vert eye rings -> lids, brow arcs, chin/jaw chains). The landmark layout IS
+the deform skeleton; its density at lips/eyes/brows is what enables the ARKit
+expressions later. Saeed's read was exactly right.
+
+Soulify's version (`build_face_grid`, own topology, no FaceIt data copied):
+32-vert half-face wire mesh (chin chain, lip half-loop, nose->forehead chain,
+face outline, nostril+cheek, 8-vert eye ring, brow arc) POSITIONED from the
+detected anchors and RAY-PROJECTED onto the head (front rays; jawline/temple
+radial rays from the skull axis) - all 32 verts land dist=0 on the surface,
+zero manual placement (FaceIt needs a 4-state manual flow here). Mirror
+modifier (clip+merge) -> edit L, see R. `GRID_IDX` = semantic name->index map;
+`grid_points()` returns L+R world positions; `_lm_ref()` lets the grid refine
+chin/lips/corners/brows over the anchor markers at Build. UI step 3 of 5.
+The lips/eyelids/brows modules will read their joints from this grid.
+
+## v1.96.0 (2026-07-17) - Fit system REMOVED (Saeed's decision)
+
+The whole garment-FITTING system is gone: `garment.py` (lets_fit / fit_apply /
+fit_drape / live_fit_tune), `mannequin.py` (mannequin_match / garment_mannequin),
+`fit_wizard.py` (fitwiz_* + SRFM_ markers), the FIT ui_tab (tabs are now
+RIG / ANIMATE), the fit-only properties (garment_object, fit_body_object,
+mann_*, garment_ease/smooth/scale/height/preserve, fitwiz_*, fit_started) and
+their update callbacks, and the fit-marker glow/label hooks in wizard.py.
+NOT touched: garment RIGGING (kandura.py, skirt.py) - "garment" mentions there
+are its own logic; voxelbind; fit.py (legacy BODY engine, different thing).
+Verified on the installed build: fit ops unregistered, RIG/SKIN/ANIM + face
+flow all still work.
+
+## v1.98.0 - v1.98.1 (2026-07-17) - Storm parity: widgets, naming, fingers, hair
+
+Compared our face rig against the REAL Storm rig (storm_v1.1.blend linked as
+library; 1102 bones, 552 face bones; prefixes DEF/DSP/P/CTL/MSTR/STR/TGT):
+- **Storm facts adopted**: DEF-Jaw is HORIZONTAL (pivot at the TMJ, tail
+  straight forward at pivot height) and IS the animator control (WGT-Jaw,
+  THEME04, scale 1.37). Eye look: MSTR-Eye_target (ARMATURE space-switch)
+  -> P-Eye_target (WGT-Eyes_Target) -> TGT-Eye.L/R (WGT-Circle, THEME13).
+  MSTR-Mouth (WGT-Mouth, THEME09). MSTR-Eye.L/R (WGT-Cube). Palettes:
+  THEME09 ctl / THEME04 jaw+eyetarget / THEME13 eye tgts / THEME10 masters /
+  THEME02 teeth/tongue / THEME03 jawline+nose.
+- **face_widgets.py**: 16 widget wire shapes extracted from the CC-BY Storm rig
+  and embedded as data (455 verts total); ensure()/assign() create LOCAL
+  copies tagged "sr_wgt". TRAP fixed in v1.98.1: bpy.data.objects.get() was
+  returning the LIBRARY-linked WGT of the same name -> widgets broke if the
+  library moved. ensure() now ignores non-local objects.
+- **Our bones renamed to Storm convention**: CTL-Jaw (horizontal), MSTR-Mouth,
+  MSTR-Eye_target, TGT-Eye.L/R, MSTR-Eye.L/R (+ backward-compat removal).
+- **Fingers**: no finger data -> the Rigify TEMPLATE fingers were left floating
+  in mid air (user screenshot). metarig.py now REMOVES all template finger
+  bones when none are placed (same policy as the face-bones removal) with a
+  console note. AI path: arp_ai remembers the last-good ai_tools_path in
+  user CONFIG (soulify_ai_path.txt) - per-scene props died with new files.
+- **Hair**: skin_hair slot + autodetect ("hair" in name, near head) + rigid
+  bind to DEF-head. Verified: hair follows a 20-deg head turn (0.126 disp).
+- **INCIDENT (scene, not addon)**: repeated bind/cleanup cycles left body.001
+  with METERS data + 0.01 object scale (100x shrink). Root: Scale Fix applies
+  the scale destructively; later cleanup restored a stale matrix. Character
+  Check card (backlog #1) must detect data-vs-scale inconsistency. Scene fixed
+  by re-basing all four meshes under the rig with identity/0.01 as data units
+  demand.
+- Verified end-to-end after all fixes: jaw 1184 verts, chin 0.065 opens DOWN,
+  nose/chest 0; eyes follow MSTR-Eye_target; hair follows head; zero rest
+  deformation on the eye shell; all widgets local.
+
+## v1.99.0 - v1.99.3 (2026-07-17) - Full Storm control layout + STORM_SPEC
+
+- 42 face controls with Storm's exact names/widgets/palettes, positioned from
+  SR_FaceGrid: MSTR-Face_upp/low, Brow_all+in/mid/out, Lid_upp/low, Cheek_all+
+  in/mid/out, Lips_main/local1/local2/corners (MCH 50% jaw delta-follow),
+  MSTR-Nose. Every local control drives a DEF twin (child bone) whose weights
+  are carved PROPORTIONALLY from the existing deform weights (CAP 0.65,
+  rebuild-safe strip+renormalize). CH-storm appended beside the character.
+- STORM_SPEC: per-bone direction/Z-roll/length(/IPD)/widget/scale/palette
+  measured from the real Storm rig and applied as a post-pass - hand-tuned
+  orientations looked amateur (flat halo widgets); measured axes fixed it.
+- CRITICAL LESSON (v1.99.2 collapse -> 1.99.3): COPY_TRANSFORMS pairs MUST
+  share the rest orientation, or the mesh bends AT REST. DEF-jaw now copies
+  CTL-Jaw's edit transform exactly; corner-follow rebuilt as delta-follow
+  (LOCAL_OWNER_ORIENT/LOCAL/BEFORE, inf 0.5). REGRESSION TEST after every
+  face build: evaluated rest mesh == base mesh (max disp 0.00000).
+- Storm's face masters are legitimately HORIZONTAL halo circles around the
+  head - not a bug.
+
+## v1.99.4 - v1.99.5 (2026-07-17) - widget cs_rot/cs_tr + Register Selected Loop
+
+- "Widgets flipped/lying flat" root cause: bone axes matched Storm EXACTLY,
+  but Storm orients most widgets via custom_shape_ROTATION (triangles X+90,
+  lower ones +180 Z, eye circles X+90, Eyes_Target Y+90, Jaw X-0.43) and
+  offsets via custom_shape_TRANSLATION (bone-space, scales with bone length -
+  transfer RAW). STORM_SPEC now carries both; never transfer a widget without
+  its cs_rot/cs_tr.
+- Register Selected Loop (face): select the mouth or an eye-socket edge loop
+  in Edit Mode -> auto-classified (mouth / eye.L / eye.R), markers + grid
+  verts snap exactly onto the loop, face auto-rebuilds. Verified with the
+  user's 48-vert mouth loop. Face ops force OBJECT mode first (Edit-Mode
+  session crashed VertexGroup.add).
