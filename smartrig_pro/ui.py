@@ -527,6 +527,24 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         rs = ob_box.row(); rs.scale_y = 1.3
         rs.operator("smartrig.face_register_selected",
                     text="Register Selected", icon='RESTRICT_SELECT_OFF')
+        rp = ob_box.row(); rp.scale_y = 1.3
+        rp.operator_menu_enum("smartrig.face_register_part", "part",
+                              text="Register Selection As...",
+                              icon='GROUP_VERTEX')
+        # merged-part badges (vertex groups on the main mesh)
+        if props.target_mesh is not None:
+            _vgs = props.target_mesh.vertex_groups
+            _reg = [lbl for key, lbl in (("SR_brows", "Brows"),
+                                         ("SR_lashes", "Lashes"),
+                                         ("SR_teeth_up", "TeethUp"),
+                                         ("SR_teeth_low", "TeethLow"),
+                                         ("SR_tongue", "Tongue"),
+                                         ("SR_eye_l", "EyeL"),
+                                         ("SR_eye_r", "EyeR"))
+                    if _vgs.get(key) is not None]
+            if _reg:
+                ob_box.label(text="In-mesh: " + ", ".join(_reg),
+                             icon='CHECKMARK')
         col = ob_box.column(align=True)
         col.prop(props, "target_mesh", text="Main", icon='USER')
         col.prop(props, "skin_eye_l", text="Eye L", icon='HIDE_OFF')

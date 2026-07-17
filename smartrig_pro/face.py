@@ -1563,6 +1563,62 @@ class SMARTRIG_OT_face_objects_detect(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# fixed vertex-group names for parts MERGED into the face mesh (FaceIt-style
+# component registration). Presence of the group = the part is registered.
+FACE_PART_VG = {
+    'BROWS': "SR_brows", 'LASHES': "SR_lashes",
+    'TEETH_UP': "SR_teeth_up", 'TEETH_LOW': "SR_teeth_low",
+    'TONGUE': "SR_tongue", 'EYE_L': "SR_eye_l", 'EYE_R': "SR_eye_r",
+}
+
+
+class SMARTRIG_OT_face_register_part(bpy.types.Operator):
+    bl_idname = "smartrig.face_register_part"
+    bl_label = "Register Selection As"
+    bl_description = ("The part is MERGED into the face mesh? Select its "
+                      "vertices in Edit Mode and register the selection as "
+                      "that part (stored as a vertex group, exactly like "
+                      "FaceIt) - works for brows, lashes, teeth, tongue, "
+                      "eyes")
+    bl_options = {'REGISTER', 'UNDO'}
+    part: bpy.props.EnumProperty(
+        name="Part",
+        items=(('BROWS', "Brows", ""), ('LASHES', "Eyelashes", ""),
+               ('TEETH_UP', "Teeth Up", ""), ('TEETH_LOW', "Teeth Low", ""),
+               ('TONGUE', "Tongue", ""), ('EYE_L', "Eye L", ""),
+               ('EYE_R', "Eye R", "")),
+        default='BROWS')
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'EDIT_MESH'
+                and context.edit_object is not None
+                and context.edit_object.type == 'MESH')
+
+    def execute(self, context):
+        ob = context.edit_object
+        import bmesh
+        bm = bmesh.from_edit_mesh(ob.data)
+        idx = [v.index for v in bm.verts if v.select]
+        if len(idx) < 3:
+            self.report({'ERROR'}, "Select the part's vertices first "
+                        "(Edit Mode, e.g. hover + L for a linked island)")
+            return {'CANCELLED'}
+        vg_name = FACE_PART_VG[self.part]
+        bpy.ops.object.mode_set(mode='OBJECT')
+        vg = ob.vertex_groups.get(vg_name)
+        if vg is None:
+            vg = ob.vertex_groups.new(name=vg_name)
+        else:
+            vg.remove(range(len(ob.data.vertices)))     # re-register = replace
+        vg.add(idx, 1.0, 'REPLACE')
+        bpy.ops.object.mode_set(mode='EDIT')
+        self.report({'INFO'}, "%s registered: %d vertices on '%s' (vertex "
+                    "group %s)" % (self.part.title().replace("_", " "),
+                                   len(idx), ob.name, vg_name))
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_register_selected(bpy.types.Operator):
     bl_idname = "smartrig.face_register_selected"
     bl_label = "Register Selected"
@@ -2068,7 +2124,7 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
 
 
 CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_objects_detect,
-           SMARTRIG_OT_face_register_selected,
+           SMARTRIG_OT_face_register_selected, SMARTRIG_OT_face_register_part,
            SMARTRIG_OT_face_place,
            SMARTRIG_OT_face_project, SMARTRIG_OT_face_template,
            SMARTRIG_OT_toggle_bones,
