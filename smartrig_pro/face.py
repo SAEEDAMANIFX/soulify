@@ -536,16 +536,29 @@ def project_grid(body, ob):
     missed = 0
     for i, p in enumerate(pts):
         if i in GRID_RADIAL:
-            d = Vector((p[0], p[1] - yc, 0.0))
-            if d.length < 1e-6:
-                continue
-            d.normalize()
-            o = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
-            dr = -d
+            # Side landmarks (ear / temple / jaw / forehead side) belong on
+            # the SIDE of the head.  The flat net lays them on the FRONT
+            # plane, so a radial ray cast from that plane is dominated by
+            # the frontal component and collapses them onto the FRONT of
+            # the face (the ear ends up next to the nose, which drags the
+            # cheek / jawline / mouth-master controls in with it).  Cast a
+            # LATERAL ray straight inward at mid-depth so the point lands on
+            # the true side silhouette instead.
+            side = 1.0 if p[0] >= 0.0 else -1.0
+            o = Vector((side * 3.0 * head_r, yc, p[2]))
+            dr = Vector((-side, 0.0, 0.0))
         else:
             o = Vector((p[0], y_front - 2.0 * head_r, p[2]))
             dr = Vector((0.0, 1.0, 0.0))
         hit, loc, _n, _i = body.ray_cast(Minv @ o, (M3 @ dr).normalized())
+        if not hit and i in GRID_RADIAL:
+            # thin slice - fall back to a radial ray from the head centre
+            d = Vector((p[0], p[1] - yc, 0.0))
+            if d.length > 1e-6:
+                d.normalize()
+                o2 = Vector((0.0, yc, p[2])) + d * (3.0 * head_r)
+                hit, loc, _n, _i = body.ray_cast(Minv @ o2,
+                                                 (M3 @ (-d)).normalized())
         if not hit and i not in GRID_RADIAL:
             d = Vector((p[0], p[1] - yc, 0.0))
             if d.length > 1e-6:

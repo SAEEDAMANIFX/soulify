@@ -651,9 +651,14 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 st.label(text="CTL-jaw rotate X = open mouth;")
                 st.label(text="CTL-eyes = look target.")
 
-        # ---- Step 6: coming regions ----
-        st = _step(box, 6, "Lips / Eyelids / Brows", 'OUTLINER_OB_MESH', 'todo')
-        st.label(text="Storm modules - coming next.", icon='TIME')
+        # ---- Step 6: organize + expressions (FaceIt-style, editable) ----
+        st = _step(box, 6, "Organize & Expressions", 'OUTLINER',
+                   'active' if built else 'todo')
+        if built:
+            r = st.row(); r.scale_y = 1.3
+            r.operator("smartrig.organize_rig", icon='OUTLINER_COLLECTION')
+            from . import expressions as _expr
+            _expr.draw_panel(st, context)
 
     def _rigify_samples(self, layout, context):
         from . import metarig as _mr

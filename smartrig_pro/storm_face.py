@@ -290,6 +290,16 @@ def _build_anchor_pairs(face, props, body, gp, rig):
         pass
 
     def pick(name, fallback):
+        # the user's placed/derived MARKER is the ground truth in the
+        # FaceIt-style flow (same as the eyes, which already use _lm).
+        # The geometry detector is only a fallback - it mis-reads the lip
+        # line low on stylised meshes and used to drag mouth/cheek/jaw down.
+        try:
+            m = face._lm(name)
+            if m is not None:
+                return np.asarray(m, float)
+        except Exception:
+            pass
         v = L.get(name)
         return v if v is not None else np.asarray(fallback, float)
 
@@ -770,6 +780,51 @@ _LEN_PROPS = ("distance", "rest_length", "falloff_radius")
 _LOC_RANGE = tuple("%s_%s%s" % (a, mm, ax) for a in ("from", "to")
                    for mm in ("min", "max") for ax in ("x", "y", "z"))
 
+# Prefix priority when a DSP display bone must borrow a follow-source from
+# our own rig (deform first, then the local control chain).
+_DSP_SRC_PREF = ("DEF-", "P-", "STR-", "MSTR-", "CTL-", "MCH-", "ORG-")
+
+
+def _dsp_source(rig, owner):
+    """A DSP display bone in Storm is pinned to a head-mesh VERTEX GROUP
+    (COPY_LOCATION, subtarget = vgroup name).  Our character mesh carries
+    no such groups, so that constraint copies the mesh origin and the
+    whole 'Face Display' layer collapses to (0,0,0) in pose.  Return the
+    bone in OUR rig whose head sits where this display bone belongs -
+    preferably the matching deform bone DEF-<stem>, else the nearest
+    placed non-DSP bone - so the display follows the same skin point."""
+    dbones = rig.data.bones
+    d = dbones.get(owner)
+    if d is None:
+        return None
+    mw = rig.matrix_world
+
+    def placed(b):
+        return (mw @ Vector(b.head_local)).length > 0.05
+
+    stem = owner[4:]
+    exact = dbones.get("DEF-" + stem)
+    if exact is not None and placed(exact):
+        return exact.name
+    h = mw @ Vector(d.head_local)
+    cands = []
+    for nb in dbones:
+        if nb.name.startswith("DSP-"):
+            continue
+        if not placed(nb):
+            continue
+        cands.append(((mw @ Vector(nb.head_local) - h).length, nb.name))
+    if not cands:
+        return None
+    cands.sort()
+    within = [nm for dd, nm in cands if dd < 0.015]
+    pool = within if within else [cands[0][1]]
+    for pref in _DSP_SRC_PREF:
+        for nm in pool:
+            if nm.startswith(pref):
+                return nm
+    return pool[0]
+
 
 def _apply_constraints(rig, spec, made_objs, head_parent, scale=1.0):
     bones = spec["bones"]
@@ -792,6 +847,28 @@ def _apply_constraints(rig, spec, made_objs, head_parent, scale=1.0):
                     'STRETCH_TO', 'COPY_LOCATION', 'COPY_TRANSFORMS',
                     'DAMPED_TRACK', 'IK', 'COPY_SCALE'):
                 continue
+            # Storm 'Face Display' bones (DSP-*) are pinned to head-mesh
+            # vertex groups our character lacks -> without this they copy
+            # the mesh origin and the whole display layer collapses to
+            # (0,0,0).  Re-anchor them to the matching bone in our rig so
+            # the display follows the same skin point (see _dsp_source).
+            tgt0 = cd.get("target")
+            if (n.startswith("DSP-")
+                    and cd["type"] in ('COPY_LOCATION', 'COPY_TRANSFORMS')
+                    and isinstance(tgt0, dict)
+                    and tgt0.get("__obj__") == "GEO-storm-head"):
+                src = _dsp_source(rig, n)
+                if src:
+                    con = pb.constraints.new('COPY_LOCATION')
+                    con.name = cd.get("name", "Copy Location")
+                    con.target = rig
+                    con.subtarget = src
+                    try:
+                        con.influence = float(cd.get("influence", 1.0))
+                    except Exception:
+                        pass
+                    n_con += 1
+                    continue
             try:
                 con = pb.constraints.new(cd["type"])
             except Exception:
@@ -1496,6 +1573,34 @@ def bind_parts(face, props, context, rig, body, rbf):
     if eye_meshes:
         rep.append("eyes->FK-Eye x%d" % len(eye_meshes))
 
+    # ---- eye AIM: without this FK-Eye never rotates, so the eyeball is
+    # frozen when the animator moves MSTR-Eye_target. Storm's FK-Eye points
+    # DOWN, so pick the local axis that actually aims at TGT-Eye instead of
+    # assuming +Y, then DAMPED_TRACK it. ----
+    _AX = (('TRACK_X', Vector((1, 0, 0))), ('TRACK_Y', Vector((0, 1, 0))),
+           ('TRACK_Z', Vector((0, 0, 1))),
+           ('TRACK_NEGATIVE_X', Vector((-1, 0, 0))),
+           ('TRACK_NEGATIVE_Y', Vector((0, -1, 0))),
+           ('TRACK_NEGATIVE_Z', Vector((0, 0, -1))))
+    for s in (".L", ".R"):
+        fk = rig.pose.bones.get("FK-Eye" + s)
+        tg = rig.pose.bones.get("TGT-Eye" + s)
+        if fk is None or tg is None:
+            continue
+        M = rig.matrix_world @ fk.matrix
+        want = ((rig.matrix_world @ tg.head) - M.translation).normalized()
+        ax = max(_AX, key=lambda a: (M.to_3x3() @ a[1]).normalized().dot(want))
+        for c in list(fk.constraints):
+            if c.name == "SR Eye Aim":
+                fk.constraints.remove(c)
+        con = fk.constraints.new('DAMPED_TRACK')
+        con.name = "SR Eye Aim"
+        con.target = rig
+        con.subtarget = "TGT-Eye" + s
+        con.track_axis = ax[0]
+    if eye_meshes:
+        rep.append("eye-aim")
+
     # ---- teeth: rigid to the master teeth bones ----
     tongue_ob = getattr(props, "skin_tongue", None)
     up_ob = getattr(props, "skin_teeth_up", None)
@@ -1762,6 +1867,48 @@ def _widget_proportions(rig, spec, gp, ipd):
 
 
 # ------------------------------------------------------------------ main
+def _add_jaw_ctrl(rig, context):
+    """Storm's spec ships DEF-Jaw but NO animator control above it, so the
+    mouth cannot be opened. Add CTL-Jaw (coincident with DEF-Jaw) that
+    DEF-Jaw copies in LOCAL space, give it the jaw widget and expose it."""
+    if "DEF-Jaw" not in rig.data.bones:
+        return
+    if context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    context.view_layer.objects.active = rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    eb = rig.data.edit_bones
+    dj = eb["DEF-Jaw"]
+    if "CTL-Jaw" in eb:
+        eb.remove(eb["CTL-Jaw"])
+    cj = eb.new("CTL-Jaw")
+    cj.head = dj.head.copy()
+    cj.tail = dj.tail.copy()
+    cj.roll = dj.roll
+    cj.parent = dj.parent
+    cj.use_deform = False
+    bpy.ops.object.mode_set(mode='POSE')
+    djp = rig.pose.bones["DEF-Jaw"]
+    for c in list(djp.constraints):
+        if c.name == "SR Jaw Ctrl":
+            djp.constraints.remove(c)
+    con = djp.constraints.new('COPY_ROTATION')
+    con.name = "SR Jaw Ctrl"
+    con.target = rig
+    con.subtarget = "CTL-Jaw"
+    con.target_space = 'LOCAL'
+    con.owner_space = 'LOCAL'
+    try:
+        _fw.assign(rig, "CTL-Jaw", "WGT-Jaw", 1.5, "THEME04")
+    except Exception:
+        pass
+    coll = (rig.data.collections_all.get("Mouth global")
+            or rig.data.collections_all.get("Jawline"))
+    cb = rig.data.bones.get("CTL-Jaw")
+    if coll and cb:
+        coll.assign(cb)
+
+
 def build_full(face, props, context):
     """The whole Storm face on our character. `face` = the face module
     (avoids a circular import)."""
@@ -1816,6 +1963,14 @@ def build_full(face, props, context):
     _brow_fallback(rig)
     _widget_proportions(rig, spec, gp, ipd)
     _rest_reconcile(context, rig, order, iters=2, max_snap=0.7 * ipd)
+    _add_jaw_ctrl(rig, context)
+    # professional nested bone-collection layout (Blender-Studio style):
+    # animator sees Body + Face controls; ALL mechanism under hidden Rigging
+    try:
+        from . import organize as _org
+        _org.organize(rig)
+    except Exception:
+        pass
 
     context.view_layer.update()
     if prev_active is not None:
