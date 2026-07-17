@@ -519,6 +519,25 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         if rig is not None:
             built = "DEF-jaw" in rig.data.bones
 
+        # ---- Step 0: register the FACE OBJECTS (FaceIt-style slots) ----
+        ob_box = box.box()
+        hr = ob_box.row(align=True)
+        hr.label(text="Face Objects (Register)", icon='OUTLINER_OB_POINTCLOUD')
+        hr.operator("smartrig.face_objects_detect", text="", icon='VIEWZOOM')
+        rs = ob_box.row(); rs.scale_y = 1.3
+        rs.operator("smartrig.face_register_selected",
+                    text="Register Selected", icon='RESTRICT_SELECT_OFF')
+        col = ob_box.column(align=True)
+        col.prop(props, "target_mesh", text="Main", icon='USER')
+        col.prop(props, "skin_eye_l", text="Eye L", icon='HIDE_OFF')
+        col.prop(props, "skin_eye_r", text="Eye R", icon='HIDE_OFF')
+        col.prop(props, "skin_teeth_up", text="Teeth Up", icon='TRIA_UP_BAR')
+        col.prop(props, "skin_teeth_low", text="Teeth Low", icon='TRIA_DOWN_BAR')
+        col.prop(props, "skin_tongue", text="Tongue", icon='META_CAPSULE')
+        col.prop(props, "skin_brows", text="Brows", icon='CURVE_PATH')
+        col.prop(props, "skin_lashes", text="Eyelashes", icon='CURVE_NCURVE')
+        col.prop(props, "skin_hair", text="Hair", icon='OUTLINER_OB_CURVES')
+
         # ---- Step 1: FaceIt-style guided placement (Saeed's video) ----
         has_grid1 = bpy.data.objects.get(_fc.GRID_NAME) is not None
         st = _step(box, 1, "Face Markers", 'EMPTY_DATA',

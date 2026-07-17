@@ -1468,6 +1468,194 @@ class SMARTRIG_OT_toggle_bones(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_face_objects_detect(bpy.types.Operator):
+    bl_idname = "smartrig.face_objects_detect"
+    bl_label = "Auto Detect Face Objects"
+    bl_description = ("Fill the face object slots automatically (FaceIt-style "
+                      "register): eyes from the eyeball detector, teeth / "
+                      "tongue / brows / eyelashes / hair by name. Fix any "
+                      "slot by hand after")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        found = []
+        try:
+            from . import skirt as _sk
+            _sk._facial_autodetect(props, context)      # eyes (validated)
+            if props.skin_eye_l: found.append("Eye L")
+            if props.skin_eye_r: found.append("Eye R")
+        except Exception:
+            pass
+        body = getattr(props, "target_mesh", None)
+
+        def _real_mesh(o):
+            """A character mesh - NEVER a rig widget / helper object."""
+            if o is None or o.type != 'MESH' or o is body:
+                return False
+            n = o.name
+            if n.startswith(("WGT", "WGTS", "SR_", "CTL", "MCH", "DEF", "ORG")):
+                return False
+            for c in o.users_collection:
+                if c.name.startswith(("WGT", "WGTS")):
+                    return False
+            # EXCLUDED collections (e.g. an "idle pose" copy) are not in the
+            # view layer - their duplicates must never win a slot
+            if o.name not in context.view_layer.objects:
+                return False
+            return True
+
+        scene_meshes = [o for o in context.scene.objects if _real_mesh(o)]
+        # the eye detector can grab widgets too (orphan-mesh trap): heal
+        for attr in ("skin_eye_l", "skin_eye_r"):
+            cur = getattr(props, attr, None)
+            if cur is not None and not _real_mesh(cur):
+                setattr(props, attr, None)
+        if props.skin_eye_l is None or props.skin_eye_r is None:
+            eye = next((o for o in scene_meshes if "eye" in o.name.lower()
+                        and "brow" not in o.name.lower()
+                        and "lash" not in o.name.lower()), None)
+            if eye is not None:
+                if props.skin_eye_l is None:
+                    props.skin_eye_l = eye
+                if props.skin_eye_r is None:
+                    # combined-eye meshes are handled downstream by the
+                    # sphere-fit L/R split - same mesh in both slots is fine
+                    props.skin_eye_r = eye
+                found.append("Eyes")
+
+        def by_name(*keys, exclude=()):
+            for o in scene_meshes:
+                n = o.name.lower()
+                if any(k in n for k in keys) and not any(e in n for e in exclude):
+                    return o
+            return None
+
+        combined = by_name("teeth_and_tongue", "teeth_tongue")
+        t_up = by_name("teeth", exclude=("low", "bottom", "tongue")) \
+            if combined is None else combined
+        t_low = (by_name("teeth") if combined is None else combined)
+        low_named = by_name("lower teeth", "teeth_low", "bottom teeth")
+        if low_named is not None:
+            t_low = low_named
+        for attr, ob, label in (("skin_teeth_up", t_up, "Teeth Up"),
+                                ("skin_teeth_low", t_low, "Teeth Low"),
+                                ("skin_tongue", combined or by_name("tongue", "toung"), "Tongue"),
+                                ("skin_brows", by_name("brow"), "Brows"),
+                                ("skin_lashes", by_name("lash"), "Eyelashes"),
+                                ("skin_hair", by_name("hair", exclude=("brow", "lash")), "Hair")):
+            if ob is not None and getattr(props, attr, None) is None:
+                try:
+                    setattr(props, attr, ob); found.append(label)
+                except Exception:
+                    pass
+        if combined is not None:
+            self.report({'WARNING'}, "One combined teeth+tongue mesh found - "
+                        "assigned to all three slots (split it for best jaw "
+                        "results). Detected: " + ", ".join(found))
+        elif found:
+            self.report({'INFO'}, "Registered: " + ", ".join(found))
+        else:
+            self.report({'WARNING'}, "Nothing new detected - assign the "
+                        "slots manually")
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_face_register_selected(bpy.types.Operator):
+    bl_idname = "smartrig.face_register_selected"
+    bl_label = "Register Selected"
+    bl_description = ("FaceIt-style register: SELECT the face part meshes in "
+                      "the viewport (separate eyes, separate upper/lower "
+                      "teeth, tongue, brows, eyelashes...) and this sorts "
+                      "them into the right slots automatically - eyes L/R by "
+                      "position, teeth upper/lower by height")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == 'MESH' for o in context.selected_objects)
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        body = getattr(props, "target_mesh", None)
+        sel = [o for o in context.selected_objects
+               if o.type == 'MESH' and o is not body
+               and not o.name.startswith(("WGT", "WGTS", "SR_"))]
+        if not sel:
+            self.report({'ERROR'}, "Select the face part meshes first "
+                        "(eyes / teeth / tongue / brows / lashes)")
+            return {'CANCELLED'}
+
+        def mean_x(o):
+            import numpy as _np
+            co = utils.read_world_coords(o)
+            return float(_np.mean(co[:, 0]))
+
+        def mean_z(o):
+            import numpy as _np
+            co = utils.read_world_coords(o)
+            return float(_np.mean(co[:, 2]))
+
+        done = []
+        rest = []
+        for o in sel:
+            n = o.name.lower()
+            if "tongue" in n or "toung" in n:
+                props.skin_tongue = o; done.append("Tongue: " + o.name)
+            elif "brow" in n:
+                props.skin_brows = o; done.append("Brows: " + o.name)
+            elif "lash" in n:
+                props.skin_lashes = o; done.append("Eyelashes: " + o.name)
+            elif "hair" in n:
+                props.skin_hair = o; done.append("Hair: " + o.name)
+            else:
+                rest.append(o)
+        eyes = [o for o in rest if "eye" in o.name.lower()]
+        teeth = [o for o in rest if "teeth" in o.name.lower()
+                 or "tooth" in o.name.lower()]
+        other = [o for o in rest if o not in eyes and o not in teeth]
+        # eyes: L/R by name suffix first, else by X position (+X = .L)
+        if len(eyes) >= 2:
+            eyes.sort(key=mean_x)                # min x = R, max x = L
+            props.skin_eye_r, props.skin_eye_l = eyes[0], eyes[-1]
+            done.append("Eye L: %s / Eye R: %s" % (eyes[-1].name, eyes[0].name))
+        elif len(eyes) == 1:
+            nl = eyes[0].name.lower()
+            if nl.endswith((".r", "_r", " r")) or "right" in nl:
+                props.skin_eye_r = eyes[0]; done.append("Eye R: " + eyes[0].name)
+            elif nl.endswith((".l", "_l", " l")) or "left" in nl:
+                props.skin_eye_l = eyes[0]; done.append("Eye L: " + eyes[0].name)
+            else:                                # combined both-eyes mesh
+                props.skin_eye_l = props.skin_eye_r = eyes[0]
+                done.append("Eyes (combined): " + eyes[0].name)
+        # teeth: upper/lower by name first, else by height
+        if len(teeth) >= 2:
+            teeth.sort(key=mean_z)               # min z = lower
+            props.skin_teeth_low, props.skin_teeth_up = teeth[0], teeth[-1]
+            done.append("Teeth Up: %s / Low: %s" % (teeth[-1].name, teeth[0].name))
+        elif len(teeth) == 1:
+            nl = teeth[0].name.lower()
+            if any(k in nl for k in ("low", "bottom", "inf")):
+                props.skin_teeth_low = teeth[0]
+                done.append("Teeth Low: " + teeth[0].name)
+            elif any(k in nl for k in ("up", "top", "sup")):
+                props.skin_teeth_up = teeth[0]
+                done.append("Teeth Up: " + teeth[0].name)
+            else:
+                props.skin_teeth_up = props.skin_teeth_low = teeth[0]
+                done.append("Teeth (combined): " + teeth[0].name)
+        if other:
+            self.report({'WARNING'}, "Registered: %s | Unrecognized (rename "
+                        "or use the dropdowns): %s"
+                        % ("; ".join(done) if done else "nothing",
+                           ", ".join(o.name for o in other)))
+        elif done:
+            self.report({'INFO'}, "Registered: " + "; ".join(done))
+        else:
+            self.report({'WARNING'}, "Nothing recognized - use the dropdowns")
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_place(bpy.types.Operator):
     bl_idname = "smartrig.face_place"
     bl_label = "Face Markers"
@@ -1842,15 +2030,31 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        if context.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
         coll = bpy.data.collections.get(FACE_COLL)
         if coll is not None:
             for ob in list(coll.objects):
                 bpy.data.objects.remove(ob, do_unlink=True)
             bpy.data.collections.remove(coll)
+        # clean restart: unlock the view, bring the bones back
+        try:
+            from . import markers as _mk
+            _mk.lock_front_view(context, False)
+        except Exception:
+            pass
+        set_rigs_hidden(False)
+        self.report({'INFO'}, "Face markers cleared - press Face Markers to "
+                    "start fresh")
         return {'FINISHED'}
 
 
-CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_place,
+CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_objects_detect,
+           SMARTRIG_OT_face_register_selected,
+           SMARTRIG_OT_face_place,
            SMARTRIG_OT_face_project, SMARTRIG_OT_face_template,
            SMARTRIG_OT_toggle_bones,
            SMARTRIG_OT_face_build_base,

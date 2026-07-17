@@ -687,6 +687,12 @@ class SmartRigProps(PropertyGroup):
         description="Hair mesh - rigid-bound to the head bone at bind")
     skin_tongue: PointerProperty(name="Tongue", type=bpy.types.Object, poll=_mesh_poll,
         description="Tongue mesh (rigid to the jaw bone, else the head)")
+    skin_brows: PointerProperty(name="Brows", type=bpy.types.Object, poll=_mesh_poll,
+                                description="Eyebrow mesh (registered like FaceIt; used by the "
+                                            "brow module and facial bind)")
+    skin_lashes: PointerProperty(name="Eyelashes", type=bpy.types.Object, poll=_mesh_poll,
+                                 description="Eyelashes mesh (registered like FaceIt; follows "
+                                             "the eyelids)")
     # ---- top-level phases in THE recommended order: Rig -> Fit -> Animate
     # (rig the character first = exact joints, then dress her, then animate)
     ui_tab: EnumProperty(
