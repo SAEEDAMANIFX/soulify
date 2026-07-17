@@ -264,6 +264,70 @@ def detect_landmarks(props, body):
     return L, ipd, sure
 
 
+def template_landmarks(props, body):
+    """FaceIt-style TEMPLATE: the face markers laid out by classic facial
+    proportions on the head region (top of the mesh / rig head bone) and
+    snapped to the FRONT surface. NO geometric detection - the user drags
+    every marker onto his character's face, then registers the mouth/eye
+    loops. Returns (dict name -> [x,y,z] world, ipd)."""
+    cb = utils.read_rest_coords(body)
+    ground = float(cb[:, 2].min()); top = float(cb[:, 2].max())
+    hgt = top - ground
+    # head band: rig head bone when available, else the top 13% of the mesh
+    z_lo = None
+    for rn in ("SR_Metarig", "SR_Rig"):
+        rig = bpy.data.objects.get(rn)
+        if rig is not None and rig.type == 'ARMATURE':
+            hb = rig.data.bones.get("head") or rig.data.bones.get("spine.006")
+            if hb is not None:
+                mw = rig.matrix_world
+                z_lo = float((mw @ hb.head_local).z)
+                break
+    if z_lo is None or z_lo > top - 0.04 * hgt:
+        z_lo = top - 0.13 * hgt
+    head = cb[cb[:, 2] > z_lo]
+    if len(head) < 16:
+        raise RuntimeError("No head geometry found - check the character mesh")
+    headH = top - z_lo
+    half_w = float(np.percentile(np.abs(head[:, 0]), 98))
+    y_front = float(head[:, 1].min()); y_back = float(head[:, 1].max())
+    depth = y_back - y_front
+    ipd = 0.42 * (2.0 * half_w)                  # eye centers ~ 2/5 head width
+
+    Minv = body.matrix_world.inverted()
+    M3 = Minv.to_3x3()
+
+    def snap_front(x, z):
+        o = Minv @ Vector((x, y_front - 2.0 * headH, z))
+        d = (M3 @ Vector((0.0, 1.0, 0.0))).normalized()
+        hit, loc, _n, _i = body.ray_cast(o, d)
+        if hit:
+            v = body.matrix_world @ loc
+            return [v.x, v.y, v.z]
+        return [x, y_front, z]
+
+    eye_z = z_lo + 0.55 * headH                  # classic: eyes at mid-face
+    eye_x = 0.5 * ipd
+    chin_z = z_lo + 0.06 * headH
+    mouth_z = z_lo + 0.28 * headH
+    nose_z = z_lo + 0.42 * headH
+    jz = eye_z - 0.22 * (eye_z - chin_z)         # TMJ height (same as detect)
+
+    L = {
+        "face_nose": snap_front(0.0, nose_z),
+        "face_lip_up": snap_front(0.0, mouth_z + 0.10 * ipd),
+        "face_lip_low": snap_front(0.0, mouth_z - 0.10 * ipd),
+        "face_chin": snap_front(0.0, chin_z),
+        "face_mouth_corner.L": snap_front(0.475 * ipd, mouth_z),
+        "face_brow.L": snap_front(eye_x, eye_z + 0.55 * ipd),
+        "face_eye.L": [eye_x, y_front + 0.28 * depth, eye_z],
+        "face_jaw.L": [0.80 * half_w, y_front + 0.58 * depth, jz],
+        "face_ear.L": [0.95 * half_w, y_front + 0.62 * depth,
+                       eye_z - 0.2 * ipd],
+    }
+    return L, ipd
+
+
 def _marker_coll():
     coll = utils.ensure_collection(FACE_COLL)
     try:
@@ -1267,6 +1331,39 @@ class SMARTRIG_OT_face_detect(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class SMARTRIG_OT_face_template(bpy.types.Operator):
+    bl_idname = "smartrig.face_template"
+    bl_label = "Face Markers"
+    bl_description = ("Place the FaceIt-style face marker template on the "
+                      "head (classic facial proportions, snapped to the "
+                      "front surface - no auto-detection). Drag every marker "
+                      "onto YOUR character's face (the R side mirrors the L "
+                      "side), register the mouth / eye loops, then Build")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        props = context.scene.smartrig
+        ob = getattr(props, "target_mesh", None) or context.active_object
+        return ob is not None and ob.type == 'MESH'
+
+    def execute(self, context):
+        props = context.scene.smartrig
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        body = getattr(props, "target_mesh", None) or context.active_object
+        try:
+            L, ipd = template_landmarks(props, body)
+        except Exception as e:
+            self.report({'ERROR'}, str(e))
+            return {'CANCELLED'}
+        place_markers(L, ipd)
+        self.report({'INFO'}, "Face template placed - drag each marker onto "
+                    "the face (R follows L), then register the mouth/eye "
+                    "loops and Build")
+        return {'FINISHED'}
+
+
 class SMARTRIG_OT_face_build_base(bpy.types.Operator):
     bl_idname = "smartrig.face_build_base"
     bl_label = "Build Face Base"
@@ -1462,7 +1559,8 @@ class SMARTRIG_OT_face_clear(bpy.types.Operator):
         return {'FINISHED'}
 
 
-CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_build_base,
+CLASSES = (SMARTRIG_OT_face_detect, SMARTRIG_OT_face_template,
+           SMARTRIG_OT_face_build_base,
            SMARTRIG_OT_face_grid, SMARTRIG_OT_face_loop_register,
            SMARTRIG_OT_face_clear)
 

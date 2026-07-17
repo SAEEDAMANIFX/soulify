@@ -518,16 +518,16 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         if rig is not None:
             built = "DEF-jaw" in rig.data.bones
 
-        # ---- Step 1: detect ----
-        st = _step(box, 1, "Detect Face Markers", 'VIEWZOOM',
+        # ---- Step 1: FaceIt-style marker template (Saeed: NO auto-detect) ----
+        st = _step(box, 1, "Face Markers", 'EMPTY_DATA',
                    'done' if has_mk else 'active')
         r = st.row(); r.scale_y = 1.5
-        r.operator("smartrig.face_detect",
-                   text=("Re-detect Face" if has_mk else "Detect Face"),
-                   icon='VIEWZOOM')
+        r.operator("smartrig.face_template",
+                   text=("Reset Face Markers" if has_mk else "Face Markers"),
+                   icon='EMPTY_DATA')
         if not has_mk:
-            st.label(text="Finds eyes, brows, nose, lips,", icon='INFO')
-            st.label(text="jaw pivot, chin and ears from the mesh.")
+            st.label(text="FaceIt-style template on the head -", icon='INFO')
+            st.label(text="drag each marker onto the face.")
 
         # ---- Step 2: adjust ----
         st = _step(box, 2, "Adjust Markers", 'EMPTY_DATA',
