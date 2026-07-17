@@ -568,11 +568,13 @@ def _create_one_marker(props, name, pos, h):
     if bpy.data.objects.get(name) is None:
         role = 'center' if name in CENTER_MARKERS else 'left'
         o = _new_empty(name); o.location = Vector(pos[name]); _style(o, size, role)
+        o["sr_place_y"] = float(pos[name][1])
     if name.endswith(".L"):
         rn = name.replace(".L", ".R")
         if bpy.data.objects.get(rn) is None:
             p = pos[name]
             r = _new_empty(rn); r.location = Vector((-p[0], p[1], p[2]))
+            r["sr_place_y"] = float(p[1])
             _style(r, size * 0.85, 'right')
             if props.mirror:
                 _add_mirror_constraint(r, name)
@@ -704,20 +706,75 @@ def _build_guide(context, props, sequence):
         print("SmartRig: guide images unavailable:", e)
 
 
+def center_clicked(props, name, loc):
+    """PRO depth-centering: a click lands ON the surface - push the marker to
+    the middle of the body/limb VOLUME so bones ride the core, not the skin.
+    Center markers: x=0 + torso mid-depth at that height. Limb markers: the
+    midpoint of a ray THROUGH the mesh along the surface normal. Feet keep
+    their special top-view placement."""
+    mesh = props.target_mesh
+    if mesh is None or name in ("ball.L", "foottip.L", "ball.R", "foottip.R"):
+        return loc
+    try:
+        co = utils.read_rest_coords(mesh)
+    except Exception:
+        return loc
+    h = float(co[:, 2].max() - co[:, 2].min())
+    if name in CENTER_MARKERS:
+        m = (np.abs(co[:, 2] - loc.z) < 0.02 * h) &             (np.abs(co[:, 0]) < 0.15 * h)
+        if m.sum() > 3:
+            ys = co[m][:, 1]
+            ymid = 0.5 * (float(np.percentile(ys, 2)) + float(np.percentile(ys, 98)))
+            return Vector((0.0, ymid, loc.z))
+        return Vector((0.0, loc.y, loc.z))
+    # limb: shoot through the mesh along the inward normal, take the midpoint
+    try:
+        mi = mesh.matrix_world.inverted()
+        ok, cp, nrm, _i = mesh.closest_point_on_mesh(mi @ loc)
+        if not ok:
+            return loc
+        n_w = (mesh.matrix_world.to_3x3() @ nrm).normalized()
+        start = loc - n_w * (0.002 * h)
+        exit_p = None
+        cur = start
+        for _ in range(8):                     # march to the LAST exit
+            # NO distance limit: ray_cast's distance is in LOCAL units, so on
+            # scaled imports (e.g. 0.01-scale FBX) a world-space 0.25*h never
+            # reaches the far wall and the centering silently did NOTHING.
+            # The world-space gates below already bound the result.
+            hit, hl, hn, _j = mesh.ray_cast(mi @ cur,
+                                            (mi.to_3x3() @ (-n_w)).normalized())
+            if not hit:
+                break
+            exit_p = mesh.matrix_world @ hl
+            cur = exit_p - n_w * (0.002 * h)
+            if (exit_p - loc).length > 0.22 * h:
+                break
+        if exit_p is not None and 0.005 * h < (exit_p - loc).length < 0.25 * h:
+            return (loc + exit_p) / 2.0
+    except Exception:
+        pass
+    return loc
+
+
 def place_marker(props, name, loc, h):
-    """Create/move one marker (+ its .R mirror). Center markers snap to X=0."""
+    """Create/move one marker (+ its .R mirror). Center markers snap to X=0
+    and every marker is depth-centered inside the volume (like ARP)."""
     size = 0.03 * h
     role = 'center' if name in CENTER_MARKERS else 'left'
     o = bpy.data.objects.get(name) or _new_empty(name)
+    loc = center_clicked(props, name, Vector(loc))
     if role == 'center':
         loc = Vector((0.0, loc.y, loc.z))
         o.lock_location = (True, False, False)
     o.location = loc
+    o["sr_place_y"] = float(loc.y)      # provenance: Y chosen at placement
     _style(o, size, role)
     if name.endswith(".L"):
         rn = name.replace(".L", ".R")
         r = bpy.data.objects.get(rn) or _new_empty(rn)
         r.location = Vector((-loc.x, loc.y, loc.z))
+        r["sr_place_y"] = float(loc.y)
         _style(r, size * 0.85, 'right')
         if props.mirror:
             _add_mirror_constraint(r, name)

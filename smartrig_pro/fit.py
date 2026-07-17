@@ -19,8 +19,33 @@ def _torso_center(co, zc, h, fallback):
     x, y, z = co[:, 0], co[:, 1], co[:, 2]
     m = (np.abs(z - zc) < 0.04 * h) & (np.abs(x) < 0.20)
     if m.sum() > 10:
-        return Vector((float(np.median(x[m])), float(np.median(y[m])), zc))
+        ys = y[m]
+        ymid = 0.5 * (float(np.percentile(ys, 2)) + float(np.percentile(ys, 98)))
+        return Vector((float(np.median(x[m])), ymid, zc))
     return fallback
+
+
+def _user_moved_y(name, cur):
+    """True ONLY when the user DRAGGED this marker in Y after it was placed.
+    Placement (click / auto-detect) records its chosen Y in `sr_place_y`;
+    markers without the tag (old scenes) count as un-moved, so the fit falls
+    back to the auto volume/torso centre - never the raw surface click."""
+    o = markers.get_marker(name)
+    if o is None:
+        return False
+    py = o.get("sr_place_y", None)
+    if py is None:
+        return False
+    return abs(float(cur.y) - float(py)) > 1e-4
+
+
+def _leg_depth_y(co, zc, h, sign, fallback):
+    """Depth (Y) centre of ONE leg's cross-section at height zc."""
+    x, y, z = co[:, 0], co[:, 1], co[:, 2]
+    m = (np.abs(z - zc) < 0.02 * h) & (x * sign > 0.015 * h) & (x * sign < 0.15 * h)
+    if m.sum() > 5:
+        return float(y[m].mean())
+    return float(fallback)
 
 
 def _limb_center(co, p0, p1, f, radius=0.10):
@@ -147,24 +172,22 @@ def compute_joints(props):
 
     J = {}
     # --- axial chain
-    # Honor each axial marker's actual Y (forward/back), falling back to the
-    # auto volume/torso centre ONLY when the marker still sits at the default
-    # (un-moved) spot. This keeps the default fit identical yet lets a user TILT
-    # the pelvis/neck/head by moving the marker (or, via Live Link, by editing
-    # the bone -> marker), and Re-fit then reproduces the tilt instead of
-    # flattening it back to centre.
+    # Honor an axial marker's Y ONLY when the user really DRAGGED it after
+    # placement (sr_place_y provenance tag, see _user_moved_y) - a plain click
+    # always re-centres in depth. Clicked markers land near the surface, so
+    # trusting every different Y (old way) glued the spine to the belly.
     _auto_pelvis_y = _volume_center_y(co, 0.0, m_root.z, h)
-    pelvis_y = m_root.y if abs(m_root.y - _auto_pelvis_y) > 1e-4 else _auto_pelvis_y
+    pelvis_y = m_root.y if _user_moved_y("spine_root", m_root) else _auto_pelvis_y
     pelvis = Vector((0.0, pelvis_y, m_root.z))
     _auto_neck_y = _torso_center(co, m_neck.z, h, Vector((0.0, pelvis.y, m_neck.z))).y
-    neck_y = m_neck.y if abs(m_neck.y - _auto_neck_y) > 1e-4 else _auto_neck_y
+    neck_y = m_neck.y if _user_moved_y("neck", m_neck) else _auto_neck_y
     neck_base = Vector((0.0, neck_y, m_neck.z))
     head_base = Vector((0.0, neck_base.y, neck_base.z + 0.4 * (m_head.z - neck_base.z)))
     J["pelvis"] = pelvis
     J["neck_base"] = neck_base
     J["head_base"] = head_base
     # head_top honors the marker's Y (tilt); default marker Y == head_base.y
-    head_top_y = m_head.y if abs(m_head.y - head_base.y) > 1e-4 else head_base.y
+    head_top_y = m_head.y if _user_moved_y("head_top", m_head) else head_base.y
     J["head_top"] = Vector((0.0, head_top_y, m_head.z))
     J["root"] = Vector((0.0, pelvis.y, ground))
 
@@ -230,6 +253,8 @@ def compute_joints(props):
     # --- left leg (hip from the user marker; knee from the leg centerline fit)
     hip_fit, knee = _leg_centerline(co, ground, h, +1)
     hip = m_hip.copy()
+    if not _user_moved_y("hip.L", m_hip):
+        hip.y = _leg_depth_y(co, hip.z, h, +1, hip.y)   # depth-centre in the leg
     if abs(knee.z - hip.z) < 0.05 * h or knee.z > hip.z:
         knee = hip.lerp(m_ank, 0.5)
     if m_knee is not None:                      # user-placed knee wins
@@ -242,6 +267,18 @@ def compute_joints(props):
         ball, toe_tip = m_ball.copy(), m_ftip.copy()
     else:
         ball, toe_tip = _foot_points(co, ground, h, ankle)
+    # real heel extent from the mesh: rear + width of the foot at ground level
+    # (heel.02 was placed by a fixed ank.y+0.06h formula that floats BEHIND
+    # short/stubby feet and spans a hardcoded width)
+    _fm = ((co[:, 2] < ground + 0.04 * h) &
+           (np.abs(co[:, 0] - ankle.x) < 0.10 * h) &
+           (co[:, 0] > 0.015 * h))          # LEFT foot only - never the other foot
+
+    if _fm.sum() > 5:
+        _fs = co[_fm]
+        J["heel_back_y.L"] = float(np.percentile(_fs[:, 1], 99))
+        J["heel_x.L"] = (float(np.percentile(_fs[:, 0], 3)),
+                         float(np.percentile(_fs[:, 0], 97)))
     J["thigh.L"] = (hip, knee)
     J["shin.L"] = (knee, ankle)
     J["foot.L"] = (ankle, ball)         # ankle -> ball of the foot

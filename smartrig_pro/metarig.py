@@ -130,9 +130,18 @@ def _fit_core(mo, props, J, h, ground, yc):
         setb("foot" + suf, f(Vector(ft0)), f(Vector(t0)))
         setb("toe" + suf, f(Vector(t0)), f(Vector(t1)))
         ank = Vector(ft0); hy = ank.y + 0.06 * h
-        hw = 0.035 * h
-        setb("heel.02" + suf, f(Vector((ank.x - hw, hy, ground))),
-             f(Vector((ank.x + hw, hy, ground))))
+        hb = J.get("heel_back_y.L")
+        if hb is not None:
+            hy = min(hy, hb - 0.012 * h)     # keep the heel pivot INSIDE the foot
+        hx = J.get("heel_x.L")
+        if hx is not None:
+            pad = 0.12 * (hx[1] - hx[0])
+            x0, x1 = hx[0] + pad, hx[1] - pad
+        else:
+            hw = 0.035 * h
+            x0, x1 = ank.x - hw, ank.x + hw
+        setb("heel.02" + suf, f(Vector((x0, hy, ground))),
+             f(Vector((x1, hy, ground))))
         setb("pelvis" + suf, f(pelvis), f(Vector(J["thigh.L"][0])))
     limbs(".L", False)
     limbs(".R", True)

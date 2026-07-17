@@ -192,6 +192,57 @@ def _draw_face_labels(region, rv3d):
                  .replace(".R", " R").title())
 
 
+def _draw_fingers(region, rv3d):
+    """Glow + connecting lines for the manual finger/palm markers (fm.*)."""
+    from . import fingers_manual as _fm
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    gpu.state.blend_set('ALPHA')
+    col = (0.3, 1.0, 0.45)
+    m = max(_marker_mult(), 1.0)
+    for part in ("palm", "hand", "foot"):
+        for side in ("L", "R"):
+            try:
+                chains = _fm.list_fingers(part, side)
+            except Exception:
+                continue
+            for _fn, chain in chains.items():
+                pts2 = []
+                for o in chain:
+                    try:
+                        if o.hide_get():
+                            continue
+                    except Exception:
+                        pass
+                    p = view3d_utils.location_3d_to_region_2d(
+                        region, rv3d, o.matrix_world.translation)
+                    if not p:
+                        continue
+                    pts2.append(p)
+                    sel = _selected(o)
+                    s2 = (1.4 if sel else 0.8) * m
+                    for rr, aa in ((14 * s2, 0.18), (8 * s2, 0.45)):
+                        b = batch_for_shader(shader, 'TRI_FAN',
+                                             {"pos": _circle(p.x, p.y, rr)})
+                        shader.bind()
+                        shader.uniform_float("color", (col[0], col[1], col[2], aa))
+                        b.draw(shader)
+                    core = SEL_COLOR if sel else (1, 1, 1)
+                    b = batch_for_shader(shader, 'TRI_FAN',
+                                         {"pos": _circle(p.x, p.y, 3.2 * s2)})
+                    shader.bind()
+                    shader.uniform_float("color", (core[0], core[1], core[2], 0.98))
+                    b.draw(shader)
+                if len(pts2) >= 2:
+                    gpu.state.line_width_set(1.6)
+                    b = batch_for_shader(shader, 'LINE_STRIP',
+                                         {"pos": [(p.x, p.y) for p in pts2]})
+                    shader.bind()
+                    shader.uniform_float("color", (col[0], col[1], col[2], 0.85))
+                    b.draw(shader)
+                    gpu.state.line_width_set(1.0)
+    gpu.state.blend_set('NONE')
+
+
 def _draw_cb():
     try:
         region = bpy.context.region
