@@ -98,6 +98,26 @@ def _marker_mult():
         return 1.0
 
 
+def _face_marker_items():
+    """(object, role) for the Face markers - same glow system."""
+    items = []
+    try:
+        fcol = bpy.data.collections.get("SR_FaceMarkers")
+        if fcol is not None and not fcol.hide_viewport:
+            for o in fcol.objects:
+                if not o.name.startswith("face_"):
+                    continue
+                try:
+                    if o.hide_get():
+                        continue
+                except Exception:
+                    pass
+                items.append((o, _role(o.name)))
+    except Exception:
+        pass
+    return items
+
+
 def _draw_glow(region, rv3d):
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
