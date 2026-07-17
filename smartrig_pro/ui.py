@@ -637,6 +637,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         st = _step(box, 5, "Build Face Base", 'OUTLINER_OB_ARMATURE',
                    'done' if built else ('active' if has_mk else 'todo'))
         if has_mk:
+            st.prop(props, "face_lip_ctls", text="Lip Controls / side")
             r = st.row(); r.scale_y = 1.7
             r.operator("smartrig.face_build_base",
                        text=("Rebuild Face Base" if built else "Build Face Base"),

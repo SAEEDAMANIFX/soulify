@@ -1151,12 +1151,16 @@ def _control_table(gp, ipd, P_jaw, head_key):
         for part, pos in (("in", cin), ("mid", gp["cheek_up" + sd]), ("out", cout)):
             T.append(("CTL-Cheek_%s%s" % (part, sd), pos, "WGT-triangle",
                       1.8, 'THEME09', "CTL-Cheek_all" + sd, 0.42 * u))
-        # ---- lips locals + corners ----
+        # ---- lips locals + corners (UPPER = red, LOWER = blue, count
+        #      configurable via face_lip_ctls) ----
+        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 2))
         for lvl, cen_key in (("upp", "lip_T"), ("low", "lip_B")):
-            for k, t in (("1", 0.4), ("2", 0.75)):
+            _pal = 'THEME01' if lvl == "upp" else 'THEME04'
+            for k in range(1, _nl + 1):
+                t = k / (_nl + 1.0)
                 pos = lerp(gp[cen_key], gp["mouth_corner" + sd], t)
-                T.append(("CTL-Lips_local%s_%s%s" % (k, lvl, sd), pos,
-                          "WGT-triangle", 1.4, 'THEME09',
+                T.append(("CTL-Lips_local%d_%s%s" % (k, lvl, sd), pos,
+                          "WGT-triangle", 1.4, _pal,
                           "CTL-Lips_main_" + lvl, 0.16 * u))
         T.append(("CTL-Lips_corn" + sd, gp["mouth_corner" + sd],
                   "WGT-Mouth_corner", (3.7 if sd == ".L" else -3.7, 3.7, 3.7),
@@ -1164,9 +1168,9 @@ def _control_table(gp, ipd, P_jaw, head_key):
 
     # ---- lips mains (center) ----
     T.append(("CTL-Lips_main_upp", gp["lip_T"], "WGT-lips_main",
-              (8.3, -4.6, 8.3), 'THEME09', 'mouth', 0.30 * u))
+              (8.3, -4.6, 8.3), 'THEME01', 'mouth', 0.30 * u))
     T.append(("CTL-Lips_main_low", gp["lip_B"], "WGT-lips_main",
-              (8.3, 6.2, 8.3), 'THEME09', 'jaw', 0.30 * u))
+              (8.3, 6.2, 8.3), 'THEME04', 'jaw', 0.30 * u))
     # ---- nose ----
     T.append(("MSTR-Nose", gp["nose_base"], "WGT-Circle", 5.8, 'THEME03',
               'face_low', 0.40 * u))
@@ -1189,7 +1193,11 @@ def build_controls(props, context, rig, parent_name, ipd, P_jaw):
 
     # idempotent: drop previous controls + DEF twins + corner MCHs
     names = [row[0] for row in T]
-    drop = names + ["DEF" + n[3:] for n in names if n.startswith("CTL")] +            ["MCH-Lips_corn.L", "MCH-Lips_corn.R", "DEF-Nose"]
+    drop = names + ["DEF" + n[3:] for n in names if n.startswith("CTL")] + \
+           ["MCH-Lips_corn.L", "MCH-Lips_corn.R", "DEF-Nose"]
+    # the count may have CHANGED: purge every existing lip local + twin
+    drop += [b.name for b in eb
+             if b.name.startswith(("CTL-Lips_local", "DEF-Lips_local"))]
     for n in drop:
         if n in eb:
             eb.remove(eb[n])
@@ -1282,9 +1290,10 @@ def _local_def_names():
         for part in ("in", "mid", "out"):
             out += ["DEF-Brow_%s%s" % (part, sd), "DEF-Cheek_%s%s" % (part, sd)]
         out += ["DEF-Lid_upp" + sd, "DEF-Lid_low" + sd, "DEF-Lips_corn" + sd]
+        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 2))
         for lvl in ("upp", "low"):
-            for k in ("1", "2"):
-                out.append("DEF-Lips_local%s_%s%s" % (k, lvl, sd))
+            for k in range(1, _nl + 1):
+                out.append("DEF-Lips_local%d_%s%s" % (k, lvl, sd))
     out += ["DEF-Lips_main_upp", "DEF-Lips_main_low", "DEF-Nose"]
     return out
 
@@ -1344,9 +1353,12 @@ def local_weights(props, context, rig):
         fields["DEF-Cheek_in" + sd] = (cin, 0.42 * u)
         fields["DEF-Cheek_mid" + sd] = (gp["cheek_up" + sd], 0.42 * u)
         fields["DEF-Cheek_out" + sd] = (cout, 0.42 * u)
+        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 2))
         for lvl, cen_key in (("upp", "lip_T"), ("low", "lip_B")):
-            for k, t in (("1", 0.4), ("2", 0.75)):
-                fields["DEF-Lips_local%s_%s%s" % (k, lvl, sd)] =                     (lerp(gp[cen_key], gp["mouth_corner" + sd], t), 0.16 * u)
+            for k in range(1, _nl + 1):
+                t = k / (_nl + 1.0)
+                fields["DEF-Lips_local%d_%s%s" % (k, lvl, sd)] = (
+                    lerp(gp[cen_key], gp["mouth_corner" + sd], t), 0.16 * u)
         fields["DEF-Lips_corn" + sd] = (gp["mouth_corner" + sd], 0.22 * u)
     fields["DEF-Lips_main_upp"] = (gp["lip_T"], 0.30 * u)
     fields["DEF-Lips_main_low"] = (gp["lip_B"], 0.30 * u)
@@ -1423,6 +1435,123 @@ class SMARTRIG_OT_face_detect(bpy.types.Operator):
             self.report({'WARNING'}, "No eye meshes found - markers are a "
                         "proportional guess, please adjust them")
         return {'FINISHED'}
+
+
+# professional widget sizing: max WORLD size per control, in IPD units -
+# the addon knows the character's size and the widgets follow it
+_WGT_CAPS = (
+    ("CTL-Jaw", 0.55), ("MSTR-Face_upp", 0.60), ("MSTR-Face_low", 0.60),
+    ("MSTR-Eye_target", 0.45), ("CTL-Brow_all", 0.30), ("CTL-Cheek_all", 0.25),
+    ("MSTR-Mouth", 0.30), ("MSTR-Eye.", 0.22), ("MSTR-Nose", 0.18),
+    ("CTL-Eye_target", 0.16), ("CTL-", 0.16), ("MSTR-", 0.25),
+)
+
+
+def organize_face_layers(rig):
+    """PROFESSIONAL bone layers for the face (Saeed's spec): primary controls
+    under Face (Primary), tweaks under Face (Secondary), everything under
+    Face; DEF twins + MCH helpers into a HIDDEN collection. Matches the
+    body's Rig Layers discipline (v1.91)."""
+    data = rig.data
+
+    def coll(name, visible=True):
+        c = data.collections.get(name)
+        if c is None:
+            c = data.collections.new(name)
+        c.is_visible = visible
+        return c
+
+    c_face = coll("Face")
+    c_pri = coll("Face (Primary)")
+    c_sec = coll("Face (Secondary)")
+    c_mch = coll("Face (MCH)", visible=False)
+    PRIMARY = ("MSTR-", "CTL-Jaw", "CTL-Brow_all", "CTL-Cheek_all",
+               "CTL-Eye_target")
+    n = 0
+    for b in data.bones:
+        nm = b.name
+        is_ctl = nm.startswith(("CTL-", "MSTR-"))
+        is_help = (nm.startswith(("MCH-Lips_corn", "DEF-Brow_", "DEF-Lid_",
+                                  "DEF-Cheek_", "DEF-Lips_", "DEF-Nose",
+                                  "DEF-Eye_target", "DEF-jaw", "DEF-ear",
+                                  "DEF-eye"))
+                   or nm in ("DEF-Jaw",))
+        if not (is_ctl or is_help):
+            continue
+        # remove from every collection first (no strays in Torso etc.)
+        for c in list(b.collections):
+            try:
+                c.unassign(b)
+            except Exception:
+                pass
+        if is_ctl:
+            c_face.assign(b)
+            if any(nm.startswith(p) for p in PRIMARY):
+                c_pri.assign(b)
+            else:
+                c_sec.assign(b)
+        else:
+            c_mch.assign(b)
+        n += 1
+    return n
+
+
+def separate_lip_widgets(rig, ipd):
+    """Thin lips = upper/lower lip controls overlap on the mouth line: nudge
+    the DRAWN widgets up/down (bones + weights stay put) so upper (red)
+    reads above the line and lower (blue) below."""
+    off = 0.14 * ipd
+    n = 0
+    for pb in rig.pose.bones:
+        nm = pb.name
+        if not nm.startswith(("CTL-Lips_local", "CTL-Lips_main")):
+            continue
+        up = "_upp" in nm
+        try:
+            t = pb.custom_shape_translation
+            pb.custom_shape_translation = (t[0], off if up else -off, t[2])
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
+def normalize_widget_sizes(rig, ipd):
+    """Clamp every face control's DRAWN size to a character-proportional cap
+    (Storm's cs_scale numbers were tuned for the Storm character - on a
+    different head they explode; Saeed: widgets must fit the character)."""
+    import numpy as np
+    n = 0
+    for pb in rig.pose.bones:
+        if not pb.name.startswith(("CTL-", "MSTR-")):
+            continue
+        shp = pb.custom_shape
+        if shp is None or shp.type != 'MESH' or pb.length < 1e-6:
+            continue
+        try:
+            vs = np.array([list(v.co) for v in shp.data.vertices])
+            if not len(vs):
+                continue
+            rad = float(np.abs(vs).max())
+            cs = max(abs(v) for v in pb.custom_shape_scale_xyz)
+            world = pb.length * cs * rad
+            cap_mult = next((m for pre, m in _WGT_CAPS
+                             if pb.name.startswith(pre)), 0.2)
+            cap = cap_mult * ipd
+            if world > cap and world > 1e-9:
+                f = cap / world
+                s = pb.custom_shape_scale_xyz
+                pb.custom_shape_scale_xyz = (s[0] * f, s[1] * f, s[2] * f)
+                # pull the shape's offset in proportionally too
+                try:
+                    t = pb.custom_shape_translation
+                    pb.custom_shape_translation = (t[0] * f, t[1] * f, t[2] * f)
+                except Exception:
+                    pass
+                n += 1
+        except Exception:
+            pass
+    return n
 
 
 def _face_rigs():
@@ -2004,7 +2133,29 @@ class SMARTRIG_OT_face_build_base(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
+        # character-proportional widget sizes (Storm numbers explode on
+        # other heads)
+        try:
+            nw = normalize_widget_sizes(rig, ipd)
+            if nw:
+                print("Soulify: normalized %d face widget sizes" % nw)
+        except Exception as _e:
+            print("Soulify widget normalize failed:", _e)
+        try:
+            separate_lip_widgets(rig, ipd)
+        except Exception as _e:
+            print("Soulify lip widget separation failed:", _e)
+        try:
+            no = organize_face_layers(rig)
+            print("Soulify: organized %d face bones into Rig Layers" % no)
+        except Exception as _e:
+            print("Soulify face layers failed:", _e)
         # RIG VIEW: the tools disappear, the animator rig is what you see
+        try:
+            from . import markers as _mk2
+            _mk2.set_markers_hidden(True)        # body markers away too
+        except Exception:
+            pass
         g = bpy.data.objects.get(GRID_NAME)
         if g is not None:
             g.hide_set(True)                     # landmark net away

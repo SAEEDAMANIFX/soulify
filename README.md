@@ -31,3 +31,24 @@
 ## License note
 The AI packages (`AI/`) and any third-party proprietary sources are NOT part
 of this repository and are never distributed.
+
+---
+
+## ❤️ Support the Project | ادعم المشروع
+
+Soulify is built and tested by one developer, with heavy daily use of AI-assisted
+development tooling that costs real money every month. If this addon saves you
+time — or you simply want to see FaceIt-style face rigging, ARP-style smart body
+placement, and Storm-quality facial controls land in a free tool — you can help
+keep the work going:
+
+**[☕ Donate via PayPal → paypal.me/saeedamani](https://www.paypal.com/paypalme/saeedamani)**
+
+Every contribution, small or large, goes directly into development time and the
+tools used to build Soulify. Thank you!
+
+سوليفاي يطوَّر ويُختبر بجهد مطوّر واحد، مع استخدام يومي مكثّف لأدوات التطوير
+بالذكاء الاصطناعي وتكاليفها الشهرية الحقيقية. إذا وفّرت لك الإضافة وقتاً — أو
+تحب ترى ريق وجوه بمستوى FaceIt وStorm وتوزيع عظام ذكي بمستوى Auto-Rig Pro في
+أداة مجانية — تقدر تساعد في استمرار العمل عبر الرابط أعلاه. كل مساهمة، صغيرة
+أو كبيرة، تذهب مباشرة لوقت التطوير وأدواته. شكراً لك!
