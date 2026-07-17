@@ -231,6 +231,12 @@ class SMARTRIG_OT_face_rig_check(bpy.types.Operator):
             self.report({'ERROR'}, "Build + bind the face rig first")
             return {'CANCELLED'}
         sc.frame_set(0)
+        # detach the expressions action while probing - keyed rest values
+        # would overwrite the manual test poses and fake 0.0 readings
+        old_action = None
+        if rig.animation_data is not None and rig.animation_data.action:
+            old_action = rig.animation_data.action
+            rig.animation_data.action = None
         meshes = [ob for ob in sc.objects if ob.type == 'MESH'
                   and not ob.name.startswith(("HLP-", "WGT", "SR_", "GEO-"))
                   and any(m.type == 'ARMATURE' and m.object is rig
@@ -345,6 +351,9 @@ class SMARTRIG_OT_face_rig_check(bpy.types.Operator):
         except Exception:
             pass
 
+        if old_action is not None:
+            rig.animation_data.action = old_action
+            sc.frame_set(0)
         sc["sr_rig_check"] = json.dumps(lines)
         npass = sum(1 for l in lines if l[2])
         self.report({'INFO'} if npass == len(lines) else {'WARNING'},
