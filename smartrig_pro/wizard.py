@@ -246,51 +246,94 @@ def _draw_fingers(region, rv3d):
 
 
 def _draw_face_grid(region, rv3d):
-    """FaceIt-style net for SR_FaceGrid: a dot on every vertex + thin lines
-    along the edges, BOTH halves (evaluated mesh includes the mirror)."""
+    """FaceIt-style net for SR_FaceGrid: BLACK dots for the structure, ORANGE
+    for the eyelid + lip rings, and BIG RED dots on the eye corners and the
+    mouth corners so the user knows exactly where the key points belong."""
     ob = bpy.data.objects.get("SR_FaceGrid")
     if ob is None or not ob.visible_get():
         return
-    try:
-        dg = bpy.context.evaluated_depsgraph_get()
-        me = ob.evaluated_get(dg).to_mesh()
-    except Exception:
-        return
+    from . import face as _fc
+    from mathutils import Vector
     mw = ob.matrix_world
-    pts2 = []
-    for v in me.vertices:
-        p = view3d_utils.location_3d_to_region_2d(region, rv3d, mw @ v.co)
-        pts2.append(p)
-    lines = []
-    for e in me.edges:
-        a, b = pts2[e.vertices[0]], pts2[e.vertices[1]]
-        if a and b:
-            lines.append((a.x, a.y)); lines.append((b.x, b.y))
+
+    RING = {"lip_T", "lip_B", "lip_T_in", "lip_B_in",
+            "lip_T.L", "lip_B.L", "lip_T_in.L", "lip_B_in.L",
+            "lid_T_in.L", "lid_T.L", "lid_T_out.L",
+            "lid_B_in.L", "lid_B.L", "lid_B_out.L"}
+    CORNER = {"eye_in.L", "eye_out.L", "mouth_corner.L"}
+
+    # 2D positions per template name (draw the .R mirror ourselves - the
+    # mirror-modifier vert order is not name-addressable)
+    p2 = {}
+    try:
+        # use EDIT-MODE live coords when the user is editing the net
+        if ob.mode == 'EDIT':
+            import bmesh
+            bm = bmesh.from_edit_mesh(ob.data)
+            cos = [v.co.copy() for v in bm.verts]
+        else:
+            cos = [v.co for v in ob.data.vertices]
+    except Exception:
+        cos = [v.co for v in ob.data.vertices]
+    for name, i in _fc.GRID_IDX.items():
+        if i >= len(cos):
+            continue
+        w = mw @ cos[i]
+        p2[name] = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+        if name.endswith(".L"):
+            wm = Vector((-w.x, w.y, w.z))
+            p2[name[:-2] + ".R"] = view3d_utils.location_3d_to_region_2d(
+                region, rv3d, wm)
+
+    def _sides(nm):
+        if nm.endswith(".L"):
+            return [nm, nm[:-2] + ".R"]
+        return [nm]
+
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
-    if lines:
-        gpu.state.line_width_set(1.4)
-        b = batch_for_shader(shader, 'LINES', {"pos": lines})
-        shader.bind()
-        shader.uniform_float("color", (1.0, 0.62, 0.15, 0.85))
-        b.draw(shader)
-        gpu.state.line_width_set(1.0)
-    for p in pts2:
-        if not p:
-            continue
-        b = batch_for_shader(shader, 'TRI_FAN', {"pos": _circle(p.x, p.y, 4.4)})
-        shader.bind()
-        shader.uniform_float("color", (0.04, 0.04, 0.04, 0.95))
-        b.draw(shader)
-        b = batch_for_shader(shader, 'TRI_FAN', {"pos": _circle(p.x, p.y, 2.2)})
-        shader.bind()
-        shader.uniform_float("color", (1.0, 0.75, 0.25, 1.0))
-        b.draw(shader)
+    # ---- edges: ring edges orange, the rest dark (like FaceIt) ----
+    for col, want_ring in (((0.07, 0.07, 0.07, 0.9), False),
+                           ((1.0, 0.55, 0.1, 0.95), True)):
+        lines = []
+        for a, b in _fc._TE:
+            ring_edge = (a in RING or a in CORNER) and (b in RING or b in CORNER)
+            if ring_edge != want_ring:
+                continue
+            for sa, sb in zip(_sides(a) if a.endswith(".L") else _sides(a) * 2,
+                              _sides(b) if b.endswith(".L") else _sides(b) * 2):
+                pa, pb = p2.get(sa), p2.get(sb)
+                if pa and pb:
+                    lines.append((pa.x, pa.y)); lines.append((pb.x, pb.y))
+        if lines:
+            gpu.state.line_width_set(1.6 if want_ring else 1.2)
+            b = batch_for_shader(shader, 'LINES', {"pos": lines})
+            shader.bind(); shader.uniform_float("color", col); b.draw(shader)
+    gpu.state.line_width_set(1.0)
+
+    # ---- dots ----
+    def dot(p, r, col):
+        b = batch_for_shader(shader, 'TRI_FAN', {"pos": _circle(p.x, p.y, r)})
+        shader.bind(); shader.uniform_float("color", col); b.draw(shader)
+
+    for name in list(_fc.GRID_IDX):
+        for nm in _sides(name):
+            p = p2.get(nm)
+            if not p:
+                continue
+            base = name if not nm.endswith(".R") else name
+            if name in CORNER:
+                # KEY corner: big red dot with a white halo - the user must
+                # put these exactly on the eye / mouth corners
+                dot(p, 7.5, (1.0, 1.0, 1.0, 0.95))
+                dot(p, 5.2, (0.95, 0.12, 0.1, 1.0))
+            elif name in RING:
+                dot(p, 4.6, (0.04, 0.04, 0.04, 0.95))
+                dot(p, 3.2, (1.0, 0.55, 0.1, 1.0))
+            else:
+                dot(p, 4.4, (0.04, 0.04, 0.04, 0.95))
+                dot(p, 2.0, (0.25, 0.25, 0.25, 1.0))
     gpu.state.blend_set('NONE')
-    try:
-        ob.evaluated_get(dg).to_mesh_clear()
-    except Exception:
-        pass
 
 
 def _draw_cb():
