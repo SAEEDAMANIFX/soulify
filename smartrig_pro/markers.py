@@ -727,31 +727,45 @@ def center_clicked(props, name, loc):
             ymid = 0.5 * (float(np.percentile(ys, 2)) + float(np.percentile(ys, 98)))
             return Vector((0.0, ymid, loc.z))
         return Vector((0.0, loc.y, loc.z))
-    # limb: shoot through the mesh along the inward normal, take the midpoint
+    # limb: DEPTH-center only. The click fixes X and Z exactly (that is what
+    # the user aimed at); a screen click cannot control the front-back DEPTH,
+    # so shoot a ray through the whole body along Y at the clicked (x, z),
+    # pair the crossings into solid segments, merge double-wall shells
+    # (gap < 1.2% of height), and put the marker at the midpoint of the
+    # segment the click belongs to. Predictable (marker never leaves the
+    # clicked spot on screen), idempotent, teleport-free. Earlier
+    # normal-march / centroid / axis-slab attempts all jumped 6-25cm at the
+    # shoulder or knee - surface normals and junction cross-sections lie.
     try:
-        mi = mesh.matrix_world.inverted()
-        ok, cp, nrm, _i = mesh.closest_point_on_mesh(mi @ loc)
-        if not ok:
-            return loc
-        n_w = (mesh.matrix_world.to_3x3() @ nrm).normalized()
-        start = loc - n_w * (0.002 * h)
-        exit_p = None
-        cur = start
-        for _ in range(8):                     # march to the LAST exit
-            # NO distance limit: ray_cast's distance is in LOCAL units, so on
-            # scaled imports (e.g. 0.01-scale FBX) a world-space 0.25*h never
-            # reaches the far wall and the centering silently did NOTHING.
-            # The world-space gates below already bound the result.
-            hit, hl, hn, _j = mesh.ray_cast(mi @ cur,
-                                            (mi.to_3x3() @ (-n_w)).normalized())
+        M = mesh.matrix_world
+        mi = M.inverted()
+        d_w = Vector((0.0, 1.0, 0.0))
+        d_l = (mi.to_3x3() @ d_w).normalized()
+        ylo = float(co[:, 1].min()) - 0.05 * h
+        yhi = float(co[:, 1].max()) + 0.05 * h
+        cur = mi @ Vector((loc.x, ylo, loc.z))
+        ys = []
+        for _ in range(64):
+            hit, hl, hn, _i = mesh.ray_cast(cur, d_l)
             if not hit:
                 break
-            exit_p = mesh.matrix_world @ hl
-            cur = exit_p - n_w * (0.002 * h)
-            if (exit_p - loc).length > 0.22 * h:
+            w = M @ hl
+            if w.y > yhi:
                 break
-        if exit_p is not None and 0.005 * h < (exit_p - loc).length < 0.25 * h:
-            return (loc + exit_p) / 2.0
+            ys.append(float(w.y))
+            cur = hl + d_l * 1e-4
+        if len(ys) < 2:
+            return loc
+        segs = [[ys[i], ys[i + 1]] for i in range(0, len(ys) - 1, 2)]
+        merged = [segs[0]]
+        for s in segs[1:]:
+            if s[0] - merged[-1][1] < 0.012 * h:     # double-wall shell: fuse
+                merged[-1][1] = s[1]
+            else:
+                merged.append(s)
+        best = min(merged, key=lambda s: 0.0 if s[0] <= loc.y <= s[1]
+                   else min(abs(loc.y - s[0]), abs(loc.y - s[1])))
+        return Vector((loc.x, 0.5 * (best[0] + best[1]), loc.z))
     except Exception:
         pass
     return loc
