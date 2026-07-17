@@ -366,6 +366,8 @@ class SMARTRIG_OT_expr_generate(bpy.types.Operator):
         _rest_key_all(act, rig, bones, 0)
         items = context.scene.sr_face_expressions
         items.clear()
+        it0 = items.add()                      # Rest pose = first list entry
+        it0.name, it0.category, it0.frame = "Rest (neutral)", 'EXPR', 0
         f = FRAME_START
         for preset in presets:
             _rest_key_all(act, rig, bones, f)
@@ -401,6 +403,9 @@ class SMARTRIG_OT_expr_save_edit(bpy.types.Operator):
             self.report({'ERROR'}, "Generate the battery first")
             return {'CANCELLED'}
         frame = sc.sr_face_expressions[i].frame
+        if frame == 0:
+            self.report({'ERROR'}, "This is the Rest pose - it stays neutral")
+            return {'CANCELLED'}
         n = 0
         for pb in rig.pose.bones:
             if pb.name.startswith(("DEF-", "DSP-", "ORG-", "MCH-")):
@@ -510,6 +515,204 @@ class SMARTRIG_OT_expr_unbake(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _swap_side(name):
+    if name.endswith(".L"):
+        return name[:-2] + ".R"
+    if name.endswith(".R"):
+        return name[:-2] + ".L"
+    return None
+
+
+def _active_item(context):
+    sc = context.scene
+    i = sc.sr_face_expr_index
+    if 0 <= i < len(sc.sr_face_expressions):
+        return sc.sr_face_expressions[i]
+    return None
+
+
+class SMARTRIG_OT_expr_mirror(bpy.types.Operator):
+    """Mirror the active expression's pose to the other side (side bones
+    are cross-copied X-mirrored; center bones get their sideways motion
+    flipped)"""
+    bl_idname = "smartrig.expr_mirror"
+    bl_label = "Mirror Expression"
+    bl_options = {'REGISTER', 'UNDO'}
+    direction: bpy.props.EnumProperty(items=[
+        ('L2R', "L to R", "Copy .L bone poses onto .R, mirrored"),
+        ('R2L', "R to L", "Copy .R bone poses onto .L, mirrored")],
+        default='L2R')
+    include_center: bpy.props.BoolProperty(
+        name="Mirror Center Bones", default=False,
+        description="Also flip the sideways motion of center bones "
+                    "(MSTR-Mouth etc.)")
+
+    def execute(self, context):
+        from mathutils import Vector
+        sc = context.scene
+        rig = _rig()
+        act = bpy.data.actions.get(ACTION_NAME)
+        item = _active_item(context)
+        if rig is None or act is None or item is None or item.frame == 0:
+            self.report({'ERROR'}, "Pick an expression first (not Rest)")
+            return {'CANCELLED'}
+        frame = item.frame
+        sc.frame_set(frame)
+        src_sfx = ".L" if self.direction == 'L2R' else ".R"
+        n = 0
+        for pb in rig.pose.bones:
+            tag = 'pose.bones["%s"]' % pb.name
+            keyed = any(tag in fc.data_path for fc in _action_fcurves(act))
+            posed = (pb.location.length > 1e-6 or
+                     (pb.rotation_mode == 'QUATERNION' and
+                      abs(pb.rotation_quaternion.angle) > 1e-4) or
+                     (pb.rotation_mode != 'QUATERNION' and
+                      Vector(pb.rotation_euler).length > 1e-6))
+            if not (keyed or posed):
+                continue
+            rot = (pb.rotation_euler.copy()
+                   if pb.rotation_mode != 'QUATERNION'
+                   else pb.rotation_quaternion.to_euler('XYZ'))
+            if pb.name.endswith(src_sfx):
+                dst = rig.pose.bones.get(_swap_side(pb.name))
+                if dst is None:
+                    continue
+                # location: to armature space, flip X, into the dst frame
+                v = pb.bone.matrix_local.to_3x3() @ pb.location
+                v.x = -v.x
+                dloc = dst.bone.matrix_local.to_3x3().inverted() @ v
+                drot = (rot.x, -rot.y, -rot.z)
+                _key_bone(act, rig, dst, frame, tuple(dloc), drot)
+                n += 1
+            elif not pb.name.endswith((".L", ".R")) and self.include_center:
+                v = pb.bone.matrix_local.to_3x3() @ pb.location
+                v.x = -v.x
+                dloc = pb.bone.matrix_local.to_3x3().inverted() @ v
+                drot = (rot.x, -rot.y, -rot.z)
+                _key_bone(act, rig, pb, frame, tuple(dloc), drot)
+                n += 1
+        _set_constant(act)
+        sc.frame_set(frame)          # re-evaluate the updated keys
+        self.report({'INFO'}, "Mirrored %d bones (%s)" % (n, self.direction))
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_expr_reset(bpy.types.Operator):
+    """Reset the active expression back to its generated pose (removes your
+    pose edits AND its sculpt corrective)"""
+    bl_idname = "smartrig.expr_reset"
+    bl_label = "Reset Expression"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        sc = context.scene
+        rig = _rig()
+        act = bpy.data.actions.get(ACTION_NAME)
+        item = _active_item(context)
+        if rig is None or act is None or item is None or item.frame == 0:
+            self.report({'ERROR'}, "Pick an expression first (not Rest)")
+            return {'CANCELLED'}
+        frame = item.frame
+        units = list(rig.data.get("sr_expr_units", []))
+        if len(units) != 3:
+            self.report({'ERROR'}, "Generate the battery first")
+            return {'CANCELLED'}
+        S, W, sign = units
+        presets = build_presets(S, W, sign)
+        preset = next((p for p in presets if p[0] == item.name), None)
+        # bones touched at this frame (keyed anywhere in the action)
+        bones = set(_pose_bone_set(presets))
+        import re as _re
+        for fc in _action_fcurves(act):
+            m = _re.match(r'pose\.bones\["([^"]+)"\]', fc.data_path)
+            if m:
+                bones.add(m.group(1))
+        _rest_key_all(act, rig, sorted(bones), frame)
+        if preset is not None:
+            _apply_preset_frame(act, rig, preset, frame, S)
+        _set_constant(act)
+        # drop the sculpt corrective of this expression, if any
+        for ob in sc.objects:
+            if ob.type != 'MESH' or ob.data.shape_keys is None:
+                continue
+            kb = ob.data.shape_keys.key_blocks.get("CORR-" + item.name)
+            if kb is not None:
+                ob.shape_key_remove(kb)
+        sc.frame_set(frame)
+        self.report({'INFO'}, "'%s' reset to its generated pose" % item.name)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_expr_corrective(bpy.types.Operator):
+    """Sculpt/edit a CORRECTIVE for the active expression: your changes are
+    stored in a shape key that is ON only during this expression (FaceIt
+    style) - the bake picks it up automatically"""
+    bl_idname = "smartrig.expr_corrective"
+    bl_label = "Edit Corrective"
+    bl_options = {'REGISTER', 'UNDO'}
+    mode: bpy.props.EnumProperty(items=[
+        ('SCULPT', "Sculpt", "Sculpt Mode"),
+        ('EDIT', "Edit", "Edit Mode")], default='SCULPT')
+
+    def execute(self, context):
+        sc = context.scene
+        props = sc.smartrig
+        item = _active_item(context)
+        mesh = getattr(props, "target_mesh", None)
+        if item is None or item.frame == 0 or mesh is None:
+            self.report({'ERROR'}, "Pick an expression first (not Rest)")
+            return {'CANCELLED'}
+        sc.frame_set(item.frame)
+        if mesh.data.shape_keys is None:
+            mesh.shape_key_add(name="Basis", from_mix=False)
+        name = "CORR-" + item.name
+        kb = mesh.data.shape_keys.key_blocks.get(name)
+        if kb is None:
+            kb = mesh.shape_key_add(name=name, from_mix=False)
+        # ON only during this expression's frame (constant steps)
+        kb.value = 1.0
+        kb.keyframe_insert("value", frame=item.frame)
+        kb.value = 0.0
+        kb.keyframe_insert("value", frame=0)
+        kb.keyframe_insert("value", frame=item.frame + 1)
+        kb.value = 1.0
+        ad = mesh.data.shape_keys.animation_data
+        if ad and ad.action:
+            _set_constant(ad.action)
+        # activate the key and enter the editing mode
+        for i, k in enumerate(mesh.data.shape_keys.key_blocks):
+            if k.name == name:
+                mesh.active_shape_key_index = i
+        if context.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+        bpy.ops.object.select_all(action='DESELECT')
+        mesh.hide_set(False)
+        mesh.select_set(True)
+        context.view_layer.objects.active = mesh
+        bpy.ops.object.mode_set(mode=self.mode)
+        self.report({'INFO'}, "Editing corrective '%s' - press Done when "
+                    "finished" % name)
+        return {'FINISHED'}
+
+
+class SMARTRIG_OT_expr_corrective_done(bpy.types.Operator):
+    """Finish corrective editing and return to Object Mode"""
+    bl_idname = "smartrig.expr_corrective_done"
+    bl_label = "Done (back to Object Mode)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        if context.mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:
+                pass
+        return {'FINISHED'}
+
+
 # --------------------------------------------------------------------- UI
 def draw_panel(layout, context):
     sc = context.scene
@@ -530,12 +733,32 @@ def draw_panel(layout, context):
         r = box.row(align=True); r.scale_y = 1.2
         r.operator("smartrig.expr_save_edit", icon='FILE_TICK')
         r = box.row(align=True)
+        op = r.operator("smartrig.expr_mirror", text="Mirror L>R",
+                        icon='MOD_MIRROR')
+        op.direction = 'L2R'
+        op = r.operator("smartrig.expr_mirror", text="Mirror R>L",
+                        icon='MOD_MIRROR')
+        op.direction = 'R2L'
+        r.operator("smartrig.expr_reset", text="Reset", icon='LOOP_BACK')
+        r = box.row(align=True)
+        op = r.operator("smartrig.expr_corrective", text="Sculpt Corrective",
+                        icon='SCULPTMODE_HLT')
+        op.mode = 'SCULPT'
+        op = r.operator("smartrig.expr_corrective", text="Edit",
+                        icon='EDITMODE_HLT')
+        op.mode = 'EDIT'
+        if context.mode in ('SCULPT', 'EDIT_MESH'):
+            r = box.row(); r.scale_y = 1.2
+            r.operator("smartrig.expr_corrective_done", icon='CHECKMARK')
+        r = box.row(align=True)
         r.operator("smartrig.expr_bake", icon='SHAPEKEY_DATA')
         r.operator("smartrig.expr_unbake", icon='X')
 
 
 _classes = (SR_ExpressionItem, SMARTRIG_UL_expressions,
             SMARTRIG_OT_expr_generate, SMARTRIG_OT_expr_save_edit,
+            SMARTRIG_OT_expr_mirror, SMARTRIG_OT_expr_reset,
+            SMARTRIG_OT_expr_corrective, SMARTRIG_OT_expr_corrective_done,
             SMARTRIG_OT_expr_bake, SMARTRIG_OT_expr_unbake)
 
 
