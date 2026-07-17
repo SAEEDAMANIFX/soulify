@@ -2057,8 +2057,8 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
         name="Loop",
         items=(('AUTO', "Auto", "Classify by distance"),
                ('MOUTH', "Mouth", "The selected loop is the mouth"),
-               ('EYE', "Eyelid", "The selected loop is an eyelid "
-                                 "(L/R by its position)")),
+               ('EYE_L', "Eyelid L", "Use the LEFT-side verts of the selection"),
+               ('EYE_R', "Eyelid R", "Use the RIGHT-side verts of the selection")),
         default='AUTO')
 
     @classmethod
@@ -2086,8 +2086,10 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
         # ---- classify: explicit from the pressed button, else by distance ----
         if self.region == 'MOUTH':
             region = "mouth"
-        elif self.region == 'EYE':
-            region = "eye.L" if cen[0] >= 0.0 else "eye.R"
+        elif self.region == 'EYE_L':
+            region = "eye.L"
+        elif self.region == 'EYE_R':
+            region = "eye.R"
         else:
             mouth_mid = (_lm("face_lip_up") + _lm("face_lip_low")) / 2.0
             eyeL, eyeR = _lm("face_eye.L"), _lm("face_eye.R")
@@ -2136,21 +2138,38 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
             msg = "Mouth loop registered (%d verts)" % len(idx)
         else:
             sd = ".L" if region == "eye.L" else ".R"
-            # sample the ring at the 8 template angles (XZ plane around center)
-            ang = np.degrees(np.arctan2(co[:, 2] - cen[2], co[:, 0] - cen[0]))
+            sign = 1.0 if sd == ".L" else -1.0
+            # ONLY this side's verts: a selection containing BOTH eyelid
+            # loops centred the ring at x=0 and stretched it across the
+            # whole face (the "marker broke" bug)
+            sub = co[co[:, 0] * sign > 0.0]
+            if len(sub) < 6:
+                self.report({'ERROR'}, "No %s-side eyelid verts in the "
+                            "selection - select the %s eyelid loop"
+                            % (sd[1], sd[1]))
+                return {'CANCELLED'}
+            cen_s = sub.mean(axis=0)
+            # signed X: the template angles are L-oriented for both sides
+            ang = np.degrees(np.arctan2(sub[:, 2] - cen_s[2],
+                                        (sub[:, 0] - cen_s[0]) * sign))
             ring = {"eye_out": 0.0, "lid_T_out": 45.0, "lid_T": 90.0,
                     "lid_T_in": 135.0, "eye_in": 180.0, "lid_B_in": -135.0,
                     "lid_B": -90.0, "lid_B_out": -45.0}
             for name, a in ring.items():
-                if sd == ".R":     # mirror the template angles for the R eye
-                    a = 180.0 - a if abs(a) != 90.0 else a
                 d = np.abs(((ang - a + 180.0) % 360.0) - 180.0)
                 j = int(np.argmin(d))
-                p = co[j]
+                p = sub[j]
                 if sd == ".R":     # grid stores the L side; mirror into it
                     p = np.array([-p[0], p[1], p[2]])
                 set_grid(name + ".L", p)
-            msg = "Eye%s loop registered (%d verts)" % (sd, len(idx))
+            msg = "Eye%s loop registered (%d verts)" % (sd, len(sub))
+            # X-mirror modifier on the face mesh: one real side = both eyes
+            if any(m.type == 'MIRROR' and m.use_axis[0]
+                   for m in body.modifiers):
+                if grid is not None:
+                    grid["sr_loop_eye_L"] = True
+                    grid["sr_loop_eye_R"] = True
+                msg += " - mirrored mesh: both eyes covered"
 
         if grid is not None:
             grid.data.update()

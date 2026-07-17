@@ -616,10 +616,18 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             op.region = 'MOUTH'
             r = st.row(align=True); r.scale_y = 1.5
             op = r.operator("smartrig.face_loop_register",
-                            text="Eyelid Loop  (L or R)",
-                            icon=('CHECKMARK' if (le_done and re_done)
-                                  else 'EDGESEL'))
-            op.region = 'EYE'
+                            text="Eyelid L",
+                            icon=('CHECKMARK' if le_done else 'EDGESEL'))
+            op.region = 'EYE_L'
+            op = r.operator("smartrig.face_loop_register",
+                            text="Eyelid R",
+                            icon=('CHECKMARK' if re_done else 'EDGESEL'))
+            op.region = 'EYE_R'
+            if props.target_mesh is not None and any(
+                    m.type == 'MIRROR' and m.use_axis[0]
+                    for m in props.target_mesh.modifiers):
+                st.label(text="Mirror modifier: one side = both",
+                         icon='MOD_MIRROR')
             rr = st.row(align=True)
             rr.label(text="Mouth", icon='CHECKMARK' if lm_done else 'BLANK1')
             rr.label(text="Eye.L", icon='CHECKMARK' if le_done else 'BLANK1')
