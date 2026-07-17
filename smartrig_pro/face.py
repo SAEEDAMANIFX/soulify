@@ -36,46 +36,36 @@ GRID_NAME = "SR_FaceGrid"
 # +u = .L side. Placed FLAT first (like FaceIt), edited in a locked front
 # view, then PROJECTED onto the head. Loops + short struts only - no long
 # crossing diagonals (the v1.99.15 net read as spaghetti).
+# Clean FaceIt-style half-face template (v1.99.17: TRIMMED to FaceIt's
+# density on Saeed's request - ~70 visible points). Coordinates in FACE
+# UNITS: chin=(0,0), brow line v~1.0, +u = .L side. Placed FLAT first,
+# edited in a locked front view, then PROJECTED onto the head. Closed loops
+# + short struts only - no crossing diagonals.
 FACE_TEMPLATE = {
-    # center column
+    # center column (12)
     "chin_bot": (0, -0.07), "chin": (0, 0.0), "chin_top": (0, 0.09),
     "lip_B": (0, 0.17), "lip_B_in": (0, 0.225), "lip_T_in": (0, 0.27),
     "lip_T": (0, 0.33), "nose_base": (0, 0.42), "nose_tip": (0, 0.52),
-    "nose_dorsum": (0, 0.66), "nose_bridge": (0, 0.80), "brow_c": (0, 0.98),
-    "forehead_mid": (0, 1.22), "forehead_c": (0, 1.44),
-    # face outline
+    "nose_bridge": (0, 0.80), "brow_c": (0, 0.98), "forehead_c": (0, 1.44),
+    # face outline (6)
     "jaw_low.L": (0.30, 0.02), "jaw_mid.L": (0.55, 0.20),
     "jaw_up.L": (0.70, 0.45), "ear_low.L": (0.78, 0.66),
     "temple.L": (0.79, 0.98), "forehead_side.L": (0.58, 1.30),
-    "forehead_top.L": (0.30, 1.43),
-    # brow arc (5)
-    "brow_in.L": (0.13, 1.00), "brow_in_mid.L": (0.27, 1.06),
-    "brow_mid.L": (0.41, 1.09), "brow_out_mid.L": (0.54, 1.05),
+    # brow arc (3)
+    "brow_in.L": (0.14, 1.00), "brow_mid.L": (0.41, 1.09),
     "brow_out.L": (0.65, 0.96),
     # eyelid ring (8)
     "eye_in.L": (0.245, 0.82), "lid_T_in.L": (0.31, 0.874),
     "lid_T.L": (0.40, 0.888), "lid_T_out.L": (0.49, 0.874),
     "eye_out.L": (0.555, 0.82), "lid_B_out.L": (0.49, 0.766),
     "lid_B.L": (0.40, 0.752), "lid_B_in.L": (0.31, 0.766),
-    # eye socket ring (8)
-    "socket_in.L": (0.175, 0.82), "socket_T_in.L": (0.265, 0.922),
-    "socket_T.L": (0.40, 0.948), "socket_T_out.L": (0.535, 0.922),
-    "socket_out.L": (0.625, 0.82), "socket_B_out.L": (0.535, 0.718),
-    "socket_B.L": (0.40, 0.692), "socket_B_in.L": (0.265, 0.718),
-    # nose side
-    "nose_side.L": (0.115, 0.55), "nostril.L": (0.075, 0.44),
-    # cheeks + smile line
-    "cheek_up.L": (0.40, 0.56), "cheek_mid.L": (0.33, 0.45),
-    "cheek_low.L": (0.27, 0.33), "cheek_out.L": (0.585, 0.52),
-    "nasolabial.L": (0.175, 0.50),
-    # lips outer + inner
-    "lip_T.L": (0.085, 0.315), "lip_T_b.L": (0.16, 0.275),
-    "mouth_corner.L": (0.225, 0.20), "lip_B_b.L": (0.16, 0.155),
-    "lip_B.L": (0.085, 0.16),
-    "lip_T_in.L": (0.095, 0.258), "lip_B_in.L": (0.095, 0.232),
-    "mouth_corner_in.L": (0.185, 0.212),
-    # chin side + forehead column
-    "chin_side.L": (0.13, 0.03), "forehead_lo.L": (0.29, 1.23),
+    # nose wing + cheeks (3)
+    "nose_side.L": (0.115, 0.55),
+    "cheek_up.L": (0.40, 0.60), "cheek_low.L": (0.27, 0.33),
+    # lips outer + inner (5)
+    "lip_T.L": (0.11, 0.30), "mouth_corner.L": (0.225, 0.20),
+    "lip_B.L": (0.11, 0.165),
+    "lip_T_in.L": (0.11, 0.25), "lip_B_in.L": (0.11, 0.235),
 }
 GRID_IDX = {n: i for i, n in enumerate(FACE_TEMPLATE)}
 _TE = [
@@ -83,64 +73,40 @@ _TE = [
     ("chin_bot", "jaw_low.L"), ("jaw_low.L", "jaw_mid.L"),
     ("jaw_mid.L", "jaw_up.L"), ("jaw_up.L", "ear_low.L"),
     ("ear_low.L", "temple.L"), ("temple.L", "forehead_side.L"),
-    ("forehead_side.L", "forehead_top.L"), ("forehead_top.L", "forehead_c"),
+    ("forehead_side.L", "forehead_c"),
     # center column
     ("chin_bot", "chin"), ("chin", "chin_top"), ("chin_top", "lip_B"),
     ("lip_T", "nose_base"), ("nose_base", "nose_tip"),
-    ("nose_tip", "nose_dorsum"), ("nose_dorsum", "nose_bridge"),
-    ("nose_bridge", "brow_c"), ("brow_c", "forehead_mid"),
-    ("forehead_mid", "forehead_c"),
+    ("nose_tip", "nose_bridge"), ("nose_bridge", "brow_c"),
+    ("brow_c", "forehead_c"),
     # outer lip ring
-    ("lip_T", "lip_T.L"), ("lip_T.L", "lip_T_b.L"),
-    ("lip_T_b.L", "mouth_corner.L"),
-    ("lip_B", "lip_B.L"), ("lip_B.L", "lip_B_b.L"),
-    ("lip_B_b.L", "mouth_corner.L"),
+    ("lip_T", "lip_T.L"), ("lip_T.L", "mouth_corner.L"),
+    ("lip_B", "lip_B.L"), ("lip_B.L", "mouth_corner.L"),
     # inner lip ring + struts
-    ("lip_T_in", "lip_T_in.L"), ("lip_T_in.L", "mouth_corner_in.L"),
-    ("lip_B_in", "lip_B_in.L"), ("lip_B_in.L", "mouth_corner_in.L"),
+    ("lip_T_in", "lip_T_in.L"), ("lip_T_in.L", "mouth_corner.L"),
+    ("lip_B_in", "lip_B_in.L"), ("lip_B_in.L", "mouth_corner.L"),
     ("lip_T", "lip_T_in"), ("lip_B", "lip_B_in"),
-    ("mouth_corner.L", "mouth_corner_in.L"),
-    # chin side / marionette
-    ("chin_top", "chin_side.L"), ("chin_side.L", "jaw_low.L"),
-    ("mouth_corner.L", "chin_side.L"),
     # nose wing
-    ("nose_tip", "nose_side.L"), ("nose_side.L", "nostril.L"),
-    ("nostril.L", "nose_base"),
-    # smile line
-    ("nose_side.L", "nasolabial.L"), ("nasolabial.L", "cheek_low.L"),
-    ("cheek_low.L", "mouth_corner.L"),
-    # cheek columns
-    ("socket_B.L", "cheek_up.L"), ("cheek_up.L", "cheek_mid.L"),
-    ("cheek_mid.L", "cheek_low.L"),
-    ("socket_B_out.L", "cheek_out.L"), ("cheek_out.L", "jaw_up.L"),
+    ("nose_tip", "nose_side.L"), ("nose_side.L", "nose_base"),
+    # smile line + cheek
+    ("nose_side.L", "cheek_low.L"), ("cheek_low.L", "mouth_corner.L"),
+    ("lid_B.L", "cheek_up.L"), ("cheek_up.L", "cheek_low.L"),
     # eyelid ring
     ("eye_in.L", "lid_T_in.L"), ("lid_T_in.L", "lid_T.L"),
     ("lid_T.L", "lid_T_out.L"), ("lid_T_out.L", "eye_out.L"),
     ("eye_out.L", "lid_B_out.L"), ("lid_B_out.L", "lid_B.L"),
     ("lid_B.L", "lid_B_in.L"), ("lid_B_in.L", "eye_in.L"),
-    # socket ring
-    ("socket_in.L", "socket_T_in.L"), ("socket_T_in.L", "socket_T.L"),
-    ("socket_T.L", "socket_T_out.L"), ("socket_T_out.L", "socket_out.L"),
-    ("socket_out.L", "socket_B_out.L"), ("socket_B_out.L", "socket_B.L"),
-    ("socket_B.L", "socket_B_in.L"), ("socket_B_in.L", "socket_in.L"),
-    # lid -> socket spokes
-    ("eye_in.L", "socket_in.L"), ("lid_T.L", "socket_T.L"),
-    ("eye_out.L", "socket_out.L"), ("lid_B.L", "socket_B.L"),
     # bridge
-    ("socket_in.L", "nose_bridge"),
+    ("eye_in.L", "nose_bridge"),
     # brow arc
-    ("brow_c", "brow_in.L"), ("brow_in.L", "brow_in_mid.L"),
-    ("brow_in_mid.L", "brow_mid.L"), ("brow_mid.L", "brow_out_mid.L"),
-    ("brow_out_mid.L", "brow_out.L"), ("brow_out.L", "temple.L"),
-    # forehead column
-    ("brow_in_mid.L", "forehead_lo.L"), ("forehead_lo.L", "forehead_top.L"),
-    ("forehead_mid", "forehead_lo.L"),
+    ("brow_c", "brow_in.L"), ("brow_in.L", "brow_mid.L"),
+    ("brow_mid.L", "brow_out.L"), ("brow_out.L", "temple.L"),
 ]
 GRID_EDGES = [(GRID_IDX[a], GRID_IDX[b]) for a, b in _TE]
 # outline verts projected RADIALLY from the skull axis; the rest frontally
 GRID_RADIAL = {GRID_IDX[n] for n in
                ("jaw_low.L", "jaw_mid.L", "jaw_up.L", "ear_low.L",
-                "temple.L", "forehead_side.L", "cheek_out.L")}
+                "temple.L", "forehead_side.L")}
 
 # landmark -> (role) ; .L markers get a mirrored, constraint-driven .R twin
 CENTER_LM = ["face_nose", "face_lip_up", "face_lip_low", "face_chin"]
