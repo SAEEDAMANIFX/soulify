@@ -544,15 +544,19 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
                 ("skin_lashes", "Eyelashes", 'CURVE_NCURVE', 'LASHES'),
                 ("skin_hair", "Hair", 'OUTLINER_OB_CURVES', 'HAIR')):
             _r = col.row(align=True)
-            _vg = None
-            if getattr(props, _attr) is None and props.target_mesh is not None:
-                _vg = props.target_mesh.vertex_groups.get(
-                    _fc.FACE_PART_VG.get(_part, ""))
-            if _vg is not None:
+            _host = None
+            if getattr(props, _attr) is None:
+                # in-mesh registration may live on ANY mesh (main face,
+                # combined teeth_and_tongue, ...) - search them all
+                try:
+                    _host = _fc.face_part_host(props, _part)
+                except Exception:
+                    _host = None
+            if _host is not None:
                 # in-mesh registration: show it FILLED like a chosen object
                 _r.label(text="%s:" % _lbl, icon=_icn)
                 _bx = _r.box(); _bx.scale_y = 0.55
-                _bx.label(text="%s  ›  vertices" % props.target_mesh.name,
+                _bx.label(text="%s  ›  vertices" % _host.name,
                           icon='CHECKMARK')
                 _xo = _r.operator("smartrig.face_unregister_part", text="",
                                   icon='X')

@@ -178,6 +178,21 @@ def _obj_or_vg_pts(props, body, obj_attr, vg_name):
     if idx:
         c = utils.read_rest_coords(body)
         return c[idx], body, idx
+    # in-mesh registration on ANY other mesh (e.g. the user registered the
+    # teeth vertices INSIDE a combined teeth_and_tongue object whose slot
+    # is a different part - Saeed's Edit-Mode register flow)
+    for other in bpy.data.objects:
+        if other is ob or other is body or other.type != 'MESH':
+            continue
+        if other.name.startswith(("WGT", "SR_", "HLP-", "GEO-")):
+            continue
+        idx2 = _vg_verts(other, vg_name)
+        if idx2:
+            try:
+                c = utils.read_rest_coords(other)
+            except Exception:
+                continue
+            return c[idx2], other, idx2
     return None, None, None
 
 

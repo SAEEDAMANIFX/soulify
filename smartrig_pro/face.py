@@ -1725,6 +1725,32 @@ FACE_PART_SLOT = {
 }
 
 
+def face_part_host(props, part):
+    """The mesh object that carries this part's SR_* vertex group (in-mesh
+    registration).  Searched EVERYWHERE the user may have registered it:
+    the main face mesh, any slot object (combined teeth_and_tongue case),
+    then any scene mesh.  None = not registered in-mesh."""
+    vgn = FACE_PART_VG.get(part)
+    if not vgn:
+        return None
+    cands = []
+    body = getattr(props, "target_mesh", None)
+    if body is not None:
+        cands.append(body)
+    for attr in FACE_PART_SLOT.values():
+        ob = getattr(props, attr, None)
+        if ob is not None and ob not in cands:
+            cands.append(ob)
+    for ob in bpy.data.objects:
+        if ob.type == 'MESH' and ob not in cands and \
+                not ob.name.startswith(("WGT", "SR_", "HLP-", "GEO-")):
+            cands.append(ob)
+    for ob in cands:
+        if ob.type == 'MESH' and ob.vertex_groups.get(vgn) is not None:
+            return ob
+    return None
+
+
 class SMARTRIG_OT_face_register_part(bpy.types.Operator):
     bl_idname = "smartrig.face_register_part"
     bl_label = "Register Selection As"
@@ -1824,14 +1850,14 @@ class SMARTRIG_OT_face_unregister_part(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.smartrig
-        body = getattr(props, "target_mesh", None)
-        if body is None:
+        host = face_part_host(props, self.part)
+        if host is None:
             return {'CANCELLED'}
-        vg = body.vertex_groups.get(FACE_PART_VG[self.part])
+        vg = host.vertex_groups.get(FACE_PART_VG[self.part])
         if vg is not None:
-            body.vertex_groups.remove(vg)
-            self.report({'INFO'}, "%s unregistered"
-                        % self.part.title().replace("_", " "))
+            host.vertex_groups.remove(vg)
+            self.report({'INFO'}, "%s unregistered (was on '%s')"
+                        % (self.part.title().replace("_", " "), host.name))
         return {'FINISHED'}
 
 
