@@ -1947,6 +1947,30 @@ def _add_jaw_ctrl(rig, context):
         coll.assign(cb)
 
 
+def _fix_region_rolls(rig, prefixes, updir):
+    """Re-align the roll of every bone whose name starts with one of
+    `prefixes` so its local Z best matches world `updir`. Keeps the bone
+    HEAD/TAIL (position + direction) exactly; only the roll spins. Done in
+    Edit Mode before constraints so the rest state is consistent."""
+    import bpy as _bpy
+    prev = rig.data.collections  # noqa - just to touch data
+    if _bpy.context.mode != 'OBJECT':
+        _bpy.ops.object.mode_set(mode='OBJECT')
+    _bpy.context.view_layer.objects.active = rig
+    _bpy.ops.object.mode_set(mode='EDIT')
+    eb = rig.data.edit_bones
+    n = 0
+    for b in eb:
+        if b.name.startswith(tuple(prefixes)):
+            try:
+                b.align_roll(updir)
+                n += 1
+            except Exception:
+                pass
+    _bpy.ops.object.mode_set(mode='OBJECT')
+    return n
+
+
 def build_full(face, props, context):
     """The whole Storm face on our character. `face` = the face module
     (avoids a circular import)."""
@@ -1981,6 +2005,13 @@ def build_full(face, props, context):
     n_rm = _clean_previous(face, props, context, rig, body, spec)
     order = _build_bones(rig, spec, rbf, head_parent)
     rig.data["sr_storm_face_bones"] = list(order)
+    # consistent roll for the brow chain: the RBF's directional derivative
+    # distorts Storm's z-axis unevenly, leaving some brow bones rolled 90
+    # (Z sideways/down) - the "unprofessional roll" Saeed saw. Re-align the
+    # whole brow region to world +Z so they read as one clean row.
+    _fix_region_rolls(rig, ("DEF-Brow_local", "CTL-Brow_", "P-Brow",
+                            "STR-Brow", "DEF-Furrow", "CTL-brow_normal"),
+                      Vector((0.0, 0.0, 1.0)))
 
     made_objs = {"__body__": body}
     _make_ribbons(rig, H, rbf, made_objs)
