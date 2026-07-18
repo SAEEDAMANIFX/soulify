@@ -692,29 +692,36 @@ def _build_bones(rig, spec, rbf, head_parent):
     data = rig.data
     coll_vis = spec.get("coll_vis", {})
     bpy.ops.object.mode_set(mode='OBJECT')
+    # IMPORTANT: look up existing collections in collections_ALL (nested
+    # too). data.collections.get() only searches ROOTS - after organize()
+    # nests "Face MCH" under "Rigging", a rebuild would not find it and
+    # create "Face MCH.001".002... one per bone = hundreds of duplicate
+    # visible root collections (the "scattered rig" bug).
+    def _coll(cn):
+        c = data.collections_all.get(cn)
+        if c is None:
+            c = data.collections.new(cn)
+        return c
     for n in order:
         e = bones[n]
         db = data.bones.get(n)
         if db is None:
             continue
         for cn in e.get("colls", []):
-            c = data.collections.get(cn)
-            if c is None:
-                c = data.collections.new(cn)
-            c.assign(db)
+            _coll(cn).assign(db)
     # visibility: helper/mechanism layers OFF for a clean animator view
     hide_colls = {"Face MCH", "Face Display", "Upper Master", "Lower Master",
                   "Mouth micro", "Eyes_micro", "Lattices", "Tweak"}
     for cn, vis in coll_vis.items():
-        c = data.collections.get(cn)
+        c = data.collections_all.get(cn)
         if c is not None:
             c.is_visible = bool(vis) and cn not in hide_colls
     for cn in hide_colls:
-        c = data.collections.get(cn)
+        c = data.collections_all.get(cn)
         if c is not None:
             c.is_visible = False
     # DSP display dots stay visible like Storm
-    c = data.collections.get("Face Display")
+    c = data.collections_all.get("Face Display")
     if c is not None:
         c.is_visible = True
     return order

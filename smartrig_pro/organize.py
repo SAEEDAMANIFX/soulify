@@ -85,10 +85,51 @@ _PURGE_OK = {"Face (Primary)", "Face (Secondary)", "Face (MCH)",
              "Layer 1", "Layer 2"}
 
 
+def _merge_duplicates(arm):
+    """Heal '<name>.001/.002...' duplicate bone collections created by an
+    earlier build that looked up collections by root-name only. Move every
+    duplicate's bones into the canonical '<name>' collection, then delete
+    the duplicate. Returns how many were removed."""
+    import re
+    canon = {}
+    dupes = []
+    for c in list(arm.collections_all):
+        m = re.match(r"^(.*)\.(\d{3})$", c.name)
+        if m:
+            dupes.append((m.group(1), c))
+        else:
+            canon.setdefault(c.name, c)
+    removed = 0
+    for base, c in dupes:
+        target = canon.get(base)
+        if target is None:
+            # the canonical name is free - just rename this one into it
+            try:
+                c.name = base
+                canon[base] = c
+                continue
+            except Exception:
+                pass
+        # move bones over, then delete the duplicate
+        for b in list(c.bones):
+            try:
+                target.assign(b)
+            except Exception:
+                pass
+        try:
+            arm.collections.remove(c)
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+
 def organize(rig):
     """Nest + set default visibility on `rig`'s bone collections.
     Returns a small report dict. Safe to re-run."""
     arm = rig.data
+    # FIRST: heal any '<name>.001' duplicate collections from older builds
+    n_merged = _merge_duplicates(arm)
     colls = arm.collections_all
     made, moved = 0, 0
 
@@ -181,6 +222,7 @@ def organize(rig):
                 pass
 
     return {"created": made, "moved": moved, "purged": purged,
+            "merged": n_merged,
             "roots": [c.name for c in arm.collections]}
 
 
