@@ -1981,6 +1981,19 @@ class SMARTRIG_OT_face_place(bpy.types.Operator):
 
     def invoke(self, context, event):
         props = context.scene.smartrig
+        # RESTART = full clean start: wipe every leftover of a previous
+        # face session (old markers, grid, ribbons, lattices, face bones,
+        # expressions) so nothing stale lingers - Saeed's "Start Over must
+        # work well". A fresh net is placed right after.
+        if (bpy.data.objects.get(GRID_NAME) is not None
+                or bpy.data.objects.get("face_lip_up") is not None
+                or bpy.data.objects.get("HLP-SR-geometry_ribbon_lips")
+                is not None):
+            try:
+                from . import character as _char
+                _char.wipe_face(context)
+            except Exception:
+                pass
         self.body = getattr(props, "target_mesh", None) or context.active_object
         if context.area is None or context.area.type != 'VIEW_3D':
             self.report({'ERROR'}, "Run from a 3D viewport")

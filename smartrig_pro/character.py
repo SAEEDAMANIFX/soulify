@@ -285,7 +285,130 @@ class SMARTRIG_OT_char_check(bpy.types.Operator):
         return {'FINISHED'}
 
 
-# ---------------------------------------------------- face START OVER op
+# ---------------------------------------------------- face START OVER
+def wipe_face(context):
+    """Remove EVERYTHING the face wizard/builder created: bones, ribbons,
+    lattices, hooks, markers, grid, expressions, correctives, face weights.
+    The body rig survives. Returns the number of bones removed.
+    Called by the Start Over button AND automatically by Restart Face
+    Markers - a restart must never leave stale leftovers behind."""
+    from . import face as _face
+    from . import storm_face as _sf
+    sc = context.scene
+    props = sc.smartrig
+    if context.mode != 'OBJECT':
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            pass
+    rig = _face._target_rig()
+    body = getattr(props, "target_mesh", None)
+    n_bones = 0
+    if rig is not None:
+        _face._ensure_selectable(context, rig)
+        context.view_layer.objects.active = rig
+        try:
+            spec = _sf._load("storm_face_spec.json")
+            n_bones = _sf._clean_previous(_face, props, context, rig,
+                                          body, spec)
+        except Exception:
+            pass
+        # face bone collections
+        arm = rig.data
+        face_colls = ["Face", "Face Upper", "Face Lower", "Brows",
+                      "Brows global", "Brows local", "Eyes",
+                      "Eyes global", "Eyes local", "Eyes_micro",
+                      "Nose", "Cheeks", "Ears", "Upper Master",
+                      "Lower Master", "Lattices", "Mouth",
+                      "Mouth global", "Mouth local", "Mouth micro",
+                      "Jawline", "Teeth", "Tongue", "Face MCH",
+                      "Face Display", "Face (Primary)",
+                      "Face (Secondary)", "Face (MCH)"]
+        for cn in face_colls:
+            c = arm.collections_all.get(cn)
+            if c is not None:
+                try:
+                    arm.collections.remove(c)
+                except Exception:
+                    pass
+        if "sr_storm_face_bones" in arm:
+            del arm["sr_storm_face_bones"]
+
+    # helper objects (ribbons, hooks, lattices) + markers + grid.
+    # NOTE: only OUR "HLP-SR-" prefix - "HLP-storm-" belongs to the
+    # original Storm reference character, never touch it.
+    for ob in list(bpy.data.objects):
+        if ob.name.startswith(("HLP-SR-", "face_", "fm_face")):
+            try:
+                bpy.data.objects.remove(ob, do_unlink=True)
+            except Exception:
+                pass
+    g = bpy.data.objects.get(_face.GRID_NAME)
+    if g is not None:
+        try:
+            bpy.data.objects.remove(g, do_unlink=True)
+        except Exception:
+            pass
+    for cn in ("SR_FaceMarkers", "SR_FaceHelpers"):
+        c = bpy.data.collections.get(cn)
+        if c is not None:
+            for ob in list(c.objects):
+                try:
+                    bpy.data.objects.remove(ob, do_unlink=True)
+                except Exception:
+                    pass
+            try:
+                bpy.data.collections.remove(c)
+            except Exception:
+                pass
+    # stale face lattice / corrective-smooth modifiers on the body
+    if body is not None:
+        for m in list(body.modifiers):
+            if m.name.startswith(("FACE-LTC", "FACE-CorrSmooth")):
+                try:
+                    body.modifiers.remove(m)
+                except Exception:
+                    pass
+
+    # expressions: action + list + correctives + check results
+    act = bpy.data.actions.get("SR_Expressions")
+    if act is not None:
+        bpy.data.actions.remove(act)
+    try:
+        sc.sr_face_expressions.clear()
+    except Exception:
+        pass
+    for ob in sc.objects:
+        if ob.type != 'MESH' or ob.data.shape_keys is None:
+            continue
+        for kb in list(ob.data.shape_keys.key_blocks):
+            if kb.name.startswith("CORR-"):
+                ob.shape_key_remove(kb)
+        names = list(ob.data.get("sr_expr_baked", []))
+        for nm in names:
+            kb = ob.data.shape_keys.key_blocks.get(nm) \
+                if ob.data.shape_keys else None
+            if kb is not None:
+                ob.shape_key_remove(kb)
+        if "sr_expr_baked" in ob.data:
+            del ob.data["sr_expr_baked"]
+    for k in ("sr_rig_check",):
+        if k in sc:
+            del sc[k]
+
+    # unlock the view, show the rig again
+    try:
+        from . import markers as _mk
+        _mk.lock_front_view(context, False)
+    except Exception:
+        pass
+    try:
+        _face.set_rigs_hidden(False)
+    except Exception:
+        pass
+    return n_bones
+
+
 class SMARTRIG_OT_face_start_over(bpy.types.Operator):
     """CANCEL the face rig completely: removes ALL face bones, ribbons,
     lattices, hook empties, markers, grid, expressions and face weights -
@@ -298,100 +421,9 @@ class SMARTRIG_OT_face_start_over(bpy.types.Operator):
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context):
-        from . import face as _face
-        from . import storm_face as _sf
-        sc = context.scene
-        props = sc.smartrig
-        if context.mode != 'OBJECT':
-            try:
-                bpy.ops.object.mode_set(mode='OBJECT')
-            except Exception:
-                pass
-        rig = _face._target_rig()
-        body = getattr(props, "target_mesh", None)
-        n_bones = 0
-        if rig is not None:
-            _face._ensure_selectable(context, rig)
-            context.view_layer.objects.active = rig
-            try:
-                spec = _sf._load("storm_face_spec.json")
-                n_bones = _sf._clean_previous(_face, props, context, rig,
-                                              body, spec)
-            except Exception as e:
-                self.report({'WARNING'}, "bone cleanup: %s" % e)
-            # face bone collections
-            arm = rig.data
-            face_colls = ["Face", "Face Upper", "Face Lower", "Brows",
-                          "Brows global", "Brows local", "Eyes",
-                          "Eyes global", "Eyes local", "Eyes_micro",
-                          "Nose", "Cheeks", "Ears", "Upper Master",
-                          "Lower Master", "Lattices", "Mouth",
-                          "Mouth global", "Mouth local", "Mouth micro",
-                          "Jawline", "Teeth", "Tongue", "Face MCH",
-                          "Face Display", "Face (Primary)",
-                          "Face (Secondary)", "Face (MCH)"]
-            for cn in face_colls:
-                c = arm.collections_all.get(cn)
-                if c is not None:
-                    try:
-                        arm.collections.remove(c)
-                    except Exception:
-                        pass
-            if "sr_storm_face_bones" in arm:
-                del arm["sr_storm_face_bones"]
-
-        # helper objects (ribbons, hooks, lattices) + markers + grid
-        for ob in list(bpy.data.objects):
-            if ob.name.startswith(("HLP-SR-", "HLP-storm-", "face_", "fm_face")):
-                bpy.data.objects.remove(ob, do_unlink=True)
-        g = bpy.data.objects.get(_face.GRID_NAME)
-        if g is not None:
-            bpy.data.objects.remove(g, do_unlink=True)
-        for cn in ("SR_FaceMarkers", "SR_FaceHelpers"):
-            c = bpy.data.collections.get(cn)
-            if c is not None:
-                for ob in list(c.objects):
-                    bpy.data.objects.remove(ob, do_unlink=True)
-                bpy.data.collections.remove(c)
-
-        # expressions: action + list + correctives + check results
-        act = bpy.data.actions.get("SR_Expressions")
-        if act is not None:
-            bpy.data.actions.remove(act)
-        try:
-            sc.sr_face_expressions.clear()
-        except Exception:
-            pass
-        for ob in sc.objects:
-            if ob.type != 'MESH' or ob.data.shape_keys is None:
-                continue
-            for kb in list(ob.data.shape_keys.key_blocks):
-                if kb.name.startswith("CORR-"):
-                    ob.shape_key_remove(kb)
-            names = list(ob.data.get("sr_expr_baked", []))
-            for nm in names:
-                kb = ob.data.shape_keys.key_blocks.get(nm) \
-                    if ob.data.shape_keys else None
-                if kb is not None:
-                    ob.shape_key_remove(kb)
-            if "sr_expr_baked" in ob.data:
-                del ob.data["sr_expr_baked"]
-        for k in ("sr_rig_check",):
-            if k in sc:
-                del sc[k]
-
-        # unlock the view, show the rig again
-        try:
-            from . import markers as _mk
-            _mk.lock_front_view(context, False)
-        except Exception:
-            pass
-        try:
-            _face.set_rigs_hidden(False)
-        except Exception:
-            pass
+        n = wipe_face(context)
         self.report({'INFO'}, "Face wiped clean (%d bones removed) - press "
-                    "Face Markers to start over" % n_bones)
+                    "Face Markers to start over" % n)
         return {'FINISHED'}
 
 
