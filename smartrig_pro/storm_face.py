@@ -150,12 +150,28 @@ def _ring_resample(our_ring, our_center, storm_pts, storm_center):
 
 
 def _vg_verts(host, vg_name, thr=0.15):
+    """Vertices belonging to a registration vertex group.
+
+    Registration groups (SR_brows, SR_eye_l, SR_teeth_up, ...) are BINARY
+    membership - a vertex is either inside the region or not; the weight is
+    meaningless. Blender's Auto-Normalize during binding CRUSHES their
+    weights toward 0 (measured: SR_brows -> 0.0006, SR_lashes -> 0.0), so a
+    weight>0.15 filter finds NOTHING and the brows/eyes/lashes silently fall
+    back to synthetic placement. Read them by MEMBERSHIP instead, which
+    survives normalization. Real weighted groups can still pass an explicit
+    thr, but SR_ registration groups always use membership."""
     g = host.vertex_groups.get(vg_name) if host else None
     if g is None:
         return None
     gi = g.index
-    return [v.index for v in host.data.vertices
-            for gr in v.groups if gr.group == gi and gr.weight > thr]
+    binary = vg_name.startswith("SR_")
+    out = []
+    for v in host.data.vertices:
+        for gr in v.groups:
+            if gr.group == gi and (binary or gr.weight > thr):
+                out.append(v.index)
+                break
+    return out
 
 
 def _obj_or_vg_pts(props, body, obj_attr, vg_name):
