@@ -1953,7 +1953,6 @@ def _fix_region_rolls(rig, prefixes, updir):
     HEAD/TAIL (position + direction) exactly; only the roll spins. Done in
     Edit Mode before constraints so the rest state is consistent."""
     import bpy as _bpy
-    prev = rig.data.collections  # noqa - just to touch data
     if _bpy.context.mode != 'OBJECT':
         _bpy.ops.object.mode_set(mode='OBJECT')
     _bpy.context.view_layer.objects.active = rig
@@ -1967,6 +1966,39 @@ def _fix_region_rolls(rig, prefixes, updir):
                 n += 1
             except Exception:
                 pass
+    _bpy.ops.object.mode_set(mode='OBJECT')
+    return n
+
+
+def _tidy_brow_bones(rig):
+    """Make the brow DEF bones read as one clean professional row.
+
+    The DEF-Brow_local bones are driven purely by COPY_LOCATION (translation
+    only - no rotation), so their DIRECTION and ROLL affect NOTHING about the
+    deformation; they are cosmetic. The RBF leaves some pointing vertically
+    and some horizontally = the 'unprofessional' scatter Saeed saw. Point
+    every brow DEF bone horizontally along its side (+X on .L, -X on .R),
+    keep its head + length, and roll Z up. Deformation is unchanged."""
+    import bpy as _bpy
+    from mathutils import Vector as _V
+    if _bpy.context.mode != 'OBJECT':
+        _bpy.ops.object.mode_set(mode='OBJECT')
+    _bpy.context.view_layer.objects.active = rig
+    _bpy.ops.object.mode_set(mode='EDIT')
+    eb = rig.data.edit_bones
+    n = 0
+    for b in eb:
+        if not b.name.startswith("DEF-Brow_local"):
+            continue
+        side = 1.0 if b.name.endswith(".L") else -1.0
+        L = max(b.length, 1e-3)
+        head = b.head.copy()
+        b.tail = head + _V((side * L, 0.0, 0.0))   # horizontal, outward
+        try:
+            b.align_roll(_V((0.0, 0.0, 1.0)))        # Z up
+        except Exception:
+            pass
+        n += 1
     _bpy.ops.object.mode_set(mode='OBJECT')
     return n
 
@@ -2033,6 +2065,10 @@ def build_full(face, props, context):
     _widget_proportions(rig, spec, gp, ipd)
     _rest_reconcile(context, rig, order, iters=2, max_snap=0.7 * ipd)
     _add_jaw_ctrl(rig, context)
+    # brow DEF bones point cleanly along the brow (cosmetic only - they are
+    # COPY_LOCATION so deformation is unchanged). Done LAST so the rest
+    # reconcile above cannot revert it.
+    _tidy_brow_bones(rig)
     # professional nested bone-collection layout (Blender-Studio style):
     # animator sees Body + Face controls; ALL mechanism under hidden Rigging
     try:
