@@ -117,13 +117,20 @@ class SMARTRIG_OT_char_organize(bpy.types.Operator):
         # --- collections ---
         root = sc.collection
         ch = _ensure_coll("CH-" + name, root)
-        try:
-            ch.color_tag = 'COLOR_01'
-        except Exception:
-            pass
-        geo = _ensure_coll("GEO-" + name, ch)
-        hlp = _ensure_coll("HLP-" + name, ch)
-        wgt = _ensure_coll("WGT-" + name, ch)
+        # a DISTINCT colour per character - hashed from the name so it is stable
+        # across re-runs and different for each character (easy to tell apart in
+        # the Outliner). CH + GEO/HLP/WGT share the character's colour.
+        _col = 'COLOR_%02d' % ((sum(ord(c) for c in name) % 8) + 1)
+
+        def _tag(c, col):
+            try:
+                c.color_tag = col
+            except Exception:
+                pass
+        _tag(ch, _col)
+        geo = _ensure_coll("GEO-" + name, ch); _tag(geo, _col)
+        hlp = _ensure_coll("HLP-" + name, ch); _tag(hlp, _col)
+        wgt = _ensure_coll("WGT-" + name, ch); _tag(wgt, _col)
 
         _move_obj(rig, ch)
         n_geo = 0

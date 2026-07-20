@@ -4,6 +4,22 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.9.1 - Distinct per-character collection colour (2026-07-20)
+
+- **Improved** "Organize Character (Link-Ready)": the character collection is
+  now given a distinct colour tag in the Outliner instead of a fixed one. The
+  colour is hashed from the character's name, so it is *stable* across re-runs
+  (running Organize again gives the same colour) and *different* for each
+  character - so with 3, 4, 5 or more Soulify rigs in one file you can tell
+  them apart at a glance in the Outliner.
+- The same colour is applied to the character's `CH-<name>` collection and its
+  `GEO-`, `HLP-` and `WGT-` sub-collections, so the whole character reads as one
+  colour group.
+- Formula: `COLOR_%02d % ((sum(ord(c) for c in name) % 8) + 1)` - one of
+  Blender's 8 collection colours, deterministic from the name.
+- No change to rig behaviour or object contents; purely an Outliner-organisation
+  improvement on top of v2.9.0's clean link-ready structure.
+
 ## v2.9.0 - Clean, link-ready character collection (2026-07-20)
 
 - **Improved** "Organize Character (Link-Ready)": build-only objects that an
