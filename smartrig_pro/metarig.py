@@ -681,8 +681,27 @@ def assign_orphan_bones(rig):
     return n
 
 
+def _is_soulify_rig(o):
+    return (o is not None and o.type == 'ARMATURE'
+            and (o.get("soulify_rig") or o.name.startswith("RIG-" + META_NAME)))
+
+
 def _generated_rig():
-    """Return the rig generated from the SR metarig, if any."""
+    """Return THE Soulify rig. CONTEXT-AWARE so it works with MULTIPLE rigs in
+    one file: prefer the rig you are working on - the active armature, the rig
+    deforming the active mesh, or a selected rig - and only then fall back to the
+    metarig link / name / global stamp scan."""
+    ctx = bpy.context
+    ao = getattr(ctx, "active_object", None)
+    if _is_soulify_rig(ao):
+        return ao
+    if ao is not None and ao.type == 'MESH':
+        for _m in ao.modifiers:
+            if _m.type == 'ARMATURE' and _is_soulify_rig(getattr(_m, "object", None)):
+                return _m.object
+    for _o in (getattr(ctx, "selected_objects", None) or []):
+        if _is_soulify_rig(_o):
+            return _o
     meta = bpy.data.objects.get(META_NAME)
     if meta is not None and meta.data is not None:
         tr = getattr(meta.data, "rigify_target_rig", None)

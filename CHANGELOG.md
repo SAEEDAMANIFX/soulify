@@ -4,6 +4,15 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.8.1 - Distinguish MULTIPLE rigs (context-aware) (2026-07-20)
+
+- **Added**: `_generated_rig()` is now context-aware for scenes with MORE THAN ONE
+  Soulify character. It prefers the rig you are working on - the active armature,
+  the rig deforming the active mesh, or a selected rig - before the global stamp
+  scan. So with two characters, selecting one makes every Soulify tool act on it.
+  Combined with the v2.8.0 stamp, rigs renamed to meaningful names
+  (e.g. `RIG-Harold`) are still recognised. Verified with two stamped rigs.
+
 ## v2.8.0 - Portable / robust rig recognition (send, append, link) (2026-07-20)
 
 Recognise a Soulify rig ANYWHERE, the way Auto-Rig Pro does - so you can send the
