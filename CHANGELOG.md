@@ -4,6 +4,15 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.7.2 - Rig panel survives marker deletion (2026-07-20)
+
+- **Fixed**: the Rig panel showed the initial "Place Body Markers / Select your
+  character first" state whenever the body markers were absent, even if the rig
+  was already generated - because the `not has_markers` early-return ran BEFORE
+  the "metarig exists -> show rig tools" branch. Now the START state only shows
+  when there are no markers AND no `SR_Metarig`, so a generated rig always shows
+  its tools (Marker Tools, Rigify, Face/Eye) regardless of marker presence.
+
 ## v2.7.1 - Fix stray marker glow at world origin (2026-07-20)
 
 - **Fixed**: the marker overlay (`wizard._draw_glow`) drew its glow for markers

@@ -323,7 +323,7 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
             return
 
         # ===== START =====
-        if not has_markers:
+        if not has_markers and bpy.data.objects.get('SR_Metarig') is None:
             ao = context.active_object
             has_sel_mesh = (ao is not None and ao.type == 'MESH') or \
                 any(o.type == 'MESH' for o in context.selected_objects)
