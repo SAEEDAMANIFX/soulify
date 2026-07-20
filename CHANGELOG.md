@@ -4,6 +4,23 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.8.0 - Portable / robust rig recognition (send, append, link) (2026-07-20)
+
+Recognise a Soulify rig ANYWHERE, the way Auto-Rig Pro does - so you can send the
+.blend to a friend who has Soulify, or Append / Link it into another file, and
+every Soulify tool still finds the rig for animation / editing.
+
+- **Added**: every generated rig is STAMPED with a `soulify_rig` custom property
+  (+ `soulify_metarig`). `metarig._generated_rig()` now recognises a rig by that
+  stamp as a final fallback - so it survives a RENAME, an Append (`.001` suffix),
+  a Link, a broken Rigify metarig link, or being opened on another machine.
+  Prefers a local rig, else accepts a linked one.
+- Existing rigs are stamped on the next Generate; a one-off stamp was applied to
+  the current project's rig. All face / eye / animation tools resolve the rig via
+  `_generated_rig()`, so they inherit this recognition automatically.
+- Verified: renaming the rig to `RIG-SR_Metarig.001` AND clearing the Rigify link
+  still resolves the rig by stamp.
+
 ## v2.7.2 - Rig panel survives marker deletion (2026-07-20)
 
 - **Fixed**: the Rig panel showed the initial "Place Body Markers / Select your

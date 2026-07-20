@@ -688,7 +688,35 @@ def _generated_rig():
         tr = getattr(meta.data, "rigify_target_rig", None)
         if tr is not None:
             return tr
-    return bpy.data.objects.get("RIG-" + META_NAME)
+    r = bpy.data.objects.get("RIG-" + META_NAME)
+    if r is not None:
+        return r
+    # ROBUST / portable recognition (ARP-style): a Soulify rig carries a
+    # "soulify_rig" stamp, so it is recognised after a rename, an Append that
+    # adds a .001 suffix, a Link, or being opened on another machine with
+    # Soulify. Prefer a local (non-linked) rig; else accept a linked one.
+    stamped = [o for o in bpy.data.objects
+               if o.type == 'ARMATURE' and o.get("soulify_rig")]
+    if stamped:
+        pool = [o for o in stamped if o.library is None] or stamped
+        pool.sort(key=lambda o: o.name)
+        return pool[0]
+    return None
+
+
+def _stamp_rig(rig, meta=None):
+    """Tag a rig as a Soulify rig so `_generated_rig` recognises it anywhere -
+    renamed, appended, linked, or sent to another Soulify user (like ARP)."""
+    try:
+        rig["soulify_rig"] = 1
+        rig["soulify_metarig"] = META_NAME
+    except Exception:
+        pass
+    if meta is not None:
+        try:
+            meta["soulify_is_metarig"] = 1
+        except Exception:
+            pass
 
 
 class SMARTRIG_OT_generate(bpy.types.Operator):
@@ -765,6 +793,8 @@ class SMARTRIG_OT_generate(bpy.types.Operator):
         # professional round-trip: HIDE the metarig, REVEAL + activate the rig so
         # only one is visible at a time (Generate <-> Back to Metarig toggle).
         rig = _generated_rig()
+        if rig is not None:
+            _stamp_rig(rig, meta)
         try:
             meta.hide_set(True)
             meta.hide_viewport = False     # keep it un-hidden in the outliner filter
