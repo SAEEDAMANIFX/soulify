@@ -125,7 +125,7 @@ def _draw_glow(region, rv3d):
     items = [(bpy.data.objects.get(nm), None) for nm in markers.all_marker_names()]
     items += _face_marker_items()
     for o, role in items:
-        if not o or o.hide_get():
+        if not o or not o.visible_get():
             continue
         name = o.name
         p = view3d_utils.location_3d_to_region_2d(region, rv3d, o.matrix_world.translation)

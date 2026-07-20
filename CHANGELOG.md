@@ -4,6 +4,15 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.7.1 - Fix stray marker glow at world origin (2026-07-20)
+
+- **Fixed**: the marker overlay (`wizard._draw_glow`) drew its glow for markers
+  that merely EXIST, testing `hide_get()` (the eye icon) instead of
+  `visible_get()`. Stale body markers parked in an EXCLUDED collection at the
+  world origin therefore drew a gold "disc" on the floor. Now it uses
+  `visible_get()`, so excluded / hidden markers never draw. (A restart clears any
+  leaked in-memory draw handler from a prior live-reload.)
+
 ## v2.7.0 - Professional Ribbon Eye Rig (2026-07-20)
 
 Complete rewrite of the eyelid rig (module `eye_sample.py`) + ARP-style widgets.
