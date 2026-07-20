@@ -4,6 +4,18 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.9.2 - Modern blink control widget (2026-07-20)
+
+- **Changed** the `CTL-Blink.L` / `CTL-Blink.R` custom shape (`WGT-SR-eye-arrowud`)
+  from a sharp vertical double-arrow to a modern, smooth rounded double-chevron:
+  an upper dome + lower bowl that read as an open-eye lens. Still signals the
+  same vertical open/close drag, but looks cleaner and on-theme with the rest of
+  the eye widgets.
+- Built analytically from two quadratic-Bezier chevrons (8 samples each) in the
+  X-Y plane, matching the blink bone's aim so it stays upright on screen. Same
+  bone, same behaviour - purely a widget-shape refresh. Live meshes are updated
+  in place so existing rigs get the new look on re-generate.
+
 ## v2.9.1 - Distinct per-character collection colour (2026-07-20)
 
 - **Improved** "Organize Character (Link-Ready)": the character collection is

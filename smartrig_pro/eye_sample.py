@@ -256,11 +256,24 @@ def _wgt(name, kind):
         V = [(0, 1, 0), (1, 0, 0), (0, -1, 0), (-1, 0, 0)]
         E = [(0, 1), (1, 2), (2, 3), (3, 0)]
     elif kind == "arrowud":
-        # clean vertical double arrow (up + down) - along the bone's Y (world up)
-        V = [(0, -0.55, 0), (0, 0.55, 0),                 # shaft
-             (0, 1, 0), (0.34, 0.55, 0), (-0.34, 0.55, 0),   # up head
-             (0, -1, 0), (0.34, -0.55, 0), (-0.34, -0.55, 0)]  # down head
-        E = [(0, 1), (1, 2), (2, 3), (2, 4), (0, 5), (5, 6), (5, 7)]
+        # modern blink control: a smooth rounded double-chevron (upper dome +
+        # lower bowl) that forms an open-eye lens - signals the vertical drag
+        # that opens/closes the lid, far cleaner than a sharp arrow. Drawn in
+        # X-Y (y = up), matching the blink bone's aim so it reads upright.
+        def _bz(p0, p1, p2, m):
+            return [((1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0],
+                     (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1],
+                     0.0) for t in np.linspace(0.0, 1.0, m + 1)]
+        m = 8
+        V, E = [], []
+        for cy, s in ((0.42, 1.0), (-0.42, -1.0)):
+            base = len(V)
+            arm = (_bz((-0.5, cy - s * 0.22), (-0.20, cy + s * 0.22),
+                       (0.0, cy + s * 0.30), m)
+                   + _bz((0.0, cy + s * 0.30), (0.20, cy + s * 0.22),
+                         (0.5, cy - s * 0.22), m)[1:])
+            V.extend(arm)
+            E.extend((base + i, base + i + 1) for i in range(len(arm) - 1))
     elif kind == "peanut":
         # ARP-style eyes target: two round lobes joined by a concave waist, in
         # the X-Z plane (normal +Y = bone aim) so it faces the camera. Lobe
