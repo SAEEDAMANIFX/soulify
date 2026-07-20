@@ -142,20 +142,39 @@ class SMARTRIG_OT_char_organize(bpy.types.Operator):
             _move_obj(ob, geo)
             n_geo += 1
 
-        # helpers: metarig, grids, markers, ribbons, lattices, hook empties
+        # BUILD-ONLY items (metarig, markers, grids, guides) are NOT needed for
+        # animation -> a SEPARATE 'SR-build-<name>' collection that is a SIBLING of
+        # CH (not a child) and excluded, so LINKING CH stays clean. FUNCTIONAL
+        # deform helpers (lattices, ribbons, hooks) stay in HLP inside CH.
+        build = _ensure_coll("SR-build-" + name, root)
+        try:
+            build.color_tag = 'COLOR_08'
+        except Exception:
+            pass
+
+        def _is_build_only(ob):
+            nm = ob.name
+            if nm in ("SR_Metarig", "META-" + name):
+                return True
+            return nm.startswith(("face_", "fm.", "SR_corner", "SR_FaceGrid",
+                                  "SR_Reference", "SR_Guide", "ftip_"))
         n_hlp = 0
+        n_build = 0
         for ob in list(sc.objects) + [o for o in bpy.data.objects
                                       if o.name.startswith("HLP-")]:
+            if ob is rig:
+                continue
             nm = ob.name
-            if (nm.startswith(("HLP-", "SR_", "face_", "fm."))
-                    or nm in ("SR_Metarig", "META-" + name)
-                    or ob.type == 'LATTICE'):
-                if ob is rig:
-                    continue
+            if _is_build_only(ob):
+                _move_obj(ob, build)
+                n_build += 1
+            elif nm.startswith(("HLP-", "SR_")) or ob.type == 'LATTICE':
                 _move_obj(ob, hlp)
                 n_hlp += 1
-        for cn in ("SR_Markers", "SR_FaceMarkers", "SR_FaceHelpers"):
-            _move_coll(bpy.data.collections.get(cn), hlp)
+        # marker / build collections -> the build collection (never linked)
+        for cn in ("SR_Markers", "SR_FaceMarkers", "SR_FaceHelpers",
+                   "SR Eye Corners"):
+            _move_coll(bpy.data.collections.get(cn), build)
 
         # widgets
         n_wgt = 0
@@ -175,11 +194,16 @@ class SMARTRIG_OT_char_organize(bpy.types.Operator):
         lc = _layer_coll(context.view_layer.layer_collection, hlp.name)
         if lc is not None:
             lc.hide_viewport = True
+        build.hide_render = True
+        lc = _layer_coll(context.view_layer.layer_collection, build.name)
+        if lc is not None:
+            lc.exclude = True
 
         # keep the scene root clean: nothing of ours left at top level
         context.view_layer.update()
-        self.report({'INFO'}, "CH-%s ready: %d geo, %d helpers, %d widgets - "
-                    "link 'CH-%s' into your project" %
+        self.report({'INFO'}, "CH-%s ready to LINK: %d geo, %d helpers, %d "
+                    "widgets. Build-only (metarig/markers) parked in "
+                    "SR-build-%s (excluded, not linked)." %
                     (name, n_geo, n_hlp, n_wgt, name))
         return {'FINISHED'}
 

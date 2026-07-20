@@ -4,6 +4,17 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.9.0 - Clean, link-ready character collection (2026-07-20)
+
+- **Improved** "Organize Character (Link-Ready)": build-only objects that an
+  animator never needs - the Rigify metarig, ALL body/face markers, marker
+  collections, grids, guides, reference - are now moved to a SEPARATE
+  `SR-build-<name>` collection that is a SIBLING of `CH-<name>` (not a child) and
+  EXCLUDED. So Appending / Linking `CH-<name>` gives a clean character: rig + GEO
+  meshes + WGT widgets + FUNCTIONAL deform helpers (lattices/ribbons/hooks) only,
+  with no marker/metarig junk dragged along. The rig is renamed to `RIG-<name>`;
+  the v2.8.0 stamp keeps it recognised after the rename.
+
 ## v2.8.1 - Distinguish MULTIPLE rigs (context-aware) (2026-07-20)
 
 - **Added**: `_generated_rig()` is now context-aware for scenes with MORE THAN ONE
