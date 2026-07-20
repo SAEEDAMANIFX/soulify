@@ -581,7 +581,7 @@ def build_eye_rig(context):
             nb(bn, c, cp, True, "MSTR-Eyes")
             tw = "CTL-LidT_corner_%s%s" % (cname, s)
             nb(tw, cp, cp + np.array([0.0, -1.0, 0.0]) * 0.35 * r, False, "MSTR-Eyes")
-            made_ring.append((tw, 0.12 * r, _C_ORANGE))
+            made_ring.append((tw, 0.065 * r, _C_ORANGE))
             corner_follow.append((bn, tw))
             cbone[cname] = (float((cp - c) @ right), bn, np.asarray(cp))
         info["lids"].append("corners%s" % s)
@@ -649,7 +649,7 @@ def build_eye_rig(context):
                 tw = "CTL-LidT_%s%d%s" % (part, i, s)
                 nb(tw, p_open, p_open + np.array([0.0, -1.0, 0.0]) * 0.35 * r,
                    False, tg)
-                made_ring.append((tw, 0.12 * r, _C_ORANGE))
+                made_ring.append((tw, 0.065 * r, _C_ORANGE))
                 # deform bone Damp-Tracks the TWEAK (= blink motion + animator nudge)
                 dn = "DEF-lid_%s%d%s" % (part, i, s)
                 nb(dn, c, p_open, True, masters[part])
@@ -686,7 +686,7 @@ def build_eye_rig(context):
                                                   -0.3 * r, 0.0])
         nb(blb, bl_head, bl_head + np.array([0.0, 0.0, 1.0]) * 0.6 * r,
            False, "MSTR-Eyes")
-        made_arrow.append((blb, 1.0 * r, (0.15, 0.85, 1.0)))
+        made_arrow.append((blb, 0.72 * r, (0.15, 0.85, 1.0)))
 
         # weighting geometry. The lid COLUMNS now reach right to the canthi, so
         # the corner skin is driven by the (closing) end columns and seals - the

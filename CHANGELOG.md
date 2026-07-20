@@ -4,6 +4,18 @@
 > To roll back safely: `git checkout v<X.Y.Z>` (source) or install the matching
 > `soulify_v<X.Y.Z>.zip`. Never delete old tags/zips.
 
+## v2.9.3 - Tidier eye control sizes (2026-07-20)
+
+- **Reduced** the `CTL-Blink.L` / `CTL-Blink.R` widget size from `1.0*r` to
+  `0.72*r` so the new double-chevron shape sits at a comfortable scale.
+- **Reduced** the `CTL-LidT_*` eyelid tweak circles from `0.12*r` to `0.065*r`.
+  At `0.12*r` the circles were wider than the gap between neighbouring tweak
+  bones and visibly overlapped; `0.065*r` keeps each circle's diameter well
+  under the tightest tweak spacing, so they line the lid in a clean,
+  professional row with a clear gap between them (no more overlap). Ratio is
+  relative to eye radius `r`, so it holds for any eye size.
+- Live rigs updated in place; re-generate to bake the new sizes.
+
 ## v2.9.2 - Modern blink control widget (2026-07-20)
 
 - **Changed** the `CTL-Blink.L` / `CTL-Blink.R` custom shape (`WGT-SR-eye-arrowud`)
