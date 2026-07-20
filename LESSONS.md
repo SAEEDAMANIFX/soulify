@@ -621,3 +621,61 @@ generic warp. Drape pass remains the finisher for loose underarm folds.
   list, save blend. Final zip only at project end. Cross-platform status:
   Windows tested; mac/linux code paths ready but UNTESTED (Gatekeeper
   quarantine expected on mac; per-OS AI package required).
+
+
+---
+
+# Session 2026-07-20 - Ribbon eye rig (v2.7.0) : failures, fixes, lessons
+
+Goal (Saeed): reprogram eye bone distribution so the eye CLOSES with no kink
+(انعواج) and redo the weights, initially WITHOUT shape keys. Chose a full RIBBON
+architecture. Everything below was verified live in Blender by measurement +
+render before moving on.
+
+## What worked (successes)
+- Ribbon mechanism = Damped-Track deform bones (constant length) tracking a
+  moving target -> the lid SLIDES over the eyeball instead of poking it.
+- ONE analytic close seam `_seam_pt(u)` for both lids -> closed-lid 2nd-difference
+  0.5 mm (vs 2.5 mm open) = no zig-zag/kink, independent of L/R lid counts.
+- Weights: partition-of-unity (`_blend_u`) + smoothstep fall-off + 8x topological
+  smoothing = smooth, predictable, no post-Gaussian.
+- Corrective shape-key flow (Edit + Sculpt + Finish + Mirror), blink-driven.
+- ARP "peanut" eyes-target widget, generated procedurally (verified offline with
+  matplotlib before wiring into Blender).
+
+## Failures -> root cause -> fix (do NOT repeat)
+1. Lids closed only HALFWAY (2.5 mm slit). Cause: the mesh's original Rigify head
+   weight (`DEF-spine.006`) stayed on the lid verts (~50%), fighting the lids.
+   Fix: STRIP every non-lid DEF group off the lid verts, remainder -> head.
+2. Bones met but the SKIN did NOT (still a slit). Cause: bone tips meet at the
+   seam, but the skin margins sit at a wider radius. Fix: `OVERLAP` - upper aims
+   just BELOW the seam, lower just ABOVE, so the margins CROSS and seal.
+3. Corners still open after the body sealed. Cause: static corner bones pinned the
+   canthus skin open. Fix: extend columns to the canthi (frac 0.02..0.98) and drop
+   the corner bones from the weighting.
+4. Faceting on wide-open / full-close skin. Fix: a Corrective Smooth modifier
+   scoped to the eye region (NOT a shape key).
+5. ...but Corrective Smooth RE-OPENED the seal (-1.07 mm) by averaging the
+   upper/lower overlap at the meeting line. Fix (Saeed's idea): MASK it - exclude
+   the margin loop from the smooth group. Result: seal +1.8 mm AND smooth skin.
+6. Orange tweaks didn't move on blink. Cause: they were the PARENT of the moving
+   targets. Fix: make the tweak a CHILD of the moving target so it rides the lid.
+7. RIGHT-eye lid-line widget zig-zagged; left was fine. Cause: the poly prepended
+   the inner canthus, but on the right eye the inner canthus has the LARGER u, so
+   the line jumped end-to-end. Fix: order the corners by u, not by inner/outer.
+8. `VertexGroup.add()` throws in Edit mode. Fix: `clear_eye_rig` forces Object
+   mode first. Blender 5.1 also has NO `Bone.select` (use data.bones.active).
+9. `render_viewport_to_path` writes to a temp dir you can't stage back. Fix:
+   `sc.render.filepath = <connected folder>` + `bpy.ops.render.render(write_still=True)`.
+10. "Not the same after Conform" wasn't a bug: Conform returns the eye to REST;
+    the correction shows only as it closes (blink-driven). Empty key = 0 delta =
+    the animator hadn't actually sculpted yet.
+
+## Non-issues clarified
+- The gold concentric DISC at the world origin = the rig's ROOT control widget
+  (normal), NOT a leftover marker.
+- The "shards" at the eye corners = the separated eyelash meshes (body.002/003)
+  sitting static without a Surface Deform; hiding them proves the lid is clean.
+
+## Tuned params (top of build_eye_rig): BMIX 0.62, FWD_PUSH 0.40, WIDE 0.40,
+   OVERLAP 0.14 (tapered), lid columns 8/8, smooth factor 0.45 / 12 iters (masked).

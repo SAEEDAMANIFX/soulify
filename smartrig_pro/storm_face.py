@@ -149,6 +149,43 @@ def _ring_resample(our_ring, our_center, storm_pts, storm_center):
     return out
 
 
+def _arc_even(arc, spts, sc=None):
+    """Place K storm points EVENLY by ARC-LENGTH along OUR polyline arc,
+    strictly between the ends at fractions (i+1)/(K+1). Shape-independent:
+    unlike the angle method it never bunches on a wide flat feature (mouth)
+    or a shallow one (eyelid). spts are ordered along the arc by projecting
+    them onto the chord arc[0]->arc[-1], so the point nearest arc[0] lands
+    nearest arc[0] (arcs are oriented centre/inner-corner -> corner)."""
+    arc = [np.asarray(p, float) for p in arc]
+    if len(arc) < 2:
+        base = arc[0] if arc else np.zeros(3)
+        return [base for _ in spts]
+    seg = [float(np.linalg.norm(arc[i + 1] - arc[i])) for i in range(len(arc) - 1)]
+    total = sum(seg) or 1e-9
+    cum = [0.0]
+    for s in seg:
+        cum.append(cum[-1] + s)
+
+    def at(frac):
+        t = max(0.0, min(1.0, frac)) * total
+        for i in range(len(seg)):
+            if t <= cum[i + 1] or i == len(seg) - 1:
+                d = seg[i] if seg[i] > 1e-9 else 1e-9
+                return arc[i] + (arc[i + 1] - arc[i]) * min(max((t - cum[i]) / d, 0.0), 1.0)
+        return arc[-1]
+
+    a0 = arc[0]
+    chord = arc[-1] - a0
+    cn = float(np.dot(chord, chord)) or 1e-9
+    order = sorted(range(len(spts)),
+                   key=lambda j: float(np.dot(np.asarray(spts[j], float) - a0, chord)) / cn)
+    K = len(spts)
+    out = [None] * K
+    for rank, j in enumerate(order):
+        out[j] = at((rank + 1) / (K + 1.0))
+    return out
+
+
 def _vg_verts(host, vg_name, thr=0.15):
     """Vertices belonging to a registration vertex group.
 
@@ -442,6 +479,9 @@ def _build_anchor_pairs(face, props, body, gp, rig):
                 our_ring.append(np.array([
                     float(ec[0]) + 0.78 * r * math.cos(a), yf,
                     float(ec[2]) + 0.62 * r * math.sin(a)]))
+        # eyelids keep the angle resample (the eye is round enough that it
+        # reads clean; arc-even hurt here because the 15 lid DEF bones don't
+        # map 1:1 to the storm control points)
         for part in ("upp", "low"):
             spts = A.get("lid_ring_%s%s" % (part, s))
             if not spts:
@@ -451,27 +491,45 @@ def _build_anchor_pairs(face, props, body, gp, rig):
             for sp, op in zip(spts, opts):
                 add(sp, op)
 
-    # ---- lip ring: registered grid loop when valid, else a clean
-    # ellipse through the DETECTED corners + lips ----
-    if mouth_ok:
-        lip_ring = [gp["lip_T"], gp["lip_T.L"], gp["mouth_corner.L"],
-                    gp["lip_B.L"], gp["lip_B"], gp["lip_B.R"],
-                    gp["mouth_corner.R"], gp["lip_T.R"]]
-    else:
-        cl = np.asarray(ours["corner.L"], float)
-        cr = np.asarray(ours["corner.R"], float)
-        lt = np.asarray(lip_T, float)
-        lb = np.asarray(lip_B, float)
-        lip_ring = [lt, (lt + cl) / 2 + np.array([0, 0, 0.2]) * 0,
-                    cl, (lb + cl) / 2, lb, (lb + cr) / 2, cr,
-                    (lt + cr) / 2]
+    # ---- lip ring: place the storm micro-lip control points DIRECTLY on our
+    # registered grid, distributed EVENLY by ARC-LENGTH along each lip arc.
+    # The old angle-based _ring_resample bunched them at the corners on a wide
+    # flat mouth (measured 36x -> 104x uneven); arc-length is shape-independent
+    # and stays even, so the lip ribbon control points come out tidy. ----
     s_mouth = A.get("mouth")
+    # ALL arcs oriented centre -> corner so the centre-most storm point (rank 0)
+    # always lands nearest the centre (fraction rises toward the corner).
+    _arc = {
+        (".L", "upp"): ["lip_T", "lip_T_in.L", "lip_T.L", "lip_T_out.L", "mouth_corner.L"],
+        (".L", "low"): ["lip_B", "lip_B_in.L", "lip_B.L", "lip_B_out.L", "mouth_corner.L"],
+        (".R", "upp"): ["lip_T", "lip_T_in.R", "lip_T.R", "lip_T_out.R", "mouth_corner.R"],
+        (".R", "low"): ["lip_B", "lip_B_in.R", "lip_B.R", "lip_B_out.R", "mouth_corner.R"],
+    }
+    _dense_ok = mouth_ok and all(
+        k in gp for k in ("lip_T_in.L", "lip_T_out.L", "lip_B_in.L", "lip_B_out.L"))
+    if not _dense_ok:
+        # legacy sparse grid (pre-2.4) or no registered mouth: keep the old ring
+        if mouth_ok:
+            lip_ring = [gp["lip_T"], gp["lip_T.L"], gp["mouth_corner.L"],
+                        gp["lip_B.L"], gp["lip_B"], gp["lip_B.R"],
+                        gp["mouth_corner.R"], gp["lip_T.R"]]
+        else:
+            cl = np.asarray(ours["corner.L"], float)
+            cr = np.asarray(ours["corner.R"], float)
+            lt = np.asarray(lip_T, float)
+            lb = np.asarray(lip_B, float)
+            lip_ring = [lt, (lt + cl) / 2, cl, (lb + cl) / 2, lb,
+                        (lb + cr) / 2, cr, (lt + cr) / 2]
     for s in (".L", ".R"):
         for part in ("upp", "low"):
             spts = A.get("lip_ring_%s%s" % (part, s))
             if not spts:
                 continue
-            opts = _ring_resample(lip_ring, mouth_mid, spts, s_mouth)
+            if _dense_ok:
+                arc = [gp[n] for n in _arc[(s, part)] if n in gp]
+                opts = _arc_even(arc, spts)
+            else:
+                opts = _ring_resample(lip_ring, mouth_mid, spts, s_mouth)
             for sp, op in zip(spts, opts):
                 add(sp, op)
 

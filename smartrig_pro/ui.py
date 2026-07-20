@@ -500,188 +500,103 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
 
 
     def _face_box(self, layout, context):
+        """Face (new) - rebuilt part by part. Part 1 = Eye (register-driven)."""
+        from . import eye_sample as _eye
         props = context.scene.smartrig
-        from . import face as _fc
         box = layout.box()
         hd = box.row(align=True)
-        hd.prop(props, "show_face", text="Face Rig (beta)", emboss=False,
+        hd.prop(props, "show_face", text="Face (new - part by part)",
+                emboss=False,
                 icon=('TRIA_DOWN' if props.show_face else 'TRIA_RIGHT'))
-        hd.operator("smartrig.toggle_bones", text="", icon='HIDE_OFF')
         hd.label(text="", icon='MONKEY')
         if not props.show_face:
             return
+        st = _eye._registration_state(context)
+        eb = box.box()
+        eb.label(text="Part 1 - Eye", icon='HIDE_OFF')
 
-        has_mk = _fc.markers_present()
-        rig = bpy.data.objects.get(_fc.FACE_RIG_NAME)
-        built = False
-        if rig is None:
-            try:
-                from . import metarig as _mr
-                rig = _mr._generated_rig()
-            except Exception:
-                rig = None
-        if rig is not None:
-            built = "DEF-jaw" in rig.data.bones
+        eb.label(text="1) Register eyes (pick eyeball mesh):")
+        r = eb.row(align=True)
+        op = r.operator("smartrig.eye_register", text="Eye L",
+                        icon='CHECKMARK' if st["eye.L"] else 'RADIOBUT_OFF')
+        op.part = 'EYE_L'
+        op = r.operator("smartrig.eye_register", text="Eye R",
+                        icon='CHECKMARK' if st["eye.R"] else 'RADIOBUT_OFF')
+        op.part = 'EYE_R'
 
-        # ---- Step 0: register the FACE OBJECTS (FaceIt-style slots) ----
-        ob_box = box.box()
-        hr = ob_box.row(align=True)
-        hr.label(text="Face Objects (Register)", icon='OUTLINER_OB_POINTCLOUD')
-        hr.operator("smartrig.face_objects_detect", text="", icon='VIEWZOOM')
-        rs = ob_box.row(); rs.scale_y = 1.3
-        rs.operator("smartrig.face_register_selected",
-                    text="Register Selected", icon='RESTRICT_SELECT_OFF')
-        rp = ob_box.row(); rp.scale_y = 1.3
-        rp.operator_menu_enum("smartrig.face_register_part", "part",
-                              text="Register Selection As...",
-                              icon='GROUP_VERTEX')
+        eb.label(text="2) Register eyelids (Edit mode, Alt+click loop):")
+        r = eb.row(align=True)
+        op = r.operator("smartrig.eye_register", text="Eyelid L",
+                        icon='CHECKMARK' if st["lid.L"] else 'RADIOBUT_OFF')
+        op.part = 'LID_L'
+        op = r.operator("smartrig.eye_register", text="Eyelid R",
+                        icon='CHECKMARK' if st["lid.R"] else 'RADIOBUT_OFF')
+        op.part = 'LID_R'
 
-        col = ob_box.column(align=True)
-        col.prop(props, "target_mesh", text="Main", icon='USER')
-        for _attr, _lbl, _icn, _part in (
-                ("skin_eye_l", "Eye L", 'HIDE_OFF', 'EYE_L'),
-                ("skin_eye_r", "Eye R", 'HIDE_OFF', 'EYE_R'),
-                ("skin_teeth_up", "Teeth Up", 'TRIA_UP_BAR', 'TEETH_UP'),
-                ("skin_teeth_low", "Teeth Low", 'TRIA_DOWN_BAR', 'TEETH_LOW'),
-                ("skin_tongue", "Tongue", 'META_CAPSULE', 'TONGUE'),
-                ("skin_brows", "Brows", 'CURVE_PATH', 'BROWS'),
-                ("skin_lashes", "Eyelashes", 'CURVE_NCURVE', 'LASHES'),
-                ("skin_hair", "Hair", 'OUTLINER_OB_CURVES', 'HAIR')):
-            _r = col.row(align=True)
-            _host = None
-            if getattr(props, _attr) is None:
-                # in-mesh registration may live on ANY mesh (main face,
-                # combined teeth_and_tongue, ...) - search them all
-                try:
-                    _host = _fc.face_part_host(props, _part)
-                except Exception:
-                    _host = None
-            if _host is not None:
-                # in-mesh registration: show it FILLED like a chosen object
-                _r.label(text="%s:" % _lbl, icon=_icn)
-                _bx = _r.box(); _bx.scale_y = 0.55
-                _bx.label(text="%s  ›  vertices" % _host.name,
-                          icon='CHECKMARK')
-                _xo = _r.operator("smartrig.face_unregister_part", text="",
-                                  icon='X')
-                _xo.part = _part
-            else:
-                _r.prop(props, _attr, text=_lbl, icon=_icn)
-                _op = _r.operator("smartrig.face_register_slot", text="",
-                                  icon='RESTRICT_SELECT_OFF')
-                _op.part = _part
+        eb.label(text="3) Corner markers (grab GREEN=inner / RED=outer):")
+        r = eb.row(align=True)
+        op = r.operator("smartrig.eye_corner_marker", text="Corners L",
+                        icon='CHECKMARK' if st["corner.L"] else 'MESH_UVSPHERE')
+        op.side = '.L'
+        op = r.operator("smartrig.eye_corner_marker", text="Corners R",
+                        icon='CHECKMARK' if st["corner.R"] else 'MESH_UVSPHERE')
+        op.side = '.R'
 
-        # ---- Step 1: FaceIt-style guided placement (Saeed's video) ----
-        has_grid1 = bpy.data.objects.get(_fc.GRID_NAME) is not None
-        st = _step(box, 1, "Face Markers", 'EMPTY_DATA',
-                   'done' if has_grid1 else 'active')
-        r = st.row(); r.scale_y = 1.5
-        r.operator("smartrig.face_place",
-                   text=("Restart Face Markers" if has_grid1 else "Face Markers"),
-                   icon='EMPTY_DATA')
-        if not has_grid1:
-            st.label(text="Click the CHIN, move to match the", icon='INFO')
-            st.label(text="face WIDTH, click to confirm.")
+        cbox = eb.box()
+        cbox.label(text="Lid bones per eyelid (upper = lower, 2-12):")
+        cbox.prop(props, "eye_lid_upper_count", text="Lid Bones")
+        r = cbox.row(align=True)
+        r.prop(props, "eye_autobind", toggle=True)
+        sub = r.row(align=True)
+        sub.enabled = props.eye_autobind
+        sub.prop(props, "eye_bind_band", text="Reach")
 
-        # ---- Step 2: adjust the flat net ----
-        st = _step(box, 2, "Adjust Landmarks", 'EDITMODE_HLT',
-                   'done' if has_mk or built else
-                   ('active' if has_grid1 else 'todo'))
-        if has_grid1 and not built:
-            st.label(text="Edit Mode: G/S/R the points onto", icon='MOUSE_MOVE')
-            st.label(text="lips / eyes / brows. R follows L.")
-            st.operator("smartrig.face_clear", text="Remove Face Markers",
-                        icon='X')
-
-        # ---- Step 3: project (FaceIt-style) ----
-        has_grid = has_grid1
-        st = _step(box, 3, "Project Landmarks", 'MOD_SHRINKWRAP',
-                   'done' if has_mk else ('active' if has_grid and not built
-                                          else 'todo'))
-        if has_grid:
-            r = st.row(); r.scale_y = 1.5
-            r.operator("smartrig.face_project",
-                       text=("Re-project Landmarks" if has_mk
-                             else "Project Landmarks"), icon='MOD_SHRINKWRAP')
-            if not has_mk:
-                st.label(text="Snaps the flat net onto the face.", icon='INFO')
-
-        # ---- Step 4: REGISTER LOOPS (mouth + eyelids) - explicit + ✓ ----
-        grid_ob = bpy.data.objects.get(_fc.GRID_NAME)
-        lm_done = bool(grid_ob and grid_ob.get("sr_loop_mouth"))
-        le_done = bool(grid_ob and grid_ob.get("sr_loop_eye_L"))
-        re_done = bool(grid_ob and grid_ob.get("sr_loop_eye_R"))
-        all_loops = lm_done and le_done and re_done
-        st = _step(box, 4, "Register Loops", 'EDGESEL',
-                   'done' if all_loops else ('active' if has_mk else 'todo'))
-        if has_mk:
-            st.label(text="On the FACE MESH: Edit Mode, then", icon='INFO')
-            st.label(text="Alt+Click the loop, then press:")
-            r = st.row(align=True); r.scale_y = 1.5
-            op = r.operator("smartrig.face_loop_register",
-                            text="Mouth Loop",
-                            icon=('CHECKMARK' if lm_done else 'EDGESEL'))
-            op.region = 'MOUTH'
-            r = st.row(align=True); r.scale_y = 1.5
-            op = r.operator("smartrig.face_loop_register",
-                            text="Eyelid L",
-                            icon=('CHECKMARK' if le_done else 'EDGESEL'))
-            op.region = 'EYE_L'
-            op = r.operator("smartrig.face_loop_register",
-                            text="Eyelid R",
-                            icon=('CHECKMARK' if re_done else 'EDGESEL'))
-            op.region = 'EYE_R'
-            if props.target_mesh is not None and any(
-                    m.type == 'MIRROR' and m.use_axis[0]
-                    for m in props.target_mesh.modifiers):
-                st.label(text="Mirror modifier: one side = both",
-                         icon='MOD_MIRROR')
-            rr = st.row(align=True)
-            rr.label(text="Mouth", icon='CHECKMARK' if lm_done else 'BLANK1')
-            rr.label(text="Eye.L", icon='CHECKMARK' if le_done else 'BLANK1')
-            rr.label(text="Eye.R", icon='CHECKMARK' if re_done else 'BLANK1')
-
-        # ---- Step 5: build ----
-        st = _step(box, 5, "Build Face Base", 'OUTLINER_OB_ARMATURE',
-                   'done' if built else ('active' if has_mk else 'todo'))
-        if has_mk:
-            st.prop(props, "face_storm_full", text="Full Storm Face (538 bones)")
-            if not props.face_storm_full:
-                st.prop(props, "face_lip_ctls", text="Lip Controls / side")
-            r = st.row(); r.scale_y = 1.7
-            r.operator("smartrig.face_build_base",
-                       text=("Rebuild Face Base" if built else "Build Face Base"),
-                       icon='OUTLINER_OB_ARMATURE')
-            if built:
-                st.operator("smartrig.face_back_to_edit",
-                            text="Back to Edit Landmarks", icon='LOOP_BACK')
-                st.operator("smartrig.face_start_over",
-                            text="Cancel / Start Over", icon='CANCEL')
-                st.label(text="Jaw + eye aim + ears are live.", icon='CHECKMARK')
-                st.label(text="CTL-jaw rotate X = open mouth;")
-                st.label(text="CTL-eyes = look target.")
-
-        # ---- Step 6: organize + expressions (FaceIt-style, editable) ----
-        st = _step(box, 6, "Organize & Expressions", 'OUTLINER',
-                   'active' if built else 'todo')
-        if built:
-            r = st.row(); r.scale_y = 1.3
-            r.operator("smartrig.organize_rig", icon='OUTLINER_COLLECTION')
-            r = st.row(); r.scale_y = 1.3
-            r.operator("smartrig.face_rig_check", icon='CHECKMARK')
-            _chk = context.scene.get("sr_rig_check")
-            if _chk:
-                import json as _json
-                _bx = st.box()
-                try:
-                    for _lbl, _val, _ok in _json.loads(_chk):
-                        _rr = _bx.row()
-                        _rr.label(text="%s - %s" % (_lbl, _val),
-                                  icon=('CHECKMARK' if _ok else 'CANCEL'))
-                except Exception:
-                    pass
-            from . import expressions as _expr
-            _expr.draw_panel(st, context)
+        eb.separator()
+        r = eb.row(); r.scale_y = 1.6
+        r.enabled = st["eye.L"] or st["eye.R"]
+        r.operator("smartrig.eye_sample_build", text="Build Eye Rig",
+                   icon='OUTLINER_OB_ARMATURE')
+        r = eb.row()
+        r.enabled = st["eye.L"] or st["eye.R"]
+        r.operator("smartrig.eye_bind", text="Re-Bind Eyelids Only",
+                   icon='MOD_VERTEX_WEIGHT')
+        eb.separator()
+        eb.label(text="Perfect the closed lid (corrective - rides the blink):",
+                 icon='SHAPEKEY_DATA')
+        _corr = st["eye.L"] or st["eye.R"]
+        r = eb.row(align=True)
+        r.enabled = _corr
+        op = r.operator("smartrig.eye_corrective", text="Sculpt Closed L",
+                        icon='SCULPTMODE_HLT')
+        op.side = ".L"; op.mode = 'SCULPT'
+        op = r.operator("smartrig.eye_corrective", text="Sculpt Closed R",
+                        icon='SCULPTMODE_HLT')
+        op.side = ".R"; op.mode = 'SCULPT'
+        r = eb.row(align=True)
+        r.enabled = _corr
+        op = r.operator("smartrig.eye_corrective", text="Edit Closed L",
+                        icon='EDITMODE_HLT')
+        op.side = ".L"; op.mode = 'EDIT'
+        op = r.operator("smartrig.eye_corrective", text="Edit Closed R",
+                        icon='EDITMODE_HLT')
+        op.side = ".R"; op.mode = 'EDIT'
+        r = eb.row(); r.scale_y = 1.3
+        r.enabled = _corr
+        r.operator("smartrig.eye_corrective_finish",
+                   text="Finish Correction (Conform)", icon='CHECKMARK')
+        r = eb.row(align=True)
+        r.enabled = _corr
+        op = r.operator("smartrig.eye_corrective_mirror", text="Mirror L → R",
+                        icon='MOD_MIRROR')
+        op.from_side = ".L"
+        op = r.operator("smartrig.eye_corrective_mirror", text="Mirror R → L",
+                        icon='MOD_MIRROR')
+        op.from_side = ".R"
+        r = eb.row()
+        r.operator("smartrig.eye_clear", text="Clear Eye Sample",
+                   icon='TRASH')
+        eb.label(text="Aim + spoke lids + master/tweak controls + paired blink.",
+                 icon='INFO')
 
     def _rigify_samples(self, layout, context):
         from . import metarig as _mr

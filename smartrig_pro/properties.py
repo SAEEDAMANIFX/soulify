@@ -299,6 +299,17 @@ class WeightFolder(PropertyGroup):
     parent: StringProperty(default="")    # parent folder uid ("" = top level)
 
 
+def _eye_lid_sync_upper(self, context):
+    # keep upper == lower so every upper lid bone pairs with a lower one
+    if self.eye_lid_lower_count != self.eye_lid_upper_count:
+        self.eye_lid_lower_count = self.eye_lid_upper_count
+
+
+def _eye_lid_sync_lower(self, context):
+    if self.eye_lid_upper_count != self.eye_lid_lower_count:
+        self.eye_lid_upper_count = self.eye_lid_lower_count
+
+
 class SmartRigProps(PropertyGroup):
     ai_tools_path: StringProperty(
         name="AI Tools", subtype='DIR_PATH', default="",
@@ -694,9 +705,10 @@ class SmartRigProps(PropertyGroup):
                     "brow/cheek strips, teeth, tongue, jawline, lattices, "
                     "drivers) retargeted onto this character. Off = the "
                     "simple 42-control layout")
-    face_lip_ctls: IntProperty(name="Lip Controls", default=2, min=1, max=4,
-                               description="Extra lip controls PER SIDE per lip "
-                                           "(between the center and the corner). "
+    face_lip_ctls: IntProperty(name="Lip Controls", default=3, min=1, max=4,
+                               description="Lip controls PER SIDE per lip - they "
+                                           "sit on the dense lip-ring points "
+                                           "(3 = full eye-parity ring). "
                                            "Rebuild Face Base to apply")
     skin_brows: PointerProperty(name="Brows", type=bpy.types.Object, poll=_mesh_poll,
                                 description="Eyebrow mesh (registered like FaceIt; used by the "
@@ -704,6 +716,28 @@ class SmartRigProps(PropertyGroup):
     skin_lashes: PointerProperty(name="Eyelashes", type=bpy.types.Object, poll=_mesh_poll,
                                  description="Eyelashes mesh (registered like FaceIt; follows "
                                              "the eyelids)")
+    # ---- eye sample (Face Part 1) ----
+    eye_lid_upper_count: IntProperty(
+        name="Lid Bones", default=5, min=2, max=12,
+        update=_eye_lid_sync_upper,
+        description="Number of bones spread along EACH eyelid (upper = lower, "
+                    "kept in sync so the lids pair up and close exactly onto "
+                    "each other). 2 = minimum to shape the lid, 12 = maximum")
+    eye_lid_lower_count: IntProperty(
+        name="Lower Lid Bones", default=5, min=2, max=12,
+        update=_eye_lid_sync_lower,
+        description="Lower eyelid bone count (auto-synced to the upper count)")
+    eye_autobind: BoolProperty(
+        name="Auto-Bind Eyelids", default=True,
+        description="After building, automatically skin the eyelid region to the "
+                    "lid bones - bounded to the eye (recognised from the "
+                    "registered loop); never bleeds into brows or cheeks")
+    eye_bind_band: FloatProperty(
+        name="Bind Reach", default=0.9, min=0.3, max=2.0,
+        description="How far (as a fraction of the eye radius) the eyelid skin "
+                    "reaches out from the registered loop. Higher = more skin "
+                    "follows the lid = fuller close. Keep >= ~0.7 for a full "
+                    "professional close")
     # ---- top-level phases in THE recommended order: Rig -> Fit -> Animate
     # (rig the character first = exact joints, then dress her, then animate)
     ui_tab: EnumProperty(

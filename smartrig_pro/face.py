@@ -68,9 +68,13 @@ FACE_TEMPLATE = {
     # nose wing + cheeks (3)
     "nose_side.L": (0.115, 0.55),
     "cheek_up.L": (0.40, 0.60), "cheek_low.L": (0.27, 0.33),
-    # lips outer + inner (5)
-    "lip_T.L": (0.11, 0.30), "mouth_corner.L": (0.225, 0.20),
-    "lip_B.L": (0.11, 0.165),
+    # lips ring (dense - eye-parity): the 2 centres (lip_T/lip_B above) plus
+    # 7 side points forming a clean almond contour like the eyelid ring, so
+    # the mouth net is as dense/tidy as the eye net (Saeed: "الفم مثل العين")
+    "lip_T_in.L": (0.075, 0.325), "lip_T.L": (0.15, 0.305),
+    "lip_T_out.L": (0.205, 0.268), "mouth_corner.L": (0.235, 0.24),
+    "lip_B_out.L": (0.205, 0.212), "lip_B.L": (0.15, 0.185),
+    "lip_B_in.L": (0.075, 0.172),
     # chin line (FaceIt): marionette box under the mouth corners
     "chin_side.L": (0.13, 0.03),
 }
@@ -86,9 +90,11 @@ _TE = [
     ("lip_T", "nose_base"), ("nose_base", "nose_tip"),
     ("nose_tip", "nose_bridge"), ("nose_bridge", "brow_c"),
     ("brow_c", "forehead_c"),
-    # outer lip ring
-    ("lip_T", "lip_T.L"), ("lip_T.L", "mouth_corner.L"),
-    ("lip_B", "lip_B.L"), ("lip_B.L", "mouth_corner.L"),
+    # lip ring (dense almond, eye-parity): centre-top -> corner -> centre-bot
+    ("lip_T", "lip_T_in.L"), ("lip_T_in.L", "lip_T.L"),
+    ("lip_T.L", "lip_T_out.L"), ("lip_T_out.L", "mouth_corner.L"),
+    ("mouth_corner.L", "lip_B_out.L"), ("lip_B_out.L", "lip_B.L"),
+    ("lip_B.L", "lip_B_in.L"), ("lip_B_in.L", "lip_B"),
 
     # chin line (marionette box)
     ("mouth_corner.L", "chin_side.L"), ("chin_side.L", "chin_top"),
@@ -1168,14 +1174,25 @@ def _control_table(gp, ipd, P_jaw, head_key):
         for part, pos in (("in", cin), ("mid", gp["cheek_up" + sd]), ("out", cout)):
             T.append(("CTL-Cheek_%s%s" % (part, sd), pos, "WGT-triangle",
                       1.8, 'THEME09', "CTL-Cheek_all" + sd, 0.42 * u))
-        # ---- lips locals + corners (UPPER = red, LOWER = blue, count
-        #      configurable via face_lip_ctls) ----
-        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 2))
+        # ---- lips locals + corners (UPPER = red, LOWER = blue). The locals
+        #      now sit ON the dense lip-ring grid points (eye-parity) so they
+        #      follow the real lip contour; legacy grids fall back to a lerp.
+        #      face_lip_ctls caps how many per lip half.
+        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 3))
+        _ring = {"upp": ["lip_T_in" + sd, "lip_T" + sd, "lip_T_out" + sd],
+                 "low": ["lip_B_in" + sd, "lip_B" + sd, "lip_B_out" + sd]}
         for lvl, cen_key in (("upp", "lip_T"), ("low", "lip_B")):
             _pal = 'THEME01' if lvl == "upp" else 'THEME04'
-            for k in range(1, _nl + 1):
-                t = k / (_nl + 1.0)
-                pos = lerp(gp[cen_key], gp["mouth_corner" + sd], t)
+            keys = [n for n in _ring[lvl] if n in gp]
+            if keys:                       # dense ring present: ride the contour
+                if _nl < len(keys):        # cap: keep an even spread
+                    step = len(keys) / float(_nl)
+                    keys = [keys[int((i + 0.5) * step)] for i in range(_nl)]
+                positions = [gp[n] for n in keys]
+            else:                          # legacy grid: interpolate
+                positions = [lerp(gp[cen_key], gp["mouth_corner" + sd],
+                                  k / (_nl + 1.0)) for k in range(1, _nl + 1)]
+            for k, pos in enumerate(positions, 1):
                 T.append(("CTL-Lips_local%d_%s%s" % (k, lvl, sd), pos,
                           "WGT-triangle", 1.4, _pal,
                           "CTL-Lips_main_" + lvl, 0.16 * u))
@@ -1370,12 +1387,22 @@ def local_weights(props, context, rig):
         fields["DEF-Cheek_in" + sd] = (cin, 0.42 * u)
         fields["DEF-Cheek_mid" + sd] = (gp["cheek_up" + sd], 0.42 * u)
         fields["DEF-Cheek_out" + sd] = (cout, 0.42 * u)
-        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 2))
+        # lip locals ride the dense ring points (must match _control_table)
+        _nl = int(getattr(bpy.context.scene.smartrig, "face_lip_ctls", 3))
+        _ring = {"upp": ["lip_T_in" + sd, "lip_T" + sd, "lip_T_out" + sd],
+                 "low": ["lip_B_in" + sd, "lip_B" + sd, "lip_B_out" + sd]}
         for lvl, cen_key in (("upp", "lip_T"), ("low", "lip_B")):
-            for k in range(1, _nl + 1):
-                t = k / (_nl + 1.0)
-                fields["DEF-Lips_local%d_%s%s" % (k, lvl, sd)] = (
-                    lerp(gp[cen_key], gp["mouth_corner" + sd], t), 0.16 * u)
+            keys = [n for n in _ring[lvl] if n in gp]
+            if keys:
+                if _nl < len(keys):
+                    step = len(keys) / float(_nl)
+                    keys = [keys[int((i + 0.5) * step)] for i in range(_nl)]
+                positions = [gp[n] for n in keys]
+            else:
+                positions = [lerp(gp[cen_key], gp["mouth_corner" + sd],
+                                  k / (_nl + 1.0)) for k in range(1, _nl + 1)]
+            for k, pos in enumerate(positions, 1):
+                fields["DEF-Lips_local%d_%s%s" % (k, lvl, sd)] = (pos, 0.16 * u)
         fields["DEF-Lips_corn" + sd] = (gp["mouth_corner" + sd], 0.22 * u)
     fields["DEF-Lips_main_upp"] = (gp["lip_T"], 0.30 * u)
     fields["DEF-Lips_main_low"] = (gp["lip_B"], 0.30 * u)
@@ -2364,25 +2391,44 @@ class SMARTRIG_OT_face_loop_register(bpy.types.Operator):
         if region == "mouth":
             iR = int(np.argmin(co[:, 0]))
             iL = int(np.argmax(co[:, 0]))
-            width = co[iL, 0] - co[iR, 0]
-            midb = np.abs(co[:, 0] - (co[iL, 0] + co[iR, 0]) / 2.0) < 0.25 * width
-            top = co[midb][co[midb][:, 2] >= np.median(co[midb][:, 2])]
-            bot = co[midb][co[midb][:, 2] < np.median(co[midb][:, 2])]
-            lip_T = top.mean(axis=0)
-            lip_B = bot.mean(axis=0)
+            cx = (co[iL, 0] + co[iR, 0]) / 2.0
+            width = max(co[iL, 0] - co[iR, 0], 1e-6)
+            # centres: mid-band top/bottom means
+            midb = np.abs(co[:, 0] - cx) < 0.22 * width
+            band = co[midb] if midb.any() else co
+            mz = np.median(band[:, 2])
+            lip_T = band[band[:, 2] >= mz].mean(axis=0)
+            lip_B = band[band[:, 2] < mz].mean(axis=0)
             set_marker("face_lip_up", lip_T, keep_x=True)
             set_marker("face_lip_low", lip_B, keep_x=True)
             set_marker("face_mouth_corner.L", co[iL])
             set_grid("lip_T", [0.0, lip_T[1], lip_T[2]])
             set_grid("lip_B", [0.0, lip_B[1], lip_B[2]])
             set_grid("mouth_corner.L", co[iL])
-            # locals along the top/bottom arcs
-            for name, base, t in (("lip_T.L", lip_T, 0.5),
-                                  ("lip_B.L", lip_B, 0.5)):
-                tgt = base + (co[iL] - base) * t
-                j = int(np.argmin(np.linalg.norm(co - tgt, axis=1)))
-                set_grid(name, co[j])
-            msg = "Mouth loop registered (%d verts)" % len(idx)
+            # dense ring: sample the LEFT half (x >= centre) along each arc so
+            # the lip contour is as dense as the eyelid ring (eye-parity)
+            mid_z = 0.5 * (lip_T[2] + lip_B[2])
+            subL = co[co[:, 0] >= cx]
+            up = subL[subL[:, 2] >= mid_z]
+            lo = subL[subL[:, 2] < mid_z]
+            up = up[np.argsort(up[:, 0])]   # centre (x~cx) -> corner (x max)
+            lo = lo[np.argsort(lo[:, 0])]
+
+            def _samp(arr, fr):
+                if len(arr) == 0:
+                    return None
+                return arr[int(round(fr * (len(arr) - 1)))]
+
+            for name, arr, fr in (("lip_T_in.L", up, 0.30),
+                                  ("lip_T.L", up, 0.58),
+                                  ("lip_T_out.L", up, 0.85),
+                                  ("lip_B_in.L", lo, 0.30),
+                                  ("lip_B.L", lo, 0.58),
+                                  ("lip_B_out.L", lo, 0.85)):
+                p = _samp(arr, fr)
+                if p is not None:
+                    set_grid(name, p)
+            msg = "Mouth loop registered (%d verts, dense ring)" % len(idx)
         else:
             sd = ".L" if region == "eye.L" else ".R"
             sign = 1.0 if sd == ".L" else -1.0

@@ -257,6 +257,7 @@ def _draw_face_grid(region, rv3d):
     mw = ob.matrix_world
 
     RING = {"lip_T", "lip_B", "lip_T.L", "lip_B.L",
+            "lip_T_in.L", "lip_T_out.L", "lip_B_in.L", "lip_B_out.L",
             "lid_T_in.L", "lid_T.L", "lid_T_out.L",
             "lid_B_in.L", "lid_B.L", "lid_B_out.L"}
     CORNER = {"eye_in.L", "eye_out.L", "mouth_corner.L"}
