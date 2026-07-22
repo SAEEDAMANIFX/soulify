@@ -310,6 +310,17 @@ def _eye_lid_sync_lower(self, context):
         self.eye_lid_upper_count = self.eye_lid_lower_count
 
 
+def _mouth_lip_sync_upper(self, context):
+    # keep upper == lower so every upper lip bone pairs with a lower one (seal)
+    if self.mouth_lip_lower_count != self.mouth_lip_upper_count:
+        self.mouth_lip_lower_count = self.mouth_lip_upper_count
+
+
+def _mouth_lip_sync_lower(self, context):
+    if self.mouth_lip_upper_count != self.mouth_lip_lower_count:
+        self.mouth_lip_upper_count = self.mouth_lip_lower_count
+
+
 class SmartRigProps(PropertyGroup):
     ai_tools_path: StringProperty(
         name="AI Tools", subtype='DIR_PATH', default="",
@@ -738,6 +749,29 @@ class SmartRigProps(PropertyGroup):
                     "reaches out from the registered loop. Higher = more skin "
                     "follows the lid = fuller close. Keep >= ~0.7 for a full "
                     "professional close")
+    # ---- mouth sample (Face Part 2) ----
+    mouth_lip_upper_count: IntProperty(
+        name="Lip Bones", default=6, min=2, max=16,
+        update=_mouth_lip_sync_upper,
+        description="Number of bones spread EVENLY (by arc-length) along EACH "
+                    "lip between the corners (upper = lower, kept in sync so the "
+                    "lips pair up 1:1 and meet exactly on seal). Change it and "
+                    "press Build to re-spread in real time. 2 = minimum, 16 = "
+                    "maximum (cinematic detail)")
+    mouth_lip_lower_count: IntProperty(
+        name="Lower Lip Bones", default=6, min=2, max=16,
+        update=_mouth_lip_sync_lower,
+        description="Lower lip bone count (auto-synced to the upper count)")
+    mouth_autobind: BoolProperty(
+        name="Auto-Bind Lips", default=True,
+        description="After building, automatically skin the lip region to the "
+                    "lip bones - bounded to the mouth (recognised from the "
+                    "registered loop); never bleeds into chin, cheeks or nose")
+    mouth_bind_band: FloatProperty(
+        name="Bind Reach", default=0.9, min=0.3, max=2.0,
+        description="How far (as a fraction of the mouth half-height) the lip "
+                    "skin reaches out from the registered loop. Higher = more "
+                    "skin follows the lips. Keep >= ~0.7 for a full seal")
     # ---- top-level phases in THE recommended order: Rig -> Fit -> Animate
     # (rig the character first = exact joints, then dress her, then animate)
     ui_tab: EnumProperty(

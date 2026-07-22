@@ -598,6 +598,69 @@ class SMARTRIG_PT_panel(bpy.types.Panel):
         eb.label(text="Aim + spoke lids + master/tweak controls + paired blink.",
                  icon='INFO')
 
+        # ---- Part 2 - Mouth (register-driven, mirror of the eye) ----
+        from . import mouth_sample as _mouth
+        mst = _mouth._registration_state(context)
+        mb = box.box()
+        mb.label(text="Part 2 - Mouth", icon='HIDE_OFF')
+
+        mb.label(text="1) Register mouth loop (Edit mode, Alt+click lip loop):")
+        r = mb.row(align=True)
+        r.operator("smartrig.mouth_register", text="Register Mouth Loop",
+                   icon='CHECKMARK' if mst["loop"] else 'RADIOBUT_OFF')
+
+        mb.label(text="2) Corner markers (grab BLUE=left / RED=right):")
+        r = mb.row(align=True)
+        r.operator("smartrig.mouth_corner_marker", text="Mouth Corners",
+                   icon='CHECKMARK' if mst["corners"] else 'MESH_UVSPHERE')
+
+        cbox = mb.box()
+        cbox.label(text="Lip bones per lip (upper = lower, 2-16):")
+        cbox.prop(props, "mouth_lip_upper_count", text="Lip Bones")
+        r = cbox.row(align=True)
+        r.prop(props, "mouth_autobind", toggle=True)
+        sub = r.row(align=True)
+        sub.enabled = props.mouth_autobind
+        sub.prop(props, "mouth_bind_band", text="Reach")
+
+        mb.separator()
+        r = mb.row(); r.scale_y = 1.6
+        r.enabled = mst["loop"]
+        r.operator("smartrig.mouth_sample_build", text="Build Mouth Rig",
+                   icon='OUTLINER_OB_ARMATURE')
+        r = mb.row()
+        r.enabled = mst["loop"]
+        r.operator("smartrig.mouth_bind", text="Re-Bind Lips Only",
+                   icon='MOD_VERTEX_WEIGHT')
+        mb.separator()
+        mb.label(text="Perfect the extremes (corrective - rides the slider):",
+                 icon='SHAPEKEY_DATA')
+        r = mb.row(align=True)
+        r.enabled = mst["loop"]
+        op = r.operator("smartrig.mouth_corrective", text="Sculpt Sealed",
+                        icon='SCULPTMODE_HLT')
+        op.which = 'SEAL'; op.mode = 'SCULPT'
+        op = r.operator("smartrig.mouth_corrective", text="Sculpt Open",
+                        icon='SCULPTMODE_HLT')
+        op.which = 'OPEN'; op.mode = 'SCULPT'
+        r = mb.row(align=True)
+        r.enabled = mst["loop"]
+        op = r.operator("smartrig.mouth_corrective", text="Edit Sealed",
+                        icon='EDITMODE_HLT')
+        op.which = 'SEAL'; op.mode = 'EDIT'
+        op = r.operator("smartrig.mouth_corrective", text="Edit Open",
+                        icon='EDITMODE_HLT')
+        op.which = 'OPEN'; op.mode = 'EDIT'
+        r = mb.row(); r.scale_y = 1.3
+        r.enabled = mst["loop"]
+        r.operator("smartrig.mouth_corrective_finish",
+                   text="Finish Correction (Conform)", icon='CHECKMARK')
+        r = mb.row()
+        r.operator("smartrig.mouth_clear", text="Clear Mouth Sample",
+                   icon='TRASH')
+        mb.label(text="Jaw + master + arc-even lips + tweaks + open/seal + "
+                 "corner masters.", icon='INFO')
+
     def _rigify_samples(self, layout, context):
         from . import metarig as _mr
         props = context.scene.smartrig
