@@ -386,7 +386,7 @@ def build_mouth_rig(context):
     _drop(lambda n: n.startswith(("MSTR-Mouth", "CTL-Lip", "DEF-lip", "MCH-mtgt",
                                   "CTL-MouthOpen", "MCH-Mouth", "CTL-Jaw",
                                   "DEF-Jaw", "MCH-JawCorn", "MCH-JawRot",
-                                  "MCH-JawSway")))
+                                  "MCH-JawRet", "MCH-JawSway")))
 
     def nb(name, head, tail, deform, parent=None):
         b = eb.new(name)
@@ -413,9 +413,16 @@ def build_mouth_rig(context):
     bind_data = None
     ribbon_specs = []
 
-    # MSTR-Mouth = the whole-mouth pivot (small yellow ring), parented to head.
+    # MSTR-Mouth = the whole-mouth pivot, parented to head.  Its yellow frame
+    # widget must ENCLOSE THE WHOLE MOUTH (both corners + upper & lower lip
+    # lines) with a clear margin, so the animator reads it as "grab this = move
+    # the entire mouth".  Half-width reaches just beyond the commissures
+    # (0.5*span) plus a margin; half-height clears both lip master lines
+    # (offset +/-0.55*LV) with room to spare.
     nb("MSTR-Mouth", c, c + fwd * (0.6 * S), False, head_parent)
-    made_frame.append(("MSTR-Mouth", (0.62 * mw, 1.2 * LV), _C_YELLOW))
+    mstr_hw = 0.5 * span + 0.95 * LV
+    mstr_hh = 2.1 * LV
+    made_frame.append(("MSTR-Mouth", (mstr_hw, mstr_hh), _C_YELLOW))
     made_jaw = []                    # (bone, size, colour) - jaw / hook widgets
     corner_masters = {}
     jaw_wiring = []                  # (mch-follow bone, factor)
@@ -451,6 +458,19 @@ def build_mouth_rig(context):
     nb("MCH-JawRot", jaw_pivot, chin, False, "MCH-JawSway")
     # deform bone rides the hinge (parented, no constraint -> rest identity).
     nb("DEF-Jaw", jaw_pivot, chin, True, "MCH-JawRot")
+    # ⭐ JAW RETAIN (ARP jaw_ret_bone / "Soft Lips - Linear Jaw"): a hinge that
+    # copies the jaw open at JAW_FOLLOW (50%).  The lower-lip master AND the lip
+    # CORNERS both ride this, so they follow the open by the SAME fraction and
+    # move TOGETHER - the chin (DEF-Jaw) alone follows 100%.  This is THE fix for
+    # the boxy open: before, the lower lip followed 100% while the corner was
+    # frozen (0%) -> a vertical wall at each commissure.  Now lip==corner==50%
+    # and the skin blends smoothly lip(50%) -> chin(100%).
+    # NB: parented to MSTR-Mouth (NOT the jaw chain) so the lower lip follows the
+    # WHOLE-MOUTH master for move / SCALE / KISS-pucker, and gets the jaw open on
+    # TOP via the COPY_ROTATION below.  (DEF-Jaw/chin stays on the jaw chain, so
+    # scaling MSTR-Mouth scales the LIPS only, never the jaw bone.)
+    nb("MCH-JawRet", jaw_pivot, chin, False, "MSTR-Mouth")
+    jaw_wiring.append(("MCH-JawRet", 0.5))            #   50% jaw follow (Soft Lips)
     # the MOVE-handle: a short bone JUST IN FRONT of the chin, pointing forward
     # (+fwd = -Y toward camera) so its widget faces front and its local axes are
     # clean: local X = sideways, local Z = up, local Y = fwd/back (locked off).
@@ -465,13 +485,14 @@ def build_mouth_rig(context):
     # open; loc UP by clench_travel = full clench; loc SIDE by side_travel = full
     # sway.
     jaw_map = dict(open_travel=2.5 * LV, clench_travel=1.0 * LV,
-                   side_travel=2.0 * LV, open_max=0.7, clench_max=0.15,
+                   side_travel=2.0 * LV, open_max=0.55, clench_max=0.15,
                    sway_max=0.22)
 
     # per-lip masters (open / shape a whole lip).  UPPER follows the head; LOWER
-    # follows the JAW so the bottom lip rides the jaw open automatically.
+    # follows the JAW RETAIN (50%) so the bottom lip rides the jaw open at the
+    # SAME rate as the corners (moves together, no wall) - not the full 100%.
     masters = {}
-    master_parent = {"upp": "MSTR-Mouth", "low": "MCH-JawRot"}
+    master_parent = {"upp": "MSTR-Mouth", "low": "MCH-JawRet"}
     for part, sgn in (("upp", 1.0), ("low", -1.0)):
         mg = margins.get(part)
         mmid = _eye._interp_pt(0.5 * (lo_u + hi_u), mg["us"], mg["pts"]) if mg \
@@ -487,21 +508,33 @@ def build_mouth_rig(context):
     # master (fine sculpt).  DEF corner spoke follows the tweak.
     for cname, cp, pal in (("L", pL, _C_BLUE), ("R", pR, _C_RED)):
         cp = np.asarray(cp, float)
+        # PARTIAL-JAW hinge for this corner (ARP/Rigify style).  A bone at the
+        # jaw PIVOT pointing to the chin - the SAME orientation as MCH-JawRot -
+        # parented to the mouth master.  A clean LOCAL copy of the jaw open at
+        # CORN_FOLLOW swings it on the REAL hinge arc, so the corner DROPS a
+        # fraction with the jaw.  (The sideways MCH-JawCorn below can't copy the
+        # hinge rotation itself - different local frame, it capped at ~6mm and
+        # left the corner frozen = the boxy open with vertical corner walls.)
+        chp = "MCH-JawCornP.%s" % cname
+        nb(chp, jaw_pivot, chin, False, "MSTR-Mouth")
+        jaw_wiring.append((chp, 0.5))                  #   50% - SAME as the lip
         mch = "MCH-JawCorn.%s" % cname
-        # corner MCH stays on MSTR-Mouth (so the corner moves with the mouth
-        # master) and only COPIES half the hinge open (below), so the corner
-        # follows the jaw a little on open WITHOUT the jaw hanging off the mouth.
-        nb(mch, jaw_pivot, cp, False, "MSTR-Mouth")
-        jaw_wiring.append((mch, 0.5))                 #   jaw rot swings the corner
+        # the sideways corner bone RIDES the partial hinge (so it inherits the
+        # 45% drop) and still moves with the mouth master through it.
+        nb(mch, jaw_pivot, cp, False, chp)
         cm = "CTL-Lips_corn.%s" % cname
         nb(cm, cp, cp + fwd * (0.5 * S), False, mch)   # +fwd = point -Y at camera
-        made_handle.append((cm, 0.28 * S, pal))        # big corner MASTER handle
+        made_handle.append((cm, 0.28 * S, pal))        # the ONE corner handle
+        # DEF corner = a SHORT bone AT the corner, a CHILD of the corner MASTER
+        # directly (the extra fine tweak CTL-LipT_corn was removed per Saeed - it
+        # just cluttered the same spot as the master).  NOT a spoke from the
+        # centre socket: that old socket-spoke + DAMPED_TRACK held a constant
+        # distance to the centre, so dropping the corner on jaw-open slid it
+        # INWARD along that sphere -> corners collapsed and wrecked the mouth.  A
+        # short child just follows the master rigidly: down/back with the jaw at
+        # 50%, horizontal X preserved.
         bn = "DEF-lip_corn.%s" % cname
-        nb(bn, socket, cp, True, mch)
-        tw = "CTL-LipT_corn.%s" % cname
-        nb(tw, cp, cp + fwd * (0.30 * S), False, cm)   # tweak = CHILD of master
-        made_ring.append((tw, 0.16 * S, _C_PINK))
-        corner_follow.append((bn, tw))
+        nb(bn, cp, cp + fwd * (0.30 * S), True, cm)
         corner_masters[cname] = (mch, cm)
 
     # ---- lip ribbon columns (upper & lower share the SAME fracs so they pair) -
@@ -545,8 +578,18 @@ def build_mouth_rig(context):
                 (tw, 0.10 * S, _C_ORANGE))
             dn = "DEF-lip_%s%d" % (part, i)
             nb(dn, socket, p_rest, True, masters[part])
+            # ⭐ CORNER FOLLOW (ARP-style control interpolation): this column's
+            # tweak FOLLOWS the NEAREST corner control by `cf` - 1 at the
+            # commissure, smoothstep to 0 at the mouth centre.  So pulling
+            # CTL-Lips_corn drags the actual lip BONES (upper AND lower) with it,
+            # the whole lip sweeps into the smile / frown - not just the skin near
+            # the corner.  frac 0 = the lo_u corner (.R), frac 1 = hi_u (.L).
+            dn_c = min(frac, 1.0 - frac)
+            t_cf = max(0.0, 1.0 - 1.7 * dn_c)          # reaches past mid-lip
+            cf = t_cf * t_cf * (3.0 - 2.0 * t_cf)
+            cbone = "CTL-Lips_corn.R" if frac < 0.5 else "CTL-Lips_corn.L"
             col_wiring.append(dict(tgt=tg, seal=sl, open=op, defb=dn, track=tw,
-                                   slider="CTL-MouthOpen"))
+                                   slider="CTL-MouthOpen", cbone=cbone, cfollow=cf))
             blist.append((float((p_rest - c) @ right), dn, np.asarray(p_rest)))
         bones_by[part] = blist
         info["columns"].append("%s x%d" % (part, len(blist)))
@@ -587,7 +630,12 @@ def build_mouth_rig(context):
     bind_data = dict(c=c, right=right, up=up, fwd=fwd, loop=loop,
                      vmax=max(float(np.abs(vv).max()), 0.5 * LV), mh=LV,
                      u_in=lo_u, u_out=hi_u, span=span,
-                     band=max(band_fac * LV, 1e-4),
+                     # LONG professional reach like ARP (its lip weights fade out
+                     # over ~40-76mm on a ~95mm mouth).  Tied to the mouth WIDTH
+                     # (0.42*mw) so it auto-scales to ANY character, not a fixed
+                     # number.  This is the smooth "distance" ARP has and the old
+                     # ~13mm band lacked (felt like a hard, un-professional cutoff).
+                     band=max(band_fac * LV, 0.30 * mw, 1e-4),
                      upp=upp_ctrl, low=low_ctrl, jaw="DEF-Jaw",
                      cornerL=cornerL, cornerR=cornerR,
                      cornerL_pt=list(map(float, np.asarray(pL))),
@@ -615,7 +663,7 @@ def build_mouth_rig(context):
         for b in eb:
             nm = b.name
             if nm.startswith(("MCH-mtgt", "MCH-Mouth", "MCH-JawCorn",
-                              "MCH-JawRot", "MCH-JawSway")):
+                              "MCH-JawRot", "MCH-JawRet", "MCH-JawSway")):
                 mch_c.assign(b)
             elif nm.startswith(("DEF-lip", "DEF-Jaw")):
                 def_c.assign(b)
@@ -630,7 +678,8 @@ def build_mouth_rig(context):
     # the hinge axis, so rot_x opens the mouth).
     for b in eb:
         if b.name.startswith(("MSTR-Mouth", "CTL-Lip", "CTL-MouthOpen",
-                              "CTL-Jaw", "MCH-JawRot")):
+                              "CTL-Jaw", "MCH-JawRot", "MCH-JawRet",
+                              "MCH-JawCornP")):
             try:
                 b.align_roll(Vector((0.0, 0.0, 1.0)))
             except Exception:
@@ -646,6 +695,20 @@ def build_mouth_rig(context):
             pass
 
     bpy.ops.object.mode_set(mode='POSE')
+
+    # ⚠️ CLEAR STALE CONSTRAINTS first.  Dropping + recreating an edit bone with
+    # the SAME name REUSES its pose bone, so constraints from an earlier build
+    # (e.g. an old "SR Jaw Follow" on MCH-JawCorn from when the wiring targeted a
+    # different bone) SURVIVE the rebuild and silently corrupt the motion (the
+    # corner span-collapse-inward bug: a stale COPY_ROTATION spun the sideways
+    # corner bone about the wrong local axis).  Wipe every mouth pose bone's
+    # constraints so only the ones this build adds below remain.
+    for pb in rig.pose.bones:
+        if pb.name.startswith(("MSTR-Mouth", "CTL-Lip", "DEF-lip", "MCH-mtgt",
+                               "CTL-MouthOpen", "MCH-Mouth", "CTL-Jaw", "DEF-Jaw",
+                               "MCH-Jaw")):
+            for con in list(pb.constraints):
+                pb.constraints.remove(con)
 
     # JAW (translation-driven): the two hidden hinge bones are rotated by DRIVERS
     # that read CTL-Jaw's LOCAL translation.  DEF-Jaw is parented to MCH-JawRot
@@ -792,6 +855,24 @@ def build_mouth_rig(context):
             dt.subtarget = w.get("track", w["tgt"])
             dt.track_axis = 'TRACK_Y'
             dt.influence = 1.0
+        # CORNER FOLLOW: the tweak ADDS a fraction of the nearest corner control's
+        # LOCAL motion, so the lip bone sweeps into a smile / frown with the
+        # corner (both bones are Z-up so local axes match -> correct direction).
+        cf = float(w.get("cfollow", 0.0))
+        cb = w.get("cbone")
+        tb = rig.pose.bones.get(w.get("track", ""))
+        if tb is not None and cb and cf > 1e-3:
+            for con in list(tb.constraints):
+                if con.name == "SR Corner Follow":
+                    tb.constraints.remove(con)
+            cfc = tb.constraints.new('COPY_LOCATION')
+            cfc.name = "SR Corner Follow"
+            cfc.target = rig
+            cfc.subtarget = cb
+            cfc.use_offset = True
+            cfc.target_space = 'LOCAL'
+            cfc.owner_space = 'LOCAL'
+            cfc.influence = cf
 
     # the open / seal slider: drag UP = open (+1), DOWN = seal (-1)
     pbb = rig.pose.bones.get(slb)
@@ -1018,15 +1099,141 @@ def _bind_mouth(context, rig, body, sd):
     uu = rel @ right
     vvv = rel @ up
 
-    cand = ((ffv > -0.5 * band) &
-            (np.abs(vvv) < 1.8 * vmax) &
-            (uu > sd["u_in"] - 0.18 * sd["span"]) &
-            (uu < sd["u_out"] + 0.18 * sd["span"]))
+    # DEPTH GATE: the mouth CORNERS (commissures) tuck BACK into the face - on a
+    # real head they recede ~1x band behind the mouth-centre plane.  The old gate
+    # (ffv > -0.5*band) cut them off, so the commissure verts were never assigned
+    # to the lips and fell through to the JAW field (head/jaw split) - the corner
+    # went DEAD and the jaw pinched it on open.  The true spatial bound is the 3D
+    # dl<=band sphere around the loop below, so this coarse depth pre-filter only
+    # needs to keep the receding corners IN and the deep mouth-bag OUT.
+    # LONG tangential reach (like ARP) but a SHORT depth zone so the weights sweep
+    # far ACROSS the face surface without swallowing the interior mouth-bag.
+    _dband = max(2.4 * sd["mh"], 0.16 * sd["span"])     # depth (LV-based, short)
+    cand = ((ffv > -_dband) &
+            (np.abs(vvv) < max(1.8 * vmax, 1.2 * band)) &
+            (uu > sd["u_in"] - max(0.18 * sd["span"], 0.9 * band)) &
+            (uu < sd["u_out"] + max(0.18 * sd["span"], 0.9 * band)))
+
+    # ------------------------------------------------------------------ LIP
+    # RECOGNITION (topological).  A flat height cut (vvv>=0) splits the mouth on
+    # a straight line through its centre - but the two lips TOUCH on a closed
+    # mouth, so the lower lip's inner edge sits ABOVE that line and gets
+    # mislabelled UPPER = static.  On jaw-open those verts stay stuck while the
+    # rest of the lower lip drops -> a boxy, torn, "stuck lower lip" open.
+    # Instead we recognise the lips by MESH TOPOLOGY: the registered loop is the
+    # lip contact contour; remove it as a separator and the lip-band skin falls
+    # into an UPPER component (above the loop) and a LOWER component (below).
+    # Every vert is labelled by the lip it is actually attached to, so the whole
+    # lower lip - inner edge included - follows the jaw as one clean piece.
+    loopset = set()
+    _vgm = body.vertex_groups.get("SR_mouthloop")
+    if _vgm is not None:
+        _gil = _vgm.index
+        for v in me.vertices:
+            if any(g.group == _gil for g in v.groups):
+                loopset.add(int(v.index))
+    # commissure verts (nearest mesh vert to each corner) also separate the two
+    # lips where the loop opens out at the corners.
+    cornersep = set()
+    for _cp in (sd.get("cornerL_pt"), sd.get("cornerR_pt")):
+        if _cp is not None:
+            cornersep.add(int(np.argmin(np.linalg.norm(co - np.asarray(_cp, float),
+                                                        axis=1))))
+    # lip-band skin verts = candidates within band of the loop.
+    band_verts = []
+    for vi in np.nonzero(cand)[0]:
+        vi = int(vi)
+        if float(np.min(np.linalg.norm(loop - co[vi], axis=1))) <= band:
+            band_verts.append(vi)
+    node = set(band_verts) | loopset
+    adj2 = {vi: set() for vi in node}
+    for e in me.edges:
+        a, b = int(e.vertices[0]), int(e.vertices[1])
+        if a in adj2 and b in adj2:
+            adj2[a].add(b)
+            adj2[b].add(a)
+    # multi-source BFS FROM the loop: each loop vert is a seed carrying its own
+    # margin side (upper margin vv>=0 -> +1, lower margin vv<0 -> -1).  Every
+    # band vert takes the side of the geodesically NEAREST loop vert, flooding
+    # outward through the mesh.  Because the two lips meet only ON the loop, a
+    # vert above the contact is reached first by an UPPER-margin seed and a vert
+    # below by a LOWER-margin seed - so the lower lip's inner edge (which sits
+    # just above the mouth centre on a closed mouth) is still labelled LOWER and
+    # drops with the jaw.  No flat height cut, no merged components.
+    from collections import deque
+    # ⭐ split the LOOP into an UPPER arc and a LOWER arc using the two CORNERS
+    # (Saeed: "you know where the corner is, upper/lower should be SIMPLE").  The
+    # loop is a ring; cut it at the two commissures -> two arcs.  The higher-mean-
+    # height arc = UPPER-lip contact (stays), the other = LOWER (drops FULLY on
+    # jaw-open).  THIS is what opens the mouth across its whole width: the old
+    # vv>=0 height cut left most of the 3mm-tall contact line labelled "upper" =
+    # sealed, so it opened only as a slit at the bottom centre.
+    loop_adj = {vi: set() for vi in loopset}
+    for e in me.edges:
+        a, b = int(e.vertices[0]), int(e.vertices[1])
+        if a in loop_adj and b in loop_adj:
+            loop_adj[a].add(b)
+            loop_adj[b].add(a)
+    cpts = []
+    for _cp in (sd.get("cornerL_pt"), sd.get("cornerR_pt")):
+        if _cp is not None:
+            cpts.append(int(np.argmin(np.linalg.norm(
+                co - np.asarray(_cp, float), axis=1))))
+    loop_side = {}
+    if len(cpts) == 2 and all(len(loop_adj[cc]) >= 2 for cc in cpts):
+        cL, cR = cpts
+
+        def _arc(first):
+            path, prev, cur, steps = [], cL, first, 0
+            while cur is not None and cur != cR and steps < len(loopset) + 2:
+                path.append(cur)
+                nxts = [n for n in loop_adj[cur] if n != prev]
+                prev, cur = cur, (nxts[0] if nxts else None)
+                steps += 1
+            return path, (cur == cR)
+        nbs = list(loop_adj[cL])
+        arc1, ok1 = _arc(nbs[0])
+        arc2, ok2 = _arc(nbs[1]) if len(nbs) > 1 else ([], False)
+        if arc1 and arc2 and ok1 and ok2:
+            m1 = float(np.mean([vvv[v] for v in arc1]))
+            m2 = float(np.mean([vvv[v] for v in arc2]))
+            upper_arc, lower_arc = (arc1, arc2) if m1 >= m2 else (arc2, arc1)
+            for v in upper_arc:
+                loop_side[v] = 1
+            for v in lower_arc:
+                loop_side[v] = -1
+    side_of = {}
+    dq = deque()
+    for vi in loopset:
+        if vi in node:
+            # arc label if we have it; else fall back to the height sign.
+            side_of[vi] = loop_side.get(vi, 1 if vvv[vi] >= 0.0 else -1)
+            dq.append(vi)
+    while dq:
+        x = dq.popleft()
+        sx = side_of[x]
+        for y in adj2[x]:
+            if y not in side_of:
+                side_of[y] = sx
+                dq.append(y)
 
     wmap = {}
     w_lid_of = {}
     assigned = set()
     lip_side = {}                     # vi -> +1 upper lip, -1 lower lip
+    # RADIAL per-bone weighting (professional - like the corner): every lip column
+    # paints a smooth smoothstep gradient around ITS OWN point (strong at the
+    # bone, fading out over col_reach), and the overlaps normalise.  So each bone
+    # gets a clean ROUND gradient exactly like the corner weight Saeed pointed at,
+    # not a flat linear split.
+    K_side = max(len(sd["upp"]), len(sd["low"]), 1)
+    # STEEP core so the NEAREST column dominates (high peak = strong control),
+    # ~1.35x the column spacing - NOT tied to the long band (that over-spread and
+    # dropped every peak to ~0.17 = mushy, control felt gone).  The long smooth
+    # TAIL comes from the diffusion below + the band region, not from a giant core.
+    col_reach = 1.35 * sd["span"] / max(K_side - 1, 1)
+    side_pts = {1: [(bn, np.asarray(pt, float)) for (_u, bn, pt) in sd["upp"]],
+                -1: [(bn, np.asarray(pt, float)) for (_u, bn, pt) in sd["low"]]}
     for vi in np.nonzero(cand)[0]:
         vi = int(vi)
         dl = float(np.min(np.linalg.norm(loop - co[vi], axis=1)))
@@ -1036,13 +1243,20 @@ def _bind_mouth(context, rig, body, sd):
         w_lid = 1.0 - t * t * (3.0 - 2.0 * t)         # smoothstep: 1 margin->0
         if w_lid <= 1e-4:
             continue
-        is_upper = vvv[vi] >= 0.0
+        is_upper = side_of.get(vi, vvv[vi] >= 0.0) == 1
         lip_side[vi] = 1 if is_upper else -1
-        ctrl = upp_c if is_upper else low_c
         m = wmap.setdefault(vi, {})
-        for bn, wu in _eye._blend_u(ctrl, float(uu[vi])):
-            if wu > 1e-6:
-                m[bn] = m.get(bn, 0.0) + wu
+        p = co[vi]
+        pts = side_pts[1 if is_upper else -1]
+        for bn, pt in pts:
+            d = float(np.linalg.norm(p - pt))
+            x = 1.0 - d / col_reach
+            if x <= 1e-4:
+                continue
+            m[bn] = m.get(bn, 0.0) + x * x * (3.0 - 2.0 * x)    # smooth radial
+        if not m and pts:                             # beyond every reach: nearest
+            bn = min(pts, key=lambda bp: np.linalg.norm(p - bp[1]))[0]
+            m[bn] = 1.0
         w_lid_of[vi] = max(w_lid_of.get(vi, 0.0), w_lid)
         assigned.add(vi)
 
@@ -1060,10 +1274,17 @@ def _bind_mouth(context, rig, body, sd):
             if a in nbrs and b in nbrs and lip_side.get(a) == lip_side.get(b):
                 nbrs[a].add(b)
                 nbrs[b].add(a)
-        for _ in range(8):
+        # HEAT-MAP-STYLE surface diffusion: spread each bone's weight smoothly
+        # ALONG the mesh surface over MANY passes (like Blender's bone-heat), so
+        # every bone gets a long, smooth, professional falloff (the "distance"
+        # ARP has) instead of a short hard patch.  A moderate self-weight keeps
+        # each bone's PEAK at its own point (crisp control) while the tail spreads
+        # far.  Same-side only so upper/lower stay independent.
+        SELF_W = 3.2
+        for _ in range(6):
             new = {}
             for vi in assigned:
-                acc = dict(wmap[vi])
+                acc = {bn: w * SELF_W for bn, w in wmap[vi].items()}
                 for nj in nbrs[vi]:
                     for bn, w in wmap[nj].items():
                         acc[bn] = acc.get(bn, 0.0) + w
@@ -1071,17 +1292,30 @@ def _bind_mouth(context, rig, body, sd):
                 new[vi] = {bn: w / tot for bn, w in acc.items()}
             wmap = new
 
-    # CORNER dominance (applied AFTER smoothing so it isn't averaged away): near
-    # each commissure the corner DEF bone TAKES OVER from the lip columns, so the
-    # mouth corner actually gets skin and CTL-Lips_corn deforms it.  The corner is
-    # shared by both lips, so this also keeps the commissure continuous.  Reach is
-    # a small zone at each end; full at the corner, smoothstep to 0 inward.
+    # CORNER emphasis (applied AFTER smoothing so it isn't averaged away): near
+    # each commissure the corner DEF bone takes the LEAD from the lip columns so
+    # CTL-Lips_corn actually deforms the corner and a smile / frown pulls it.
+    # BUT it is a SMOOTH PEAK, not a rigid lock:
+    #   * peak is CAPPED at CORNER_PEAK (< 1) so the commissure KEEPS a share of
+    #     the neighbouring lip columns - and on the LOWER side those columns ride
+    #     the jaw, so the corner FOLLOWS the jaw open instead of pinching, and a
+    #     big smile still drags a broad region (the corner never rigidly owns a
+    #     block).
+    #   * reach c_rad is generous so the influence fades gently over ~1/5 of the
+    #     mouth, which reads as a professional smile/frown, not a local tug.
+    CORNER_PEAK = 1.0
     corner_defs = []
     if sd.get("cornerL_pt") is not None:
         corner_defs.append((np.asarray(sd["cornerL_pt"], float), "DEF-lip_corn.L"))
     if sd.get("cornerR_pt") is not None:
         corner_defs.append((np.asarray(sd["cornerR_pt"], float), "DEF-lip_corn.R"))
-    c_rad = max(0.22 * sd["span"], 1.3 * band)
+    # MODERATE corner reach: the corner OWNS a clean chunk at each commissure,
+    # but does NOT eat the lip columns' weights across the whole lip (that made
+    # the individual CTL-LipT_upp/low tweaks weak = un-professional).  The BROAD
+    # smile/frown comes from the CONTROL-FOLLOW (the lip tweaks follow the corner
+    # bone-wise) deforming via their OWN crisp per-column weights - the ARP way:
+    # crisp weights + a follow rig, NOT one bone's weight bleeding everywhere.
+    c_rad = max(0.7 * sd["span"], 1.8 * band)   # ~ARP corner_mini reach (76mm)
     for vi in list(wmap.keys()):
         p = co[vi]
         for cpt, cbn in corner_defs:
@@ -1089,7 +1323,7 @@ def _bind_mouth(context, rig, body, sd):
             if dcn >= c_rad:
                 continue
             x = 1.0 - dcn / c_rad
-            wc = x * x * (3.0 - 2.0 * x)          # smoothstep: 1 at corner -> 0
+            wc = x * x * (3.0 - 2.0 * x) * CORNER_PEAK   # smooth peak, capped
             if wc <= 1e-3:
                 continue
             m = wmap[vi]
@@ -1271,10 +1505,16 @@ def _mouth_smooth_modifier(body, assigned):
     if mod is None:
         mod = body.modifiers.new("SR Mouth Smooth", 'CORRECTIVE_SMOOTH')
     mod.vertex_group = "SR_mouth_smooth"
-    mod.factor = 0.45
-    mod.iterations = 12
-    mod.smooth_type = 'LENGTH_WEIGHTED'
+    # DISABLED for now (Saeed: show the REAL weights, no smoothing).  The
+    # LENGTH_WEIGHTED corrective smooth fought the jaw open and dragged the lower
+    # lip back UP unevenly ("الشفايف لاصقة فوق").  Left inert (factor 0, hidden)
+    # so the deformation is driven purely by the bone weights we can inspect.
+    mod.factor = 0.0
+    mod.iterations = 1
+    mod.smooth_type = 'SIMPLE'
     mod.rest_source = 'ORCO'
+    mod.show_viewport = False
+    mod.show_render = False
     try:
         while body.modifiers[-1].name != "SR Mouth Smooth":
             body.modifiers.move(body.modifiers.find("SR Mouth Smooth"),
@@ -1340,7 +1580,7 @@ def clear_mouth_rig(context, also_registration=False):
         eb = rig.data.edit_bones
         pref = ("MSTR-Mouth", "CTL-Lip", "DEF-lip", "MCH-mtgt", "CTL-MouthOpen",
                 "MCH-Mouth", "CTL-Jaw", "DEF-Jaw", "MCH-JawCorn", "MCH-JawRot",
-                "MCH-JawSway")
+                "MCH-JawRet", "MCH-JawSway")
         for b in list(eb):
             if b.name.startswith(pref):
                 eb.remove(b)
