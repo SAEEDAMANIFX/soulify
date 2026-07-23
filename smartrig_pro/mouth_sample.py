@@ -1315,15 +1315,30 @@ def _bind_mouth(context, rig, body, sd):
     # smile/frown comes from the CONTROL-FOLLOW (the lip tweaks follow the corner
     # bone-wise) deforming via their OWN crisp per-column weights - the ARP way:
     # crisp weights + a follow rig, NOT one bone's weight bleeding everywhere.
-    c_rad = max(0.7 * sd["span"], 1.8 * band)   # ~ARP corner_mini reach (76mm)
+    # MODERATE corner reach (commissure only).  A HUGE corner reach ate the lip
+    # columns' weights so the lip TWEAKS/master stopped moving the mesh (Saeed:
+    # "الميش السفلي لازم يمشي مع تويكس"; same as the upper-sag bug).  The BROAD
+    # smile/frown comes from the CONTROL-FOLLOW (lip tweaks follow the corner),
+    # NOT from the corner bone's weight bleeding across the whole lip - the ARP
+    # way: crisp per-column weights that follow the tweaks + a follow rig.
+    c_rad = max(0.28 * sd["span"], 1.3 * band)
     for vi in list(wmap.keys()):
         p = co[vi]
+        # The corner bone FOLLOWS THE JAW (drops on open).  So bias its weight to
+        # the LOWER commissure (which SHOULD drop); on the UPPER side give it only
+        # a thin tip so the corner deforms continuously for a smile but does NOT
+        # drag the upper lip DOWN on jaw-open (the upper commissure stays on its
+        # upper columns, which follow the corner for smile but NOT the jaw).
+        # ARP does exactly this: corner_mini carries the LOWER corner; the upper
+        # corner rides c_lips_top.l.
+        peak = CORNER_PEAK if side_of.get(vi, 1) < 0 else CORNER_PEAK * 0.18
+        rad = c_rad if side_of.get(vi, 1) < 0 else max(0.22 * sd["span"], band)
         for cpt, cbn in corner_defs:
             dcn = float(np.linalg.norm(p - cpt))
-            if dcn >= c_rad:
+            if dcn >= rad:
                 continue
-            x = 1.0 - dcn / c_rad
-            wc = x * x * (3.0 - 2.0 * x) * CORNER_PEAK   # smooth peak, capped
+            x = 1.0 - dcn / rad
+            wc = x * x * (3.0 - 2.0 * x) * peak
             if wc <= 1e-3:
                 continue
             m = wmap[vi]
@@ -1332,6 +1347,32 @@ def _bind_mouth(context, rig, body, sd):
                 if bn != cbn:
                     m[bn] *= s
             m[cbn] = m.get(cbn, 0.0) + wc
+
+    # SMOOTH the CORNER ZONE only (Saeed: "تنعيم كسرة الزاوية"): the overlay adds
+    # a sharp corner weight block that CREASES at the commissure on open.  A few
+    # same-side passes over just the corner verts blend that block into its
+    # neighbours -> the commissure opens/creases smoothly - WITHOUT touching the
+    # crisp mid-lip peaks (only the corner region is averaged).
+    if assigned:
+        corner_zone = set()
+        for vi in assigned:
+            p = co[vi]
+            for cpt, _cbn in corner_defs:
+                if float(np.linalg.norm(p - cpt)) < c_rad:
+                    corner_zone.add(vi)
+                    break
+        for _ in range(5):
+            new = {}
+            for vi in corner_zone:
+                acc = {bn: w * 1.4 for bn, w in wmap[vi].items()}
+                for nj in nbrs.get(vi, ()):
+                    if nj in wmap:
+                        for bn, w in wmap[nj].items():
+                            acc[bn] = acc.get(bn, 0.0) + w
+                tot = sum(acc.values()) or 1.0
+                new[vi] = {bn: w / tot for bn, w in acc.items()}
+            for vi, mm in new.items():
+                wmap[vi] = mm
 
     jaw_bone = sd.get("jaw", "DEF-Jaw")
     if jaw_bone not in rig.data.bones:
